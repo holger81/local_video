@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
@@ -94,6 +96,43 @@ def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any
         }
 
 
+def delete_frame_media(project_id: int, frame_id: int, kind: str) -> dict[str, Any]:
+    """Clear still or preview path and remove the file if it lives under media_dir."""
+    if kind not in ("still", "preview"):
+        raise ValueError("kind must be 'still' or 'preview'")
+    settings = get_settings()
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+        path_attr = "still_path" if kind == "still" else "preview_path"
+        old = getattr(f, path_attr)
+        setattr(f, path_attr, None)
+        db.commit()
+        db.refresh(f)
+        payload = {
+            "id": f.id,
+            "position": f.position,
+            "description": f.description,
+            "visual_prompt": f.visual_prompt,
+            "still_path": f.still_path,
+            "preview_path": f.preview_path,
+            "duration_hint_sec": f.duration_hint_sec,
+            "is_new_shot": f.is_new_shot,
+            "deleted": kind,
+        }
+
+    if old:
+        try:
+            p = Path(old)
+            media_root = settings.media_dir.resolve()
+            if p.is_file() and str(p.resolve()).startswith(str(media_root)):
+                p.unlink()
+        except OSError:
+            pass
+    return payload
+
+
 def approve_storyboard(project_id: int) -> dict[str, Any]:
     with SessionLocal() as db:
         p = db.get(Project, project_id)
@@ -113,43 +152,79 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[: max_chars - 1].rstrip() + "…"
 
 
+_SCENE_LIST_RE = re.compile(r"(?i)\bscene\s*\d+\b")
+
+
+def _is_scene_list(text: str) -> bool:
+    """True when text enumerates multiple scenes (Flux draws these as grids)."""
+    return len(_SCENE_LIST_RE.findall(text or "")) >= 2
+
+
+def _world_lock(*, premise: str, story: str) -> str:
+    """Short cast/setting lock for image models — never a multi-scene script."""
+    premise_bit = _truncate(premise or "", 320)
+    if premise_bit:
+        return premise_bit
+    story_bit = (story or "").strip()
+    if not story_bit or _is_scene_list(story_bit):
+        return ""
+    return _truncate(story_bit, 320)
+
+
+def _frame_wants_on_screen_text(frame_prompt: str) -> bool:
+    return bool(
+        re.search(
+            r"(?i)\b(text|title card|end card|credits|neon|screen|sign|caption|subtitle)\b|"
+            r"[\"'].+[\"']",
+            frame_prompt or "",
+        )
+    )
+
+
+def still_negative_prompt(frame_prompt: str = "") -> str:
+    base = (
+        "blurry, watermark, logo, inconsistent characters, different person each frame, "
+        "style change, collage, comic, manga, storyboard, panels, panel layout, grid, "
+        "split screen, montage, multiple images, contact sheet, triptych, scrapbook, "
+        "comic strip, multi-panel, 2x2, 3x2, tiled images, film strip, border frames"
+    )
+    if _frame_wants_on_screen_text(frame_prompt):
+        return base
+    return base + ", text overlay, on-screen text, title card, end card, neon sign text"
+
+
 def build_visual_prompt(
     *,
     story: str,
     title: str,
     genre: str,
     frame_prompt: str,
+    premise: str = "",
     prev_prompt: str | None = None,
     next_prompt: str | None = None,
 ) -> str:
-    """Compose an image prompt that locks overall story continuity.
+    """Compose an image prompt for ONE shot with light continuity lock.
 
-    Avoid words like "storyboard" / "panel" / "frame N of M" — image models
-    often render those as a multi-panel collage instead of one shot.
+    Do not dump multi-scene story scripts or neighbor beats into the prompt —
+    Flux/Klein often renders those as a literal storyboard collage. Prefer the
+    short premise as world lock; ignore prev/next scene text (kept in signature
+    for callers / future soft continuity).
     """
-    story_bit = _truncate(story or "", 700)
+    _ = title, prev_prompt, next_prompt  # title/neighbors unused for image models
     frame_bit = _truncate(frame_prompt or "", 400)
+    world = _world_lock(premise=premise, story=story)
     parts: list[str] = [
-        "Single cinematic still photograph, one shot only, full frame, no collage, no comic panels, no grid layout."
+        "Photorealistic cinematic still photograph, one continuous camera shot, "
+        "one moment only, full frame."
     ]
-    header = []
-    if title:
-        header.append(f'film "{title}"')
     if genre:
-        header.append(f"{genre} genre")
-    if header:
-        parts.append(", ".join(header) + ".")
-    if story_bit:
-        parts.append(
-            f"World and continuity (same characters, wardrobe, setting, tone): {story_bit}"
-        )
-    parts.append(f"Depict this moment: {frame_bit}")
-    if prev_prompt:
-        parts.append(f"Action continues after: {_truncate(prev_prompt, 160)}")
-    if next_prompt:
-        parts.append(f"Leads toward: {_truncate(next_prompt, 160)}")
+        parts.append(f"{genre} genre.")
+    if world:
+        parts.append(f"Film continuity for: {world}.")
+    parts.append(f"Show only this beat: {frame_bit}.")
     parts.append(
-        "Match the same cast and location as the rest of the film; cohesive look, one camera angle."
+        "Same cast, wardrobe, and location look; do not show other story beats "
+        "or a multi-panel layout."
     )
     return " ".join(parts)
 
@@ -169,33 +244,20 @@ async def generate_frame_visual(
             raise KeyError(f"frame {frame_id} not found")
         p = db.get(Project, project_id)
         assert p is not None
-        frames = sorted(p.frames, key=lambda x: x.position)
-        idx = next((i for i, fr in enumerate(frames) if fr.id == frame_id), 0)
-        prev_prompt = None
-        next_prompt = None
-        if idx > 0:
-            prev_prompt = frames[idx - 1].visual_prompt or frames[idx - 1].description
-        if idx + 1 < len(frames):
-            next_prompt = frames[idx + 1].visual_prompt or frames[idx + 1].description
+        frame_prompt = f.visual_prompt or f.description or ""
         prompt = build_visual_prompt(
-            story=p.story or p.premise or "",
+            story=p.story or "",
+            premise=p.premise or "",
             title=p.title or "",
             genre=p.genre or "",
-            frame_prompt=f.visual_prompt or f.description or "",
-            prev_prompt=prev_prompt,
-            next_prompt=next_prompt,
+            frame_prompt=frame_prompt,
         )
 
     if kind == "still":
         workflow_id = workflow_id or "still_hero"
         params = {
             "positive_prompt": prompt,
-            "negative_prompt": (
-                "blurry, watermark, text overlay, logo, inconsistent characters, "
-                "different person each frame, style change, collage, comic, manga, "
-                "storyboard, panels, grid, split screen, montage, multiple images, "
-                "contact sheet, triptych, scrapbook"
-            ),
+            "negative_prompt": still_negative_prompt(frame_prompt),
             "seed": frame_id * 17,
             "filename_prefix": f"local_video/p{project_id}_f{frame_id}_still",
         }
@@ -206,7 +268,8 @@ async def generate_frame_visual(
             "positive_prompt": prompt,
             "negative_prompt": (
                 "blurry, watermark, text, static, inconsistent characters, style change, "
-                "collage, comic, storyboard, panels, grid, split screen, montage"
+                "collage, comic, storyboard, panels, grid, split screen, montage, "
+                "multi-panel, contact sheet"
             ),
             "seed": frame_id * 17,
             "num_frames": num_frames,
@@ -270,13 +333,124 @@ async def generate_frame_visual(
     raise RuntimeError("ComfyUI produced no outputs")
 
 
+def _resolve_media_file(stored: str) -> Path:
+    """Resolve a DB media path (/media/...) to a local file under MEDIA_DIR."""
+    settings = get_settings()
+    raw = (stored or "").strip()
+    if not raw:
+        raise FileNotFoundError("empty media path")
+    direct = Path(raw)
+    if direct.is_file():
+        return direct
+    rel = raw
+    for marker in ("/media/", "media/"):
+        idx = raw.find(marker)
+        if idx >= 0:
+            rel = raw[idx + len(marker) :]
+            break
+    candidate = (settings.media_dir / rel).resolve()
+    media_root = settings.media_dir.resolve()
+    if not str(candidate).startswith(str(media_root)):
+        raise ValueError("media path escapes MEDIA_DIR")
+    if not candidate.is_file():
+        raise FileNotFoundError(f"media file not found: {stored}")
+    return candidate
+
+
+def build_edit_prompt(*, instruction: str, frame_prompt: str = "") -> str:
+    instr = _truncate((instruction or "").strip(), 500)
+    if not instr:
+        raise ValueError("edit instruction is required")
+    beat = _truncate(frame_prompt or "", 220)
+    parts = [
+        "Edit this cinematic still photograph.",
+        f"Instruction: {instr}.",
+        "Preserve composition, camera angle, character identity, wardrobe style, "
+        "and setting unless the instruction explicitly changes them.",
+        "Output one continuous camera shot only — no collage, panels, or grid.",
+    ]
+    if beat:
+        parts.append(f"Original beat context: {beat}.")
+    return " ".join(parts)
+
+
+async def edit_frame_still(
+    project_id: int,
+    frame_id: int,
+    *,
+    instruction: str,
+    workflow_id: str | None = None,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """Prompt-edit an existing still (Flux ReferenceLatent), replacing the still file."""
+    settings = get_settings()
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+        if not f.still_path:
+            raise ValueError("frame has no still to edit — generate one first")
+        still_stored = f.still_path
+        frame_prompt = f.visual_prompt or f.description or ""
+
+    source = _resolve_media_file(still_stored)
+    prompt = build_edit_prompt(instruction=instruction, frame_prompt=frame_prompt)
+    workflow_id = workflow_id or "still_edit"
+    comfy = ComfyUIClient()
+    uploaded = await comfy.upload_image(source)
+    params = {
+        "positive_prompt": prompt,
+        "negative_prompt": still_negative_prompt(frame_prompt),
+        "seed": seed if seed is not None else (frame_id * 17 + 91),
+        "filename_prefix": f"local_video/p{project_id}_f{frame_id}_edit",
+        "width": 1024,
+        "height": 576,
+        "steps": 20,
+        "cfg": 5.0,
+    }
+    graph = apply_params(workflow_id, params, uploaded_image_name=uploaded)
+    prompt_id = await comfy.queue_prompt(graph)
+    history = await comfy.wait_for_prompt(prompt_id)
+    outputs = comfy.collect_outputs(history)
+    if not outputs:
+        raise RuntimeError("ComfyUI produced no outputs")
+
+    media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+    media.mkdir(parents=True, exist_ok=True)
+    out = outputs[0]
+    dest = media / out["filename"]
+    await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+
+    # Drop previous still file when it is a different path under media_dir.
+    try:
+        old = _resolve_media_file(still_stored)
+        if old.resolve() != dest.resolve() and old.is_file():
+            old.unlink()
+    except (FileNotFoundError, ValueError, OSError):
+        pass
+
+    with SessionLocal() as db:
+        fr = db.get(StoryboardFrame, frame_id)
+        assert fr
+        fr.still_path = str(dest)
+        db.commit()
+
+    return {
+        "frame_id": frame_id,
+        "kind": "still_edit",
+        "still_path": str(dest),
+        "instruction": instruction,
+        "prompt_id": prompt_id,
+    }
+
+
 async def generate_all_stills(
     project_id: int,
     *,
     workflow_id: str | None = None,
-    skip_existing: bool = False,
+    skip_existing: bool = True,
 ) -> dict[str, Any]:
-    """Generate a still for every storyboard frame (sequential; one ComfyUI job at a time)."""
+    """Generate a still for every storyboard frame missing one (sequential)."""
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         if not p:

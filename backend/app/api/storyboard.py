@@ -24,9 +24,15 @@ class VisualIn(BaseModel):
     num_frames: int = 33
 
 
+class EditStillIn(BaseModel):
+    instruction: str
+    workflow_id: str | None = None
+    seed: int | None = None
+
+
 class AllStillsIn(BaseModel):
     workflow_id: str | None = None
-    skip_existing: bool = False
+    skip_existing: bool = True
 
 
 @router.post("/propose")
@@ -82,3 +88,33 @@ async def generate_visual(project_id: int, frame_id: int, body: VisualIn | None 
         )
     except Exception as e:
         raise HTTPException(500, str(e)) from e
+
+
+@router.post("/frames/{frame_id}/still/edit")
+async def edit_still(project_id: int, frame_id: int, body: EditStillIn):
+    try:
+        return await sb_svc.edit_frame_still(
+            project_id,
+            frame_id,
+            instruction=body.instruction,
+            workflow_id=body.workflow_id,
+            seed=body.seed,
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
+@router.delete("/frames/{frame_id}/media/{kind}")
+def delete_media(project_id: int, frame_id: int, kind: str):
+    try:
+        return sb_svc.delete_frame_media(project_id, frame_id, kind)
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e

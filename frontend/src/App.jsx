@@ -135,6 +135,8 @@ function ProjectPage() {
   const [extendInstr, setExtendInstr] = useState("");
   const [busy, setBusy] = useState("");
   const [visualBusy, setVisualBusy] = useState(null);
+  const [lightbox, setLightbox] = useState(null);
+  const [editDrafts, setEditDrafts] = useState({});
   const [err, setErr] = useState("");
   const [job, setJob] = useState(null);
   const [movieForm, setMovieForm] = useState({
@@ -166,6 +168,15 @@ function ProjectPage() {
     }, 3000);
     return () => clearInterval(t);
   }, [job]);
+
+  useEffect(() => {
+    if (!lightbox) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") setLightbox(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightbox]);
 
   if (!project) {
     return (
@@ -206,23 +217,51 @@ function ProjectPage() {
     }
   };
 
+  const editStill = async (frameId) => {
+    const instruction = (editDrafts[frameId] || "").trim();
+    if (!instruction) {
+      setErr("Enter an edit instruction for the still first.");
+      return;
+    }
+    setBusy(`edit still ${frameId}`);
+    setVisualBusy({ frameId, kind: "edit" });
+    setErr("");
+    try {
+      await api(`/projects/${id}/storyboard/frames/${frameId}/still/edit`, {
+        method: "POST",
+        body: JSON.stringify({ instruction }),
+      });
+      setEditDrafts((prev) => ({ ...prev, [frameId]: "" }));
+      await load();
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setVisualBusy(null);
+      setBusy("");
+    }
+  };
+
   const createAllStills = async () => {
-    const frames = [...(project.frames || [])].sort((a, b) => a.position - b.position);
-    if (!frames.length) return;
-    setBusy("create all stills");
+    const frames = [...(project.frames || [])]
+      .sort((a, b) => a.position - b.position)
+      .filter((f) => !f.still_path);
+    if (!frames.length) {
+      setErr("");
+      setBusy("");
+      return;
+    }
+    setBusy("create missing stills");
     setErr("");
     try {
       for (let i = 0; i < frames.length; i++) {
         const f = frames[i];
-        setBusy(`create all stills (${i + 1}/${frames.length})`);
+        setBusy(`create missing stills (${i + 1}/${frames.length})`);
         setVisualBusy({ frameId: f.id, kind: "still" });
-        // Let React paint the spinner before the long ComfyUI call.
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         await api(`/projects/${id}/storyboard/frames/${f.id}/visual`, {
           method: "POST",
           body: JSON.stringify({ kind: "still" }),
         });
-        // Clear spinner on this card so the new still can show, then refresh.
         setVisualBusy(null);
         await load();
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
@@ -232,6 +271,22 @@ function ProjectPage() {
     } finally {
       setVisualBusy(null);
       setBusy("");
+    }
+  };
+
+  const deleteMedia = async (frameId, kind, e) => {
+    e.stopPropagation();
+    setErr("");
+    try {
+      await api(`/projects/${id}/storyboard/frames/${frameId}/media/${kind}`, {
+        method: "DELETE",
+      });
+      if (lightbox?.frameId === frameId && lightbox?.kind === kind) {
+        setLightbox(null);
+      }
+      await load();
+    } catch (ex) {
+      setErr(String(ex.message || ex));
     }
   };
 
@@ -320,10 +375,13 @@ function ProjectPage() {
           </button>
           <button
             type="button"
-            disabled={!!busy || !(project.frames || []).length}
+            disabled={
+              !!busy || !(project.frames || []).some((f) => !f.still_path)
+            }
             onClick={() => createAllStills()}
+            title="Generate stills only for frames that do not have one yet"
           >
-            Create all stills
+            Create missing stills
           </button>
           <button
             type="button"
@@ -368,28 +426,105 @@ function ProjectPage() {
                   Preview clip
                 </button>
               </div>
+              {mediaUrl(f.still_path) && (
+                <div className="still-edit">
+                  <input
+                    className="still-edit-input"
+                    placeholder="Edit still… e.g. make the dress red"
+                    value={editDrafts[f.id] || ""}
+                    disabled={!!busy}
+                    onChange={(e) =>
+                      setEditDrafts((prev) => ({ ...prev, [f.id]: e.target.value }))
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        editStill(f.id);
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={!!busy || !(editDrafts[f.id] || "").trim()}
+                    onClick={() => editStill(f.id)}
+                    title="Modify the existing still with this instruction"
+                  >
+                    Edit still
+                  </button>
+                </div>
+              )}
               <div className="media-slot">
                 {mediaUrl(f.still_path) && (
-                  <img
-                    className="thumb"
-                    src={`${mediaUrl(f.still_path)}?t=${encodeURIComponent(f.still_path)}`}
-                    alt={`Frame ${f.position + 1} still`}
-                  />
+                  <div className="media-item">
+                    <button
+                      type="button"
+                      className="media-open"
+                      onClick={() =>
+                        setLightbox({
+                          frameId: f.id,
+                          kind: "still",
+                          src: `${mediaUrl(f.still_path)}?t=${encodeURIComponent(f.still_path)}`,
+                          label: `Frame ${f.position + 1} still`,
+                        })
+                      }
+                    >
+                      <img
+                        className="thumb"
+                        src={`${mediaUrl(f.still_path)}?t=${encodeURIComponent(f.still_path)}`}
+                        alt={`Frame ${f.position + 1} still`}
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      className="media-delete"
+                      aria-label="Delete still"
+                      onClick={(e) => deleteMedia(f.id, "still", e)}
+                    >
+                      ×
+                    </button>
+                  </div>
                 )}
                 {mediaUrl(f.preview_path) && (
-                  <video
-                    className="thumb"
-                    src={`${mediaUrl(f.preview_path)}?t=${encodeURIComponent(f.preview_path)}`}
-                    controls
-                    muted
-                    playsInline
-                  />
+                  <div className="media-item">
+                    <button
+                      type="button"
+                      className="media-open"
+                      onClick={() =>
+                        setLightbox({
+                          frameId: f.id,
+                          kind: "preview",
+                          src: `${mediaUrl(f.preview_path)}?t=${encodeURIComponent(f.preview_path)}`,
+                          label: `Frame ${f.position + 1} preview`,
+                        })
+                      }
+                    >
+                      <video
+                        className="thumb"
+                        src={`${mediaUrl(f.preview_path)}?t=${encodeURIComponent(f.preview_path)}`}
+                        muted
+                        playsInline
+                        preload="metadata"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      className="media-delete"
+                      aria-label="Delete preview"
+                      onClick={(e) => deleteMedia(f.id, "preview", e)}
+                    >
+                      ×
+                    </button>
+                  </div>
                 )}
                 {visualBusy?.frameId === f.id && (
                   <div className="thumb-overlay" aria-busy="true">
                     <span className="spinner" />
                     <span className="tiny">
-                      {visualBusy.kind === "preview" ? "Creating preview…" : "Creating still…"}
+                      {visualBusy.kind === "preview"
+                        ? "Creating preview…"
+                        : visualBusy.kind === "edit"
+                          ? "Editing still…"
+                          : "Creating still…"}
                     </span>
                   </div>
                 )}
@@ -518,6 +653,32 @@ function ProjectPage() {
           </div>
         )}
       </section>
+      {lightbox && (
+        <div
+          className="lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label={lightbox.label}
+          onClick={() => setLightbox(null)}
+        >
+          <div className="lightbox-inner" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              className="lightbox-close"
+              aria-label="Close"
+              onClick={() => setLightbox(null)}
+            >
+              ×
+            </button>
+            {lightbox.kind === "preview" ? (
+              <video src={lightbox.src} controls autoPlay muted playsInline />
+            ) : (
+              <img src={lightbox.src} alt={lightbox.label} />
+            )}
+            <p className="muted tiny">{lightbox.label}</p>
+          </div>
+        </div>
+      )}
     </Shell>
   );
 }

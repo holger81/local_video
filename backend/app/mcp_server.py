@@ -100,15 +100,39 @@ async def generate_frame_visual(
 
 
 @mcp.tool()
+async def edit_frame_still(
+    project_id: int,
+    frame_id: int,
+    instruction: str,
+    workflow_id: str | None = None,
+    seed: int | None = None,
+) -> dict:
+    """Edit an existing storyboard still with a prompt (keeps the image as reference)."""
+    return await sb_svc.edit_frame_still(
+        project_id,
+        frame_id,
+        instruction=instruction,
+        workflow_id=workflow_id,
+        seed=seed,
+    )
+
+
+@mcp.tool()
 async def create_all_stills(
     project_id: int,
     workflow_id: str | None = None,
-    skip_existing: bool = False,
+    skip_existing: bool = True,
 ) -> dict:
-    """Generate stills for every storyboard frame (sequential)."""
+    """Generate stills for storyboard frames missing a still (sequential)."""
     return await sb_svc.generate_all_stills(
         project_id, workflow_id=workflow_id, skip_existing=skip_existing
     )
+
+
+@mcp.tool()
+def delete_frame_media(project_id: int, frame_id: int, kind: str) -> dict:
+    """Delete a frame still or preview. kind is 'still' or 'preview'."""
+    return sb_svc.delete_frame_media(project_id, frame_id, kind)
 
 
 @mcp.tool(name="list_workflows")
