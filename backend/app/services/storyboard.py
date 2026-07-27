@@ -106,6 +106,50 @@ def approve_storyboard(project_id: int) -> dict[str, Any]:
         return {"id": p.id, "storyboard_approved": True}
 
 
+def _truncate(text: str, max_chars: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def build_visual_prompt(
+    *,
+    story: str,
+    title: str,
+    genre: str,
+    frame_prompt: str,
+    frame_position: int,
+    total_frames: int,
+    prev_prompt: str | None = None,
+    next_prompt: str | None = None,
+) -> str:
+    """Compose an image prompt that locks overall story continuity."""
+    story_bit = _truncate(story or "", 700)
+    frame_bit = _truncate(frame_prompt or "", 400)
+    parts: list[str] = []
+    header = []
+    if title:
+        header.append(f'Title "{title}"')
+    if genre:
+        header.append(f"genre {genre}")
+    if header:
+        parts.append(", ".join(header) + ".")
+    if story_bit:
+        parts.append(f"Overall story (keep characters, wardrobe, setting, tone consistent): {story_bit}")
+    parts.append(
+        f"Storyboard frame {frame_position + 1} of {max(total_frames, 1)} — depict this beat: {frame_bit}"
+    )
+    if prev_prompt:
+        parts.append(f"Continues after: {_truncate(prev_prompt, 160)}")
+    if next_prompt:
+        parts.append(f"Leads toward: {_truncate(next_prompt, 160)}")
+    parts.append(
+        "Same film, same cast and world as the overall story; cohesive cinematic look across the storyboard."
+    )
+    return " ".join(parts)
+
+
 async def generate_frame_visual(
     project_id: int,
     frame_id: int,
@@ -119,13 +163,35 @@ async def generate_frame_visual(
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
             raise KeyError(f"frame {frame_id} not found")
-        prompt = f.visual_prompt or f.description
+        p = db.get(Project, project_id)
+        assert p is not None
+        frames = sorted(p.frames, key=lambda x: x.position)
+        idx = next((i for i, fr in enumerate(frames) if fr.id == frame_id), 0)
+        prev_prompt = None
+        next_prompt = None
+        if idx > 0:
+            prev_prompt = frames[idx - 1].visual_prompt or frames[idx - 1].description
+        if idx + 1 < len(frames):
+            next_prompt = frames[idx + 1].visual_prompt or frames[idx + 1].description
+        prompt = build_visual_prompt(
+            story=p.story or p.premise or "",
+            title=p.title or "",
+            genre=p.genre or "",
+            frame_prompt=f.visual_prompt or f.description or "",
+            frame_position=f.position if f.position is not None else idx,
+            total_frames=len(frames),
+            prev_prompt=prev_prompt,
+            next_prompt=next_prompt,
+        )
 
     if kind == "still":
         workflow_id = workflow_id or "still_hero"
         params = {
             "positive_prompt": prompt,
-            "negative_prompt": "blurry, watermark, text",
+            "negative_prompt": (
+                "blurry, watermark, text overlay, logo, inconsistent characters, "
+                "different person each frame, style change, collage"
+            ),
             "seed": frame_id * 17,
             "filename_prefix": f"local_video/p{project_id}_f{frame_id}_still",
         }
@@ -134,7 +200,9 @@ async def generate_frame_visual(
         validate_frame_count(num_frames)
         params = {
             "positive_prompt": prompt,
-            "negative_prompt": "blurry, watermark, text, static",
+            "negative_prompt": (
+                "blurry, watermark, text, static, inconsistent characters, style change"
+            ),
             "seed": frame_id * 17,
             "num_frames": num_frames,
             "width": settings.default_width,
@@ -195,3 +263,48 @@ async def generate_frame_visual(
             "prompt_id": prompt_id,
         }
     raise RuntimeError("ComfyUI produced no outputs")
+
+
+async def generate_all_stills(
+    project_id: int,
+    *,
+    workflow_id: str | None = None,
+    skip_existing: bool = False,
+) -> dict[str, Any]:
+    """Generate a still for every storyboard frame (sequential; one ComfyUI job at a time)."""
+    with SessionLocal() as db:
+        p = db.get(Project, project_id)
+        if not p:
+            raise KeyError(f"project {project_id} not found")
+        frames = [
+            {"id": f.id, "still_path": f.still_path}
+            for f in sorted(p.frames, key=lambda x: x.position)
+        ]
+    if not frames:
+        raise ValueError("no storyboard frames")
+
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for fr in frames:
+        if skip_existing and fr.get("still_path"):
+            results.append({"frame_id": fr["id"], "skipped": True, "still_path": fr["still_path"]})
+            continue
+        try:
+            out = await generate_frame_visual(
+                project_id,
+                fr["id"],
+                kind="still",
+                workflow_id=workflow_id,
+            )
+            results.append(out)
+        except Exception as e:
+            errors.append({"frame_id": fr["id"], "error": str(e)})
+
+    return {
+        "project_id": project_id,
+        "generated": len([r for r in results if not r.get("skipped")]),
+        "skipped": len([r for r in results if r.get("skipped")]),
+        "failed": len(errors),
+        "results": results,
+        "errors": errors,
+    }

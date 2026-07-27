@@ -99,6 +99,18 @@ async def generate_frame_visual(
     )
 
 
+@mcp.tool()
+async def create_all_stills(
+    project_id: int,
+    workflow_id: str | None = None,
+    skip_existing: bool = False,
+) -> dict:
+    """Generate stills for every storyboard frame (sequential)."""
+    return await sb_svc.generate_all_stills(
+        project_id, workflow_id=workflow_id, skip_existing=skip_existing
+    )
+
+
 @mcp.tool(name="list_workflows")
 def list_workflows_tool() -> list:
     """List available ComfyUI workflow profiles."""

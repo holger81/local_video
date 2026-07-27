@@ -62,9 +62,11 @@ async def propose_storyboard(story: str, max_frames: int = 8) -> list[dict[str, 
         "You break stories into storyboard frames for video generation. "
         "Return ONLY valid JSON array. Each item: "
         '{"description": str, "visual_prompt": str, "duration_hint_sec": number, "is_new_shot": bool}. '
-        "is_new_shot true when camera/scene changes; false for continuous action."
+        "is_new_shot true when camera/scene changes; false for continuous action. "
+        "Keep characters, wardrobe, setting, era, and visual style consistent across all frames. "
+        "Each visual_prompt should name recurring subjects the same way every time."
     )
-    user = f"Story:\n{story}\n\nCreate up to {max_frames} frames."
+    user = f"Story:\n{story}\n\nCreate up to {max_frames} frames that form one coherent film."
     raw = await chat(system, user, temperature=0.3)
     data = _extract_json(raw)
     if not isinstance(data, list):

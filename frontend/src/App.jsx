@@ -271,6 +271,20 @@ function ProjectPage() {
           </button>
           <button
             type="button"
+            disabled={!!busy || !(project.frames || []).length}
+            onClick={() =>
+              run("create all stills", () =>
+                api(`/projects/${id}/storyboard/stills`, {
+                  method: "POST",
+                  body: JSON.stringify({ skip_existing: false }),
+                })
+              )
+            }
+          >
+            Create all stills
+          </button>
+          <button
+            type="button"
             disabled={!!busy}
             onClick={() =>
               run("approve board", () => api(`/projects/${id}/storyboard/approve`, { method: "POST" }))

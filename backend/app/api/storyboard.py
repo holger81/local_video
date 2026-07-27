@@ -24,6 +24,11 @@ class VisualIn(BaseModel):
     num_frames: int = 33
 
 
+class AllStillsIn(BaseModel):
+    workflow_id: str | None = None
+    skip_existing: bool = False
+
+
 @router.post("/propose")
 async def propose(project_id: int, body: ProposeIn | None = None):
     body = body or ProposeIn()
@@ -47,6 +52,21 @@ def approve(project_id: int):
         return sb_svc.approve_storyboard(project_id)
     except (KeyError, ValueError) as e:
         raise HTTPException(400, str(e)) from e
+
+
+@router.post("/stills")
+async def create_all_stills(project_id: int, body: AllStillsIn | None = None):
+    body = body or AllStillsIn()
+    try:
+        return await sb_svc.generate_all_stills(
+            project_id,
+            workflow_id=body.workflow_id,
+            skip_existing=body.skip_existing,
+        )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
 
 
 @router.post("/frames/{frame_id}/visual")
