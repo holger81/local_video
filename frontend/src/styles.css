@@ -187,6 +187,77 @@ button:disabled {
   margin-bottom: 0.5rem;
 }
 
+.frame-open {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.frame-open:hover .frame-open-hint {
+  color: var(--accent);
+}
+
+.frame-open-hint {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.frame-stage {
+  margin-top: 0.75rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.frame-stage-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.frame-stage-head strong {
+  font-size: 0.82rem;
+  letter-spacing: 0.01em;
+}
+
+.frame-stage-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.frame-stage-actions button,
+.batch-actions button {
+  width: 100%;
+  text-align: left;
+}
+
+button.btn-secondary {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+button.btn-secondary:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.batch-actions {
+  max-width: 28rem;
+}
+
 .still-edit {
   display: flex;
   gap: 0.4rem;
@@ -306,6 +377,136 @@ button:disabled {
   padding: 1.5rem;
 }
 
+.kf-editor {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 1.25rem;
+  overflow: auto;
+}
+
+.kf-editor-inner {
+  position: relative;
+  width: min(1080px, 100%);
+  margin: 1rem auto 2rem;
+  padding: 1.1rem 1.2rem 1.4rem;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel, #141a17);
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.kf-editor-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.kf-editor-head h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.15rem;
+}
+
+.kf-editor-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.kf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.kf-field span {
+  color: var(--muted);
+}
+
+.kf-field textarea,
+.kf-field input[type="number"] {
+  width: 100%;
+  margin: 0;
+}
+
+.kf-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: end;
+}
+
+.kf-check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.35rem;
+  font-size: 0.9rem;
+}
+
+.kf-editor-actions {
+  flex-wrap: wrap;
+}
+
+.kf-phases {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.kf-phase {
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.kf-phase header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.55rem;
+}
+
+.kf-phase-body {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) 1fr;
+  gap: 0.75rem;
+  margin-bottom: 0.55rem;
+}
+
+.kf-phase-media {
+  position: relative;
+}
+
+.kf-phase-media .thumb,
+.kf-phase-media .thumb-placeholder {
+  margin-top: 0;
+  max-height: 140px;
+  min-height: 100px;
+}
+
+.linkish {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font-size: 0.8rem;
+}
+
+@media (max-width: 720px) {
+  .kf-phase-body {
+    grid-template-columns: 1fr;
+  }
+}
+
 .lightbox-inner {
   position: relative;
   max-width: min(1100px, 96vw);
@@ -346,6 +547,13 @@ button:disabled {
   border-radius: 3px;
   border: 1px solid var(--line);
   background: #0c100e;
+}
+
+button.thumb-placeholder {
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
 }
 
 .thumb-overlay {

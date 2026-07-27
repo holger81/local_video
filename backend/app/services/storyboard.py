@@ -27,10 +27,131 @@ def _frame_dict(f: StoryboardFrame) -> dict[str, Any]:
         "keyframe_first_path": f.keyframe_first_path,
         "keyframe_mid_path": f.keyframe_mid_path,
         "keyframe_last_path": f.keyframe_last_path,
+        "keyframe_first_prompt": f.keyframe_first_prompt or "",
+        "keyframe_mid_prompt": f.keyframe_mid_prompt or "",
+        "keyframe_last_prompt": f.keyframe_last_prompt or "",
         "preview_path": f.preview_path,
         "duration_hint_sec": f.duration_hint_sec,
         "is_new_shot": f.is_new_shot,
     }
+
+
+_KEYFRAME_PHASES: tuple[tuple[str, str, str], ...] = (
+    (
+        "first",
+        "keyframe_first_path",
+        "Opening keyframe of this beat — establishing shot, action just beginning.",
+    ),
+    (
+        "mid",
+        "keyframe_mid_path",
+        "Midpoint keyframe of this beat — peak action and strongest pose.",
+    ),
+    (
+        "last",
+        "keyframe_last_path",
+        "Closing keyframe of this beat — action resolving, ready to continue.",
+    ),
+)
+
+_KEYFRAME_PROMPT_ATTR = {
+    "first": "keyframe_first_prompt",
+    "mid": "keyframe_mid_prompt",
+    "last": "keyframe_last_prompt",
+}
+
+_KEYFRAME_PATH_ATTR = {
+    "first": "keyframe_first_path",
+    "mid": "keyframe_mid_path",
+    "last": "keyframe_last_path",
+}
+
+
+def _phase_prompt(
+    *,
+    phase_label: str,
+    beat: str,
+    premise: str,
+    next_beat: str | None,
+) -> str:
+    world = _truncate(premise or "", 280)
+    beat_bit = _truncate(beat or "", 280)
+    parts = [
+        "Photorealistic cinematic still photograph, one continuous camera shot, one moment only.",
+        phase_label,
+    ]
+    if world:
+        parts.append(f"Film continuity for: {world}.")
+    if beat_bit:
+        parts.append(f"Beat: {beat_bit}.")
+    if next_beat and "Closing" in phase_label:
+        parts.append(f"Leans toward the next beat: {_truncate(next_beat, 160)}.")
+    parts.append(
+        "Same cast, wardrobe, and location look; do not show a multi-panel layout."
+    )
+    return " ".join(parts)
+
+
+def _seed_all_keyframe_prompts(project_id: int, *, force: bool = False) -> None:
+    with SessionLocal() as db:
+        p = db.get(Project, project_id)
+        if not p:
+            raise KeyError(f"project {project_id} not found")
+        frames = sorted(p.frames, key=lambda x: x.position)
+        premise = p.premise or ""
+        for i, f in enumerate(frames):
+            beat = f.visual_prompt or f.description or ""
+            next_beat = None
+            if i + 1 < len(frames):
+                nxt = frames[i + 1]
+                next_beat = nxt.visual_prompt or nxt.description or ""
+            for phase, _path_attr, label in _KEYFRAME_PHASES:
+                attr = _KEYFRAME_PROMPT_ATTR[phase]
+                if not force and (getattr(f, attr) or "").strip():
+                    continue
+                setattr(
+                    f,
+                    attr,
+                    _phase_prompt(
+                        phase_label=label,
+                        beat=beat,
+                        premise=premise,
+                        next_beat=next_beat,
+                    ),
+                )
+        db.commit()
+
+
+def rebuild_frame_keyframe_prompts(project_id: int, frame_id: int) -> dict[str, Any]:
+    """Recompute first/mid/last keyframe prompts from beat + premise (+ next beat)."""
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+        p = db.get(Project, project_id)
+        assert p is not None
+        frames = sorted(p.frames, key=lambda x: x.position)
+        idx = next(i for i, fr in enumerate(frames) if fr.id == frame_id)
+        beat = f.visual_prompt or f.description or ""
+        premise = p.premise or ""
+        next_beat = None
+        if idx + 1 < len(frames):
+            nxt = frames[idx + 1]
+            next_beat = nxt.visual_prompt or nxt.description or ""
+        for phase, _path_attr, label in _KEYFRAME_PHASES:
+            setattr(
+                f,
+                _KEYFRAME_PROMPT_ATTR[phase],
+                _phase_prompt(
+                    phase_label=label,
+                    beat=beat,
+                    premise=premise,
+                    next_beat=next_beat,
+                ),
+            )
+        db.commit()
+        db.refresh(f)
+        return _frame_dict(f)
 
 
 def _frames_payload(project_id: int) -> list[dict[str, Any]]:
@@ -71,6 +192,7 @@ async def propose_storyboard(project_id: int, max_frames: int = 8) -> list[dict[
                 )
             )
         db.commit()
+    _seed_all_keyframe_prompts(project_id, force=True)
     return _frames_payload(project_id)
 
 
@@ -83,6 +205,9 @@ def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any
         "position",
         "still_path",
         "preview_path",
+        "keyframe_first_prompt",
+        "keyframe_mid_prompt",
+        "keyframe_last_prompt",
     }
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
@@ -679,50 +804,6 @@ async def generate_all_between_stills(
     }
 
 
-_KEYFRAME_PHASES: tuple[tuple[str, str, str], ...] = (
-    (
-        "first",
-        "keyframe_first_path",
-        "Opening keyframe of this beat — establishing shot, action just beginning.",
-    ),
-    (
-        "mid",
-        "keyframe_mid_path",
-        "Midpoint keyframe of this beat — peak action and strongest pose.",
-    ),
-    (
-        "last",
-        "keyframe_last_path",
-        "Closing keyframe of this beat — action resolving, ready to continue.",
-    ),
-)
-
-
-def _phase_prompt(
-    *,
-    phase_label: str,
-    beat: str,
-    premise: str,
-    next_beat: str | None,
-) -> str:
-    world = _truncate(premise or "", 280)
-    beat_bit = _truncate(beat or "", 280)
-    parts = [
-        "Photorealistic cinematic still photograph, one continuous camera shot, one moment only.",
-        phase_label,
-    ]
-    if world:
-        parts.append(f"Film continuity for: {world}.")
-    if beat_bit:
-        parts.append(f"Beat: {beat_bit}.")
-    if next_beat and "Closing" in phase_label:
-        parts.append(f"Leans toward the next beat: {_truncate(next_beat, 160)}.")
-    parts.append(
-        "Same cast, wardrobe, and location look; do not show a multi-panel layout."
-    )
-    return " ".join(parts)
-
-
 async def _render_keyframe_image(
     *,
     project_id: int,
@@ -790,40 +871,33 @@ async def generate_frame_keyframes(
     skip_existing: bool = True,
 ) -> dict[str, Any]:
     """Create first / mid / last keyframe stills for one storyboard step."""
+    _seed_all_keyframe_prompts(project_id, force=False)
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
             raise KeyError(f"frame {frame_id} not found")
-        p = db.get(Project, project_id)
-        assert p is not None
-        frames = sorted(p.frames, key=lambda x: x.position)
-        idx = next(i for i, fr in enumerate(frames) if fr.id == frame_id)
-        beat = f.visual_prompt or f.description or ""
-        premise = p.premise or ""
-        next_beat = None
-        if idx + 1 < len(frames):
-            nxt = frames[idx + 1]
-            next_beat = nxt.visual_prompt or nxt.description or ""
         source_still = f.still_path
         existing = {
             "first": f.keyframe_first_path,
             "mid": f.keyframe_mid_path,
             "last": f.keyframe_last_path,
         }
+        prompts = {
+            "first": f.keyframe_first_prompt or "",
+            "mid": f.keyframe_mid_prompt or "",
+            "last": f.keyframe_last_prompt or "",
+        }
 
     paths: dict[str, str | None] = dict(existing)
     generated: list[str] = []
     skipped: list[str] = []
-    for i, (phase, attr, label) in enumerate(_KEYFRAME_PHASES):
+    for i, (phase, attr, _label) in enumerate(_KEYFRAME_PHASES):
         if skip_existing and existing.get(phase):
             skipped.append(phase)
             continue
-        prompt = _phase_prompt(
-            phase_label=label,
-            beat=beat,
-            premise=premise,
-            next_beat=next_beat,
-        )
+        prompt = (prompts.get(phase) or "").strip()
+        if not prompt:
+            raise ValueError(f"frame {frame_id} has no {phase} keyframe prompt")
         dest = await _render_keyframe_image(
             project_id=project_id,
             frame_id=frame_id,
@@ -849,6 +923,125 @@ async def generate_frame_keyframes(
         "keyframe_mid_path": paths.get("mid"),
         "keyframe_last_path": paths.get("last"),
     }
+
+
+async def generate_one_keyframe(
+    project_id: int,
+    frame_id: int,
+    phase: str,
+    *,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """Render a single keyframe phase from its stored prompt."""
+    if phase not in _KEYFRAME_PATH_ATTR:
+        raise ValueError("phase must be first, mid, or last")
+    _seed_all_keyframe_prompts(project_id, force=False)
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+        prompt = (getattr(f, _KEYFRAME_PROMPT_ATTR[phase]) or "").strip()
+        source_still = f.still_path
+        old_path = getattr(f, _KEYFRAME_PATH_ATTR[phase])
+    if not prompt:
+        raise ValueError(f"frame {frame_id} has no {phase} keyframe prompt")
+    phase_index = next(i for i, (p, *_rest) in enumerate(_KEYFRAME_PHASES) if p == phase)
+    dest = await _render_keyframe_image(
+        project_id=project_id,
+        frame_id=frame_id,
+        phase=phase,
+        prompt=prompt,
+        source_still=source_still,
+        seed=seed if seed is not None else (frame_id * 31 + phase_index * 97),
+    )
+    if old_path:
+        try:
+            old = _resolve_media_file(old_path)
+            if old.resolve() != dest.resolve() and old.is_file():
+                old.unlink()
+        except (FileNotFoundError, ValueError, OSError):
+            pass
+    with SessionLocal() as db:
+        fr = db.get(StoryboardFrame, frame_id)
+        assert fr
+        setattr(fr, _KEYFRAME_PATH_ATTR[phase], str(dest))
+        db.commit()
+        db.refresh(fr)
+        return _frame_dict(fr)
+
+
+async def edit_frame_keyframe(
+    project_id: int,
+    frame_id: int,
+    phase: str,
+    *,
+    instruction: str,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """Prompt-edit an existing keyframe (or still as fallback) into that phase slot."""
+    if phase not in _KEYFRAME_PATH_ATTR:
+        raise ValueError("phase must be first, mid, or last")
+    settings = get_settings()
+    path_attr = _KEYFRAME_PATH_ATTR[phase]
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+        keyframe_stored = getattr(f, path_attr)
+        source_stored = keyframe_stored or f.still_path
+        if not source_stored:
+            raise ValueError(
+                f"frame has no {phase} keyframe or still to edit — generate one first"
+            )
+        frame_prompt = (
+            getattr(f, _KEYFRAME_PROMPT_ATTR[phase])
+            or f.visual_prompt
+            or f.description
+            or ""
+        )
+
+    source = _resolve_media_file(source_stored)
+    prompt = build_edit_prompt(instruction=instruction, frame_prompt=frame_prompt)
+    comfy = ComfyUIClient()
+    uploaded = await comfy.upload_image(source)
+    params = {
+        "positive_prompt": prompt,
+        "negative_prompt": still_negative_prompt(frame_prompt),
+        "seed": seed if seed is not None else (frame_id * 31 + 53),
+        "filename_prefix": f"local_video/p{project_id}_f{frame_id}_kf_{phase}_edit",
+        "width": 1024,
+        "height": 576,
+        "steps": 20,
+        "cfg": 5.0,
+    }
+    graph = apply_params("still_edit", params, uploaded_image_name=uploaded)
+    prompt_id = await comfy.queue_prompt(graph)
+    history = await comfy.wait_for_prompt(prompt_id)
+    outputs = comfy.collect_outputs(history)
+    if not outputs:
+        raise RuntimeError("ComfyUI produced no outputs")
+
+    media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+    media.mkdir(parents=True, exist_ok=True)
+    out = outputs[0]
+    dest = media / f"keyframe_{phase}_{out['filename']}"
+    await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+
+    if keyframe_stored:
+        try:
+            old = _resolve_media_file(keyframe_stored)
+            if old.resolve() != dest.resolve() and old.is_file():
+                old.unlink()
+        except (FileNotFoundError, ValueError, OSError):
+            pass
+
+    with SessionLocal() as db:
+        fr = db.get(StoryboardFrame, frame_id)
+        assert fr
+        setattr(fr, path_attr, str(dest))
+        db.commit()
+        db.refresh(fr)
+        return _frame_dict(fr)
 
 
 async def generate_all_keyframes(

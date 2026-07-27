@@ -68,15 +68,52 @@ def update_frame(
     visual_prompt: str | None = None,
     duration_hint_sec: float | None = None,
     is_new_shot: bool | None = None,
+    keyframe_first_prompt: str | None = None,
+    keyframe_mid_prompt: str | None = None,
+    keyframe_last_prompt: str | None = None,
 ) -> dict:
-    """Update a storyboard frame."""
+    """Update a storyboard frame (beat text and/or keyframe prompts)."""
     fields = {
         "description": description,
         "visual_prompt": visual_prompt,
         "duration_hint_sec": duration_hint_sec,
         "is_new_shot": is_new_shot,
+        "keyframe_first_prompt": keyframe_first_prompt,
+        "keyframe_mid_prompt": keyframe_mid_prompt,
+        "keyframe_last_prompt": keyframe_last_prompt,
     }
     return sb_svc.update_frame(project_id, frame_id, **{k: v for k, v in fields.items() if v is not None})
+
+
+@mcp.tool()
+def rebuild_frame_keyframe_prompts(project_id: int, frame_id: int) -> dict:
+    """Rebuild first/mid/last keyframe prompts from the beat + premise."""
+    return sb_svc.rebuild_frame_keyframe_prompts(project_id, frame_id)
+
+
+@mcp.tool()
+async def generate_one_keyframe(
+    project_id: int,
+    frame_id: int,
+    phase: str,
+    seed: int | None = None,
+) -> dict:
+    """Render one keyframe phase (first|mid|last) from its stored prompt."""
+    return await sb_svc.generate_one_keyframe(project_id, frame_id, phase, seed=seed)
+
+
+@mcp.tool()
+async def edit_frame_keyframe(
+    project_id: int,
+    frame_id: int,
+    phase: str,
+    instruction: str,
+    seed: int | None = None,
+) -> dict:
+    """Prompt-edit a keyframe image for one phase."""
+    return await sb_svc.edit_frame_keyframe(
+        project_id, frame_id, phase, instruction=instruction, seed=seed
+    )
 
 
 @mcp.tool()

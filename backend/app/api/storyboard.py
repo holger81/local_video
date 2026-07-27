@@ -16,6 +16,9 @@ class FrameUpdate(BaseModel):
     duration_hint_sec: float | None = None
     is_new_shot: bool | None = None
     position: int | None = None
+    keyframe_first_prompt: str | None = None
+    keyframe_mid_prompt: str | None = None
+    keyframe_last_prompt: str | None = None
 
 
 class VisualIn(BaseModel):
@@ -27,6 +30,15 @@ class VisualIn(BaseModel):
 class EditStillIn(BaseModel):
     instruction: str
     workflow_id: str | None = None
+    seed: int | None = None
+
+
+class EditKeyframeIn(BaseModel):
+    instruction: str
+    seed: int | None = None
+
+
+class KeyframePhaseIn(BaseModel):
     seed: int | None = None
 
 
@@ -167,6 +179,51 @@ async def frame_keyframes(project_id: int, frame_id: int, body: KeyframesIn | No
         raise HTTPException(404, str(e)) from e
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
+@router.post("/frames/{frame_id}/keyframes/rebuild-prompts")
+def rebuild_keyframe_prompts(project_id: int, frame_id: int):
+    try:
+        return sb_svc.rebuild_frame_keyframe_prompts(project_id, frame_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+
+
+@router.post("/frames/{frame_id}/keyframes/{phase}")
+async def frame_one_keyframe(
+    project_id: int, frame_id: int, phase: str, body: KeyframePhaseIn | None = None
+):
+    body = body or KeyframePhaseIn()
+    try:
+        return await sb_svc.generate_one_keyframe(
+            project_id, frame_id, phase, seed=body.seed
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
+@router.post("/frames/{frame_id}/keyframes/{phase}/edit")
+async def edit_keyframe(project_id: int, frame_id: int, phase: str, body: EditKeyframeIn):
+    try:
+        return await sb_svc.edit_frame_keyframe(
+            project_id,
+            frame_id,
+            phase,
+            instruction=body.instruction,
+            seed=body.seed,
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
     except Exception as e:
         raise HTTPException(500, str(e)) from e
 

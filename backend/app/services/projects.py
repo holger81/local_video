@@ -36,6 +36,12 @@ def create_project(title: str, genre: str = "", premise: str = "") -> dict[str, 
 
 
 def get_project(project_id: int) -> dict[str, Any]:
+    from app.services.storyboard import _seed_all_keyframe_prompts
+
+    try:
+        _seed_all_keyframe_prompts(project_id, force=False)
+    except KeyError:
+        pass
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         if not p:
@@ -55,6 +61,9 @@ def _frame_dict_from_orm(f) -> dict[str, Any]:
         "keyframe_first_path": getattr(f, "keyframe_first_path", None),
         "keyframe_mid_path": getattr(f, "keyframe_mid_path", None),
         "keyframe_last_path": getattr(f, "keyframe_last_path", None),
+        "keyframe_first_prompt": getattr(f, "keyframe_first_prompt", "") or "",
+        "keyframe_mid_prompt": getattr(f, "keyframe_mid_prompt", "") or "",
+        "keyframe_last_prompt": getattr(f, "keyframe_last_prompt", "") or "",
         "preview_path": f.preview_path,
         "duration_hint_sec": f.duration_hint_sec,
         "is_new_shot": f.is_new_shot,

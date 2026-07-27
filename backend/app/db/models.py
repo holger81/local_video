@@ -66,6 +66,10 @@ class StoryboardFrame(Base):
     keyframe_first_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     keyframe_mid_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     keyframe_last_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Editable prompts used to render each keyframe (seeded from the beat)
+    keyframe_first_prompt: Mapped[str] = mapped_column(Text, default="")
+    keyframe_mid_prompt: Mapped[str] = mapped_column(Text, default="")
+    keyframe_last_prompt: Mapped[str] = mapped_column(Text, default="")
     preview_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     duration_hint_sec: Mapped[float] = mapped_column(Float, default=4.0)
     is_new_shot: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -178,6 +182,9 @@ def _migrate_sqlite(engine) -> None:
             "keyframe_first_path": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_first_path VARCHAR(512)",
             "keyframe_mid_path": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_mid_path VARCHAR(512)",
             "keyframe_last_path": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_last_path VARCHAR(512)",
+            "keyframe_first_prompt": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_first_prompt TEXT DEFAULT ''",
+            "keyframe_mid_prompt": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_mid_prompt TEXT DEFAULT ''",
+            "keyframe_last_prompt": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_last_prompt TEXT DEFAULT ''",
         }
         for name, ddl in additions.items():
             if name not in cols:

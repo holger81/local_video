@@ -137,6 +137,9 @@ function ProjectPage() {
   const [visualBusy, setVisualBusy] = useState(null);
   const [lightbox, setLightbox] = useState(null);
   const [editDrafts, setEditDrafts] = useState({});
+  const [keyframeEditorId, setKeyframeEditorId] = useState(null);
+  const [editorDraft, setEditorDraft] = useState(null);
+  const [kfEditDrafts, setKfEditDrafts] = useState({});
   const [err, setErr] = useState("");
   const [job, setJob] = useState(null);
   const [movieForm, setMovieForm] = useState({
@@ -177,6 +180,38 @@ function ProjectPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [lightbox]);
+
+  useEffect(() => {
+    if (!keyframeEditorId || !project) return;
+    const f = (project.frames || []).find((x) => x.id === keyframeEditorId);
+    if (!f) {
+      setKeyframeEditorId(null);
+      setEditorDraft(null);
+      return;
+    }
+    setEditorDraft({
+      description: f.description || "",
+      visual_prompt: f.visual_prompt || "",
+      duration_hint_sec: f.duration_hint_sec ?? 4,
+      is_new_shot: !!f.is_new_shot,
+      keyframe_first_prompt: f.keyframe_first_prompt || "",
+      keyframe_mid_prompt: f.keyframe_mid_prompt || "",
+      keyframe_last_prompt: f.keyframe_last_prompt || "",
+    });
+  }, [keyframeEditorId, project]);
+
+  useEffect(() => {
+    if (!keyframeEditorId) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape" && !lightbox) {
+        setKeyframeEditorId(null);
+        setEditorDraft(null);
+        setKfEditDrafts({});
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [keyframeEditorId, lightbox]);
 
   if (!project) {
     return (
@@ -232,6 +267,97 @@ function ProjectPage() {
         body: JSON.stringify({ instruction }),
       });
       setEditDrafts((prev) => ({ ...prev, [frameId]: "" }));
+      await load();
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setVisualBusy(null);
+      setBusy("");
+    }
+  };
+
+  const openKeyframeEditor = (frameId) => {
+    setKfEditDrafts({});
+    setKeyframeEditorId(frameId);
+  };
+
+  const patchEditorFields = async () => {
+    if (!keyframeEditorId || !editorDraft) return;
+    await api(`/projects/${id}/storyboard/frames/${keyframeEditorId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        description: editorDraft.description,
+        visual_prompt: editorDraft.visual_prompt,
+        duration_hint_sec: Number(editorDraft.duration_hint_sec) || 4,
+        is_new_shot: !!editorDraft.is_new_shot,
+        keyframe_first_prompt: editorDraft.keyframe_first_prompt,
+        keyframe_mid_prompt: editorDraft.keyframe_mid_prompt,
+        keyframe_last_prompt: editorDraft.keyframe_last_prompt,
+      }),
+    });
+  };
+
+  const saveKeyframeEditor = async () => {
+    if (!keyframeEditorId || !editorDraft) return;
+    setBusy(`save step ${keyframeEditorId}`);
+    setErr("");
+    try {
+      await patchEditorFields();
+      await load();
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const rebuildKeyframePrompts = async () => {
+    if (!keyframeEditorId) return;
+    await run(`rebuild prompts ${keyframeEditorId}`, async () => {
+      await patchEditorFields();
+      await api(
+        `/projects/${id}/storyboard/frames/${keyframeEditorId}/keyframes/rebuild-prompts`,
+        { method: "POST" }
+      );
+    });
+  };
+
+  const renderOneKeyframe = async (phase) => {
+    if (!keyframeEditorId) return;
+    setBusy(`keyframe ${phase}`);
+    setVisualBusy({ frameId: keyframeEditorId, kind: `keyframe_${phase}` });
+    setErr("");
+    try {
+      await patchEditorFields();
+      await api(
+        `/projects/${id}/storyboard/frames/${keyframeEditorId}/keyframes/${phase}`,
+        { method: "POST", body: JSON.stringify({}) }
+      );
+      await load();
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setVisualBusy(null);
+      setBusy("");
+    }
+  };
+
+  const editOneKeyframe = async (phase) => {
+    if (!keyframeEditorId) return;
+    const instruction = (kfEditDrafts[phase] || "").trim();
+    if (!instruction) {
+      setErr(`Enter an edit instruction for the ${phase} keyframe.`);
+      return;
+    }
+    setBusy(`edit keyframe ${phase}`);
+    setVisualBusy({ frameId: keyframeEditorId, kind: `keyframe_${phase}` });
+    setErr("");
+    try {
+      await api(
+        `/projects/${id}/storyboard/frames/${keyframeEditorId}/keyframes/${phase}/edit`,
+        { method: "POST", body: JSON.stringify({ instruction }) }
+      );
+      setKfEditDrafts((prev) => ({ ...prev, [phase]: "" }));
       await load();
     } catch (e) {
       setErr(String(e.message || e));
@@ -462,6 +588,9 @@ function ProjectPage() {
 
       <section className="card-like">
         <h2>2. Storyboard</h2>
+        <p className="muted">
+          Propose beats, then on each card: hero still → keyframes → motion.
+        </p>
         <div className="row">
           <button
             type="button"
@@ -475,7 +604,7 @@ function ProjectPage() {
               )
             }
           >
-            Propose frames
+            Propose storyboard beats
           </button>
           <button
             type="button"
@@ -483,9 +612,9 @@ function ProjectPage() {
               !!busy || !(project.frames || []).some((f) => !f.still_path)
             }
             onClick={() => createMissingVisuals("still")}
-            title="Generate stills only for frames that do not have one yet"
+            title="Generate a hero still only for beats that do not have one yet"
           >
-            Create missing stills
+            Create missing hero stills
           </button>
           <button
             type="button"
@@ -494,15 +623,23 @@ function ProjectPage() {
               run("approve board", () => api(`/projects/${id}/storyboard/approve`, { method: "POST" }))
             }
           >
-            Approve board
+            Approve storyboard
           </button>
         </div>
         <div className="frames">
           {(project.frames || []).map((f) => (
             <article key={f.id} className="frame">
               <header>
-                <span>#{f.position + 1}</span>
-                <span className="tag">{f.is_new_shot ? "new shot" : "continue"}</span>
+                <button
+                  type="button"
+                  className="frame-open"
+                  onClick={() => openKeyframeEditor(f.id)}
+                  title="Open keyframe editor for this step"
+                >
+                  <span>#{f.position + 1}</span>
+                  <span className="tag">{f.is_new_shot ? "new shot" : "continue"}</span>
+                  <span className="frame-open-hint">Open step editor</span>
+                </button>
               </header>
               <textarea
                 rows={3}
@@ -514,184 +651,228 @@ function ProjectPage() {
                   }).then(load)
                 }
               />
-              <div className="row">
-                <button
-                  type="button"
-                  disabled={!!busy}
-                  onClick={() => generateVisual(f.id, "still")}
-                >
-                  Still
-                </button>
-                <button
-                  type="button"
-                  disabled={!!busy}
-                  onClick={() => generateVisual(f.id, "preview")}
-                >
-                  Preview clip
-                </button>
-                <button
-                  type="button"
-                  disabled={!!busy}
-                  onClick={() =>
-                    run(`keyframes ${f.id}`, async () => {
-                      setVisualBusy({ frameId: f.id, kind: "keyframes" });
-                      try {
-                        await api(`/projects/${id}/storyboard/frames/${f.id}/keyframes`, {
-                          method: "POST",
-                          body: JSON.stringify({ skip_existing: true }),
-                        });
-                      } finally {
-                        setVisualBusy(null);
-                      }
-                    })
-                  }
-                  title="Create first, mid, and last keyframe images for this step"
-                >
-                  Keyframes
-                </button>
-                <button
-                  type="button"
-                  disabled={
-                    !!busy ||
-                    !(f.keyframe_first_path && f.keyframe_mid_path && f.keyframe_last_path)
-                  }
-                  onClick={() =>
-                    run(`step clips ${f.id}`, async () => {
-                      setVisualBusy({ frameId: f.id, kind: "step_clips" });
-                      try {
-                        await api(`/projects/${id}/storyboard/frames/${f.id}/step-clips`, {
-                          method: "POST",
-                          body: JSON.stringify({ num_frames: 33 }),
-                        });
-                      } finally {
-                        setVisualBusy(null);
-                      }
-                    })
-                  }
-                  title="I2V first→mid and mid→last, concat to preview"
-                >
-                  Step clips
-                </button>
-                {(() => {
-                  const frames = [...(project.frames || [])].sort(
-                    (a, b) => a.position - b.position
-                  );
-                  const next = frames.find((x) => x.position === f.position + 1);
-                  const canBetween = !!(
-                    (f.keyframe_last_path || f.still_path) &&
-                    (next?.keyframe_first_path || next?.still_path)
-                  );
-                  return (
-                    <button
-                      type="button"
-                      disabled={!!busy || !canBetween}
-                      onClick={() =>
-                        run(`between stills ${f.id}`, async () => {
-                          setVisualBusy({ frameId: f.id, kind: "between" });
-                          try {
-                            await api(
-                              `/projects/${id}/storyboard/frames/${f.id}/between-stills`,
-                              {
-                                method: "POST",
-                                body: JSON.stringify({ num_frames: 33 }),
-                              }
-                            );
-                          } finally {
-                            setVisualBusy(null);
-                          }
-                        })
-                      }
-                      title={
-                        canBetween
-                          ? "Bridge clip from this step toward the next"
-                          : "Needs this step's last keyframe/still and the next first"
-                      }
-                    >
-                      Between steps
-                    </button>
-                  );
-                })()}
-              </div>
-              {mediaUrl(f.still_path) && (
-                <div className="still-edit">
-                  <input
-                    className="still-edit-input"
-                    placeholder="Edit still… e.g. make the dress red"
-                    value={editDrafts[f.id] || ""}
-                    disabled={!!busy}
-                    onChange={(e) =>
-                      setEditDrafts((prev) => ({ ...prev, [f.id]: e.target.value }))
-                    }
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        editStill(f.id);
-                      }
-                    }}
-                  />
+
+              <div className="frame-stage">
+                <div className="frame-stage-head">
+                  <strong>1. Hero still</strong>
+                  <span className="tiny muted">Reference image for this beat</span>
+                </div>
+                <div className="frame-stage-actions">
                   <button
                     type="button"
-                    disabled={!!busy || !(editDrafts[f.id] || "").trim()}
-                    onClick={() => editStill(f.id)}
-                    title="Modify the existing still with this instruction"
+                    disabled={!!busy}
+                    onClick={() => generateVisual(f.id, "still")}
+                    title="Generate the main still for this storyboard step"
                   >
-                    Edit still
+                    {f.still_path ? "Replace hero still" : "Create hero still"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    disabled={!!busy}
+                    onClick={() => generateVisual(f.id, "preview")}
+                    title="One short video from this beat only — skips the keyframe pipeline"
+                  >
+                    Quick preview video
                   </button>
                 </div>
-              )}
-              <div className="keyframe-row">
-                {[
-                  ["first", f.keyframe_first_path, "keyframe_first"],
-                  ["mid", f.keyframe_mid_path, "keyframe_mid"],
-                  ["last", f.keyframe_last_path, "keyframe_last"],
-                ].map(([label, path, kind]) => (
-                  <div key={label} className="keyframe-slot">
-                    <span className="tiny muted">{label}</span>
-                    {mediaUrl(path) ? (
-                      <div className="media-item">
-                        <button
-                          type="button"
-                          className="media-open"
-                          onClick={() =>
-                            setLightbox({
-                              frameId: f.id,
-                              kind,
-                              src: `${mediaUrl(path)}?t=${encodeURIComponent(path)}`,
-                              label: `Frame ${f.position + 1} ${label}`,
-                            })
-                          }
-                        >
-                          <img
-                            className="thumb keyframe-thumb"
-                            src={`${mediaUrl(path)}?t=${encodeURIComponent(path)}`}
-                            alt={`${label} keyframe`}
-                          />
-                        </button>
-                        <button
-                          type="button"
-                          className="media-delete"
-                          aria-label={`Delete ${label} keyframe`}
-                          onClick={(e) => deleteMedia(f.id, kind, e)}
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ) : (
-                      <div
-                        className={`thumb-placeholder keyframe-thumb${
-                          visualBusy?.frameId === f.id && visualBusy.kind === "keyframes"
-                            ? " is-busy"
-                            : ""
-                        }`}
-                      >
-                        {visualBusy?.frameId === f.id && visualBusy.kind === "keyframes" && (
-                          <span className="spinner" />
-                        )}
-                      </div>
-                    )}
+                {mediaUrl(f.still_path) && (
+                  <div className="still-edit">
+                    <input
+                      className="still-edit-input"
+                      placeholder="Tweak the still… e.g. make the dress red"
+                      value={editDrafts[f.id] || ""}
+                      disabled={!!busy}
+                      onChange={(e) =>
+                        setEditDrafts((prev) => ({ ...prev, [f.id]: e.target.value }))
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          editStill(f.id);
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      disabled={!!busy || !(editDrafts[f.id] || "").trim()}
+                      onClick={() => editStill(f.id)}
+                      title="Change the existing hero still using this instruction"
+                    >
+                      Apply still edit
+                    </button>
                   </div>
-                ))}
+                )}
               </div>
+
+              <div className="frame-stage">
+                <div className="frame-stage-head">
+                  <strong>2. Keyframes</strong>
+                  <span className="tiny muted">First → mid → last moments in this beat</span>
+                </div>
+                <div className="frame-stage-actions">
+                  <button
+                    type="button"
+                    disabled={!!busy}
+                    onClick={() => openKeyframeEditor(f.id)}
+                    title="Edit prompts and regenerate or tweak each keyframe"
+                  >
+                    Open keyframe editor
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    disabled={!!busy}
+                    onClick={() =>
+                      run(`keyframes ${f.id}`, async () => {
+                        setVisualBusy({ frameId: f.id, kind: "keyframes" });
+                        try {
+                          await api(`/projects/${id}/storyboard/frames/${f.id}/keyframes`, {
+                            method: "POST",
+                            body: JSON.stringify({ skip_existing: true }),
+                          });
+                        } finally {
+                          setVisualBusy(null);
+                        }
+                      })
+                    }
+                    title="Create any missing first/mid/last keyframe images"
+                  >
+                    Create missing keyframe images
+                  </button>
+                </div>
+                <div className="keyframe-row">
+                  {[
+                    ["first", f.keyframe_first_path, "keyframe_first", "Start"],
+                    ["mid", f.keyframe_mid_path, "keyframe_mid", "Middle"],
+                    ["last", f.keyframe_last_path, "keyframe_last", "End"],
+                  ].map(([label, path, kind, nice]) => (
+                    <div key={label} className="keyframe-slot">
+                      <span className="tiny muted">{nice}</span>
+                      {mediaUrl(path) ? (
+                        <div className="media-item">
+                          <button
+                            type="button"
+                            className="media-open"
+                            onClick={() => openKeyframeEditor(f.id)}
+                            title={`Open keyframe editor (${nice})`}
+                          >
+                            <img
+                              className="thumb keyframe-thumb"
+                              src={`${mediaUrl(path)}?t=${encodeURIComponent(path)}`}
+                              alt={`${nice} keyframe`}
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            className="media-delete"
+                            aria-label={`Delete ${nice} keyframe`}
+                            onClick={(e) => deleteMedia(f.id, kind, e)}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className={`thumb-placeholder keyframe-thumb${
+                            visualBusy?.frameId === f.id &&
+                            (visualBusy.kind === "keyframes" ||
+                              visualBusy.kind === `keyframe_${label}`)
+                              ? " is-busy"
+                              : ""
+                          }`}
+                          onClick={() => openKeyframeEditor(f.id)}
+                          title="Open keyframe editor"
+                        >
+                          {visualBusy?.frameId === f.id &&
+                            (visualBusy.kind === "keyframes" ||
+                              visualBusy.kind === `keyframe_${label}`) && (
+                              <span className="spinner" />
+                            )}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="frame-stage">
+                <div className="frame-stage-head">
+                  <strong>3. Motion</strong>
+                  <span className="tiny muted">Turn keyframes into short video</span>
+                </div>
+                <div className="frame-stage-actions">
+                  <button
+                    type="button"
+                    disabled={
+                      !!busy ||
+                      !(f.keyframe_first_path && f.keyframe_mid_path && f.keyframe_last_path)
+                    }
+                    onClick={() =>
+                      run(`step clips ${f.id}`, async () => {
+                        setVisualBusy({ frameId: f.id, kind: "step_clips" });
+                        try {
+                          await api(`/projects/${id}/storyboard/frames/${f.id}/step-clips`, {
+                            method: "POST",
+                            body: JSON.stringify({ num_frames: 33 }),
+                          });
+                        } finally {
+                          setVisualBusy(null);
+                        }
+                      })
+                    }
+                    title={
+                      f.keyframe_first_path && f.keyframe_mid_path && f.keyframe_last_path
+                        ? "Animate start→middle and middle→end, then combine into the preview"
+                        : "Needs start, middle, and end keyframe images first"
+                    }
+                  >
+                    Animate this beat
+                  </button>
+                  {(() => {
+                    const frames = [...(project.frames || [])].sort(
+                      (a, b) => a.position - b.position
+                    );
+                    const next = frames.find((x) => x.position === f.position + 1);
+                    const canBetween = !!(
+                      (f.keyframe_last_path || f.still_path) &&
+                      (next?.keyframe_first_path || next?.still_path)
+                    );
+                    return (
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        disabled={!!busy || !canBetween}
+                        onClick={() =>
+                          run(`between stills ${f.id}`, async () => {
+                            setVisualBusy({ frameId: f.id, kind: "between" });
+                            try {
+                              await api(
+                                `/projects/${id}/storyboard/frames/${f.id}/between-stills`,
+                                {
+                                  method: "POST",
+                                  body: JSON.stringify({ num_frames: 33 }),
+                                }
+                              );
+                            } finally {
+                              setVisualBusy(null);
+                            }
+                          })
+                        }
+                        title={
+                          canBetween
+                            ? "Create a bridge clip from this beat’s end into the next beat’s start"
+                            : "Needs this beat’s end image and the next beat’s start image"
+                        }
+                      >
+                        Bridge into next beat
+                      </button>
+                    );
+                  })()}
+                </div>
+              </div>
+
               <div className="media-slot">
                 {(mediaUrl(f.still_path) ||
                   (visualBusy?.frameId === f.id &&
@@ -734,7 +915,7 @@ function ProjectPage() {
                         <div className="thumb-overlay" aria-busy="true">
                           <span className="spinner" />
                           <span className="tiny">
-                            {visualBusy.kind === "edit" ? "Editing still…" : "Creating still…"}
+                            {visualBusy.kind === "edit" ? "Editing hero still…" : "Creating hero still…"}
                           </span>
                         </div>
                       )}
@@ -788,10 +969,10 @@ function ProjectPage() {
                         <span className="spinner" />
                         <span className="tiny">
                           {visualBusy.kind === "between"
-                            ? "Between steps…"
+                            ? "Bridging to next beat…"
                             : visualBusy.kind === "step_clips"
-                              ? "Step clips…"
-                              : "Creating preview…"}
+                              ? "Animating this beat…"
+                              : "Creating quick preview…"}
                         </span>
                       </div>
                     )}
@@ -804,12 +985,12 @@ function ProjectPage() {
       </section>
 
       <section className="card-like">
-        <h2>3. Keyframes &amp; clips</h2>
+        <h2>3. Batch keyframes &amp; motion</h2>
         <p className="muted">
-          After stills: build first / mid / last images per step, then animate between them
-          before the full movie.
+          Run the same steps across the whole board: keyframe images, animate each beat,
+          then bridge into the next beat.
         </p>
-        <div className="row">
+        <div className="frame-stage-actions batch-actions">
           <button
             type="button"
             disabled={
@@ -820,9 +1001,9 @@ function ProjectPage() {
               )
             }
             onClick={() => createMissingKeyframes()}
-            title="First, mid, and last stills for each storyboard step"
+            title="Create start/middle/end keyframe images for every beat that is missing any"
           >
-            Create missing keyframes
+            Create missing keyframe images
           </button>
           <button
             type="button"
@@ -837,9 +1018,9 @@ function ProjectPage() {
               )
             }
             onClick={() => createStepClips()}
-            title="I2V first→mid and mid→last for each step"
+            title="Animate start→middle→end for beats that already have all three keyframes but no preview"
           >
-            Create step clips
+            Animate beats missing a preview
           </button>
           <button
             type="button"
@@ -863,9 +1044,9 @@ function ProjectPage() {
               })()
             }
             onClick={() => createBetweenStills()}
-            title="Bridge clips from each step toward the next"
+            title="Create bridge clips from each beat’s end into the next beat’s start"
           >
-            Create between-steps clips
+            Bridge clips between beats
           </button>
         </div>
       </section>
@@ -989,6 +1170,248 @@ function ProjectPage() {
           </div>
         )}
       </section>
+      {keyframeEditorId && editorDraft && (() => {
+        const f = (project.frames || []).find((x) => x.id === keyframeEditorId);
+        if (!f) return null;
+        const phases = [
+          ["first", f.keyframe_first_path, "keyframe_first_prompt", "Start"],
+          ["mid", f.keyframe_mid_path, "keyframe_mid_prompt", "Middle"],
+          ["last", f.keyframe_last_path, "keyframe_last_prompt", "End"],
+        ];
+        return (
+          <div
+            className="kf-editor"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Keyframe editor step ${f.position + 1}`}
+            onClick={() => {
+              if (!busy) {
+                setKeyframeEditorId(null);
+                setEditorDraft(null);
+                setKfEditDrafts({});
+              }
+            }}
+          >
+            <div className="kf-editor-inner" onClick={(e) => e.stopPropagation()}>
+              <header className="kf-editor-head">
+                <div>
+                  <h2>Step #{f.position + 1} editor</h2>
+                  <p className="muted tiny">
+                    Edit the beat text the LLM wrote, plus the start / middle / end keyframe prompts.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="lightbox-close"
+                  aria-label="Close"
+                  disabled={!!busy}
+                  onClick={() => {
+                    setKeyframeEditorId(null);
+                    setEditorDraft(null);
+                    setKfEditDrafts({});
+                  }}
+                >
+                  ×
+                </button>
+              </header>
+
+              <div className="kf-editor-grid">
+                <label className="kf-field">
+                  <span>Description</span>
+                  <textarea
+                    rows={3}
+                    value={editorDraft.description}
+                    disabled={!!busy}
+                    onChange={(e) =>
+                      setEditorDraft((d) => ({ ...d, description: e.target.value }))
+                    }
+                  />
+                </label>
+                <label className="kf-field">
+                  <span>Visual prompt</span>
+                  <textarea
+                    rows={3}
+                    value={editorDraft.visual_prompt}
+                    disabled={!!busy}
+                    onChange={(e) =>
+                      setEditorDraft((d) => ({ ...d, visual_prompt: e.target.value }))
+                    }
+                  />
+                </label>
+                <div className="kf-field-row">
+                  <label className="kf-field">
+                    <span>Duration hint (sec)</span>
+                    <input
+                      type="number"
+                      min={0.5}
+                      step={0.5}
+                      value={editorDraft.duration_hint_sec}
+                      disabled={!!busy}
+                      onChange={(e) =>
+                        setEditorDraft((d) => ({
+                          ...d,
+                          duration_hint_sec: e.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="kf-check">
+                    <input
+                      type="checkbox"
+                      checked={!!editorDraft.is_new_shot}
+                      disabled={!!busy}
+                      onChange={(e) =>
+                        setEditorDraft((d) => ({ ...d, is_new_shot: e.target.checked }))
+                      }
+                    />
+                    New shot
+                  </label>
+                </div>
+              </div>
+
+              <div className="row kf-editor-actions">
+                <button type="button" disabled={!!busy} onClick={saveKeyframeEditor}>
+                  Save inputs
+                </button>
+                <button
+                  type="button"
+                  disabled={!!busy}
+                  onClick={rebuildKeyframePrompts}
+                  title="Rebuild first/mid/last prompts from description, visual prompt, and premise"
+                >
+                  Rebuild prompts from beat text
+                </button>
+                <button
+                  type="button"
+                  disabled={!!busy}
+                  onClick={() =>
+                    run(`keyframes ${f.id}`, async () => {
+                      setVisualBusy({ frameId: f.id, kind: "keyframes" });
+                      try {
+                        await patchEditorFields();
+                        await api(`/projects/${id}/storyboard/frames/${f.id}/keyframes`, {
+                          method: "POST",
+                          body: JSON.stringify({ skip_existing: false }),
+                        });
+                      } finally {
+                        setVisualBusy(null);
+                      }
+                    })
+                  }
+                >
+                  Regenerate all keyframe images
+                </button>
+              </div>
+
+              <div className="kf-phases">
+                {phases.map(([phase, path, promptKey, nice]) => {
+                  const busyPhase =
+                    visualBusy?.frameId === f.id &&
+                    (visualBusy.kind === "keyframes" ||
+                      visualBusy.kind === `keyframe_${phase}`);
+                  return (
+                    <section key={phase} className="kf-phase">
+                      <header>
+                        <strong>{nice}</strong>
+                        {mediaUrl(path) && (
+                          <button
+                            type="button"
+                            className="linkish"
+                            onClick={() =>
+                              setLightbox({
+                                frameId: f.id,
+                                kind: `keyframe_${phase}`,
+                                src: `${mediaUrl(path)}?t=${encodeURIComponent(path)}`,
+                                label: `Frame ${f.position + 1} ${nice}`,
+                              })
+                            }
+                          >
+                            Enlarge
+                          </button>
+                        )}
+                      </header>
+                      <div className="kf-phase-body">
+                        <div className="kf-phase-media">
+                          {mediaUrl(path) ? (
+                            <img
+                              className="thumb keyframe-thumb"
+                              src={`${mediaUrl(path)}?t=${encodeURIComponent(path)}`}
+                              alt={`${nice} keyframe`}
+                            />
+                          ) : (
+                            <div
+                              className={`thumb-placeholder keyframe-thumb${
+                                busyPhase ? " is-busy" : ""
+                              }`}
+                            >
+                              {busyPhase && <span className="spinner" />}
+                            </div>
+                          )}
+                          {busyPhase && mediaUrl(path) && (
+                            <div className="thumb-overlay" aria-busy="true">
+                              <span className="spinner" />
+                            </div>
+                          )}
+                        </div>
+                        <label className="kf-field">
+                          <span>{nice} keyframe prompt</span>
+                          <textarea
+                            rows={5}
+                            value={editorDraft[promptKey]}
+                            disabled={!!busy}
+                            onChange={(e) =>
+                              setEditorDraft((d) => ({
+                                ...d,
+                                [promptKey]: e.target.value,
+                              }))
+                            }
+                          />
+                        </label>
+                      </div>
+                      <div className="row">
+                        <button
+                          type="button"
+                          disabled={!!busy}
+                          onClick={() => renderOneKeyframe(phase)}
+                        >
+                          Generate {nice.toLowerCase()} image
+                        </button>
+                      </div>
+                      <div className="still-edit">
+                        <input
+                          className="still-edit-input"
+                          placeholder={`Tweak ${nice.toLowerCase()} image… e.g. warmer light`}
+                          value={kfEditDrafts[phase] || ""}
+                          disabled={!!busy}
+                          onChange={(e) =>
+                            setKfEditDrafts((prev) => ({
+                              ...prev,
+                              [phase]: e.target.value,
+                            }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              editOneKeyframe(phase);
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          disabled={!!busy || !(kfEditDrafts[phase] || "").trim()}
+                          onClick={() => editOneKeyframe(phase)}
+                        >
+                          Apply {nice.toLowerCase()} edit
+                        </button>
+                      </div>
+                    </section>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {lightbox && (
         <div
           className="lightbox"
