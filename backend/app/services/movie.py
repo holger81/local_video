@@ -94,6 +94,10 @@ async def start_movie(
                 "visual_prompt": f.visual_prompt,
                 "duration_hint_sec": f.duration_hint_sec,
                 "is_new_shot": f.is_new_shot,
+                "still_path": f.still_path,
+                "keyframe_first_path": f.keyframe_first_path,
+                "keyframe_mid_path": f.keyframe_mid_path,
+                "keyframe_last_path": f.keyframe_last_path,
             }
             for f in p.frames
         ]

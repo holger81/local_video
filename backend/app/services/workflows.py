@@ -58,28 +58,37 @@ def apply_params(
     params: dict[str, Any],
     *,
     uploaded_image_name: str | None = None,
+    uploaded_images: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Return a parameterized API prompt graph."""
+    """Return a parameterized API prompt graph.
+
+    uploaded_images maps field names (e.g. start_image, end_image) to ComfyUI filenames.
+    uploaded_image_name is a shorthand for start_image.
+    """
     meta = load_map(workflow_id)
     graph = copy.deepcopy(load_api_workflow(workflow_id))
     fields = meta.get("fields") or {}
+    uploads = dict(uploaded_images or {})
+    if uploaded_image_name and "start_image" not in uploads:
+        uploads["start_image"] = uploaded_image_name
 
     for key, value in params.items():
         if key not in fields or value is None:
+            continue
+        if key in uploads:
             continue
         spec = fields[key]
         node_id = str(spec["node"])
         input_name = spec["input"]
         if node_id not in graph:
             raise WorkflowError(f"node {node_id} missing in {workflow_id}")
-        if key == "start_image" and uploaded_image_name:
-            graph[node_id]["inputs"][input_name] = uploaded_image_name
-        else:
-            graph[node_id]["inputs"][input_name] = value
+        graph[node_id]["inputs"][input_name] = value
 
-    if uploaded_image_name and "start_image" in fields:
-        spec = fields["start_image"]
-        graph[str(spec["node"])]["inputs"][spec["input"]] = uploaded_image_name
+    for key, filename in uploads.items():
+        if key not in fields or not filename:
+            continue
+        spec = fields[key]
+        graph[str(spec["node"])]["inputs"][spec["input"]] = filename
 
     return graph
 

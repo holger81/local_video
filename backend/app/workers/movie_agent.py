@@ -78,6 +78,10 @@ async def _run_chunk(
     prompt = compose_prompt(handoff)
 
     workflow_id = job.t2v_workflow if mode == "new_shot" else job.i2v_workflow
+    start_still = handoff.get("start_image_path")
+    # Storyboard still keyframe → animate with I2V even on chunk 0 / new_shot.
+    if mode == "new_shot" and start_still:
+        workflow_id = job.i2v_workflow
     params = {
         "positive_prompt": prompt,
         "negative_prompt": handoff.get("negative_prompt") or job.negative_prompt,
@@ -104,6 +108,20 @@ async def _run_chunk(
         if last is None or not last.exists():
             raise ComfyUIError("continue mode requires last_frame")
         uploaded = await comfy.upload_image(Path(last))
+    elif mode == "new_shot" and start_still:
+        still_path = Path(start_still)
+        if not still_path.exists():
+            # Resolve container /media paths when worker uses the same MEDIA_DIR.
+            media_root = settings.media_dir.resolve()
+            raw = str(start_still)
+            for marker in ("/media/", "media/"):
+                idx = raw.find(marker)
+                if idx >= 0:
+                    still_path = media_root / raw[idx + len(marker) :]
+                    break
+        if not still_path.exists():
+            raise ComfyUIError(f"storyboard still not found: {start_still}")
+        uploaded = await comfy.upload_image(still_path)
 
     graph = apply_params(workflow_id, params, uploaded_image_name=uploaded)
     _set_chunk(chunk.id, status="running")

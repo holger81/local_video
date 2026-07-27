@@ -62,6 +62,10 @@ class StoryboardFrame(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     visual_prompt: Mapped[str] = mapped_column(Text, default="")
     still_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Per-step video keyframes: first → mid → last (before movie / between-stills clips)
+    keyframe_first_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    keyframe_mid_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    keyframe_last_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     preview_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     duration_hint_sec: Mapped[float] = mapped_column(Float, default=4.0)
     is_new_shot: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -158,6 +162,26 @@ def get_engine():
 def init_db() -> None:
     engine = get_engine()
     Base.metadata.create_all(bind=engine)
+    _migrate_sqlite(engine)
+
+
+def _migrate_sqlite(engine) -> None:
+    """Add columns introduced after initial create_all (SQLite has no ALTER via ORM)."""
+    if engine.dialect.name != "sqlite":
+        return
+    with engine.begin() as conn:
+        cols = {
+            row[1]
+            for row in conn.exec_driver_sql("PRAGMA table_info(storyboard_frames)").fetchall()
+        }
+        additions = {
+            "keyframe_first_path": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_first_path VARCHAR(512)",
+            "keyframe_mid_path": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_mid_path VARCHAR(512)",
+            "keyframe_last_path": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_last_path VARCHAR(512)",
+        }
+        for name, ddl in additions.items():
+            if name not in cols:
+                conn.exec_driver_sql(ddl)
 
 
 def SessionLocal():

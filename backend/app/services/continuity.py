@@ -90,6 +90,12 @@ def plan_shots_from_frames(
         base = prompt_base.strip() or " ".join(
             f.get("visual_prompt") or f.get("description") or "" for f in group
         )
+        # Prefer first keyframe, then hero still, as the shot's I2V start.
+        start_still = (
+            group[0].get("keyframe_first_path")
+            or group[0].get("still_path")
+            or None
+        )
         shot_chunks = []
         for ci in range(n_chunks):
             mode = "new_shot" if ci == 0 else "continue"
@@ -115,6 +121,8 @@ def plan_shots_from_frames(
                 "sampler": sampler,
                 "scheduler": scheduler,
                 "continuity_notes": "",
+                # When set, chunk 0 uses I2V from this storyboard still instead of T2V.
+                "start_image_path": start_still if ci == 0 and start_still else None,
             }
             shot_chunks.append({"chunk_index": ci, "mode": mode, "handoff": handoff})
         shots.append(

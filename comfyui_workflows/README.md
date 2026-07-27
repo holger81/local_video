@@ -52,5 +52,6 @@ Agent defaults expect `length` / `num_frames` = **33** (`4n+1`).
 | `wan22_i2v` | `continue` — uploads previous `last_frame.png` into LoadImage |
 | `still_hero` | Storyboard stills (text → image) |
 | `still_edit` | Prompt-edit an existing still (ReferenceLatent) |
+| `wan22_i2v` | Continue / **between stills** (start image → clip) |
 
 No Wan Video Extender / chunk helper nodes required.

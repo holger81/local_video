@@ -205,6 +205,32 @@ button:disabled {
   white-space: nowrap;
 }
 
+.keyframe-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.4rem;
+  margin-top: 0.65rem;
+}
+
+.keyframe-slot {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.keyframe-thumb {
+  max-height: 96px;
+  min-height: 72px;
+  margin-top: 0;
+}
+
+.keyframe-thumb.is-busy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .thumb {
   display: block;
   width: 100%;
@@ -314,22 +340,17 @@ button:disabled {
 }
 
 .thumb-placeholder {
-  margin-top: 0.65rem;
+  display: block;
+  width: 100%;
   min-height: 140px;
   border-radius: 3px;
   border: 1px solid var(--line);
   background: #0c100e;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.65rem;
 }
 
 .thumb-overlay {
   position: absolute;
-  inset: 0.65rem 0 0;
-  min-height: 140px;
+  inset: 0;
   border-radius: 3px;
   background: rgba(12, 16, 14, 0.72);
   display: flex;
@@ -339,13 +360,7 @@ button:disabled {
   gap: 0.65rem;
   color: var(--ink);
   pointer-events: none;
-}
-
-.media-slot:not(:has(.thumb)) .thumb-overlay {
-  position: relative;
-  inset: auto;
-  margin-top: 0.65rem;
-  border: 1px solid var(--line);
+  z-index: 2;
 }
 
 .spinner {

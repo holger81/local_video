@@ -130,8 +130,83 @@ async def create_all_stills(
 
 
 @mcp.tool()
+async def generate_between_stills(
+    project_id: int,
+    frame_id: int,
+    workflow_id: str | None = None,
+    num_frames: int = 33,
+) -> dict:
+    """Generate a clip from this frame's still toward the next frame's still (I2V)."""
+    return await sb_svc.generate_between_stills(
+        project_id,
+        frame_id,
+        workflow_id=workflow_id,
+        num_frames=num_frames,
+    )
+
+
+@mcp.tool()
+async def create_all_between_stills(
+    project_id: int,
+    workflow_id: str | None = None,
+    skip_existing: bool = True,
+    num_frames: int = 33,
+) -> dict:
+    """Generate between-stills clips for consecutive still pairs (sequential)."""
+    return await sb_svc.generate_all_between_stills(
+        project_id,
+        workflow_id=workflow_id,
+        skip_existing=skip_existing,
+        num_frames=num_frames,
+    )
+
+
+@mcp.tool()
+async def generate_frame_keyframes(
+    project_id: int,
+    frame_id: int,
+    skip_existing: bool = True,
+) -> dict:
+    """Create first/mid/last keyframe images for one storyboard step."""
+    return await sb_svc.generate_frame_keyframes(
+        project_id, frame_id, skip_existing=skip_existing
+    )
+
+
+@mcp.tool()
+async def create_all_keyframes(project_id: int, skip_existing: bool = True) -> dict:
+    """Create first/mid/last keyframes for every storyboard frame."""
+    return await sb_svc.generate_all_keyframes(project_id, skip_existing=skip_existing)
+
+
+@mcp.tool()
+async def generate_step_clips(
+    project_id: int,
+    frame_id: int,
+    num_frames: int = 33,
+    workflow_id: str | None = None,
+) -> dict:
+    """I2V first→mid and mid→last for a step; saves concatenated preview."""
+    return await sb_svc.generate_step_clips(
+        project_id, frame_id, num_frames=num_frames, workflow_id=workflow_id
+    )
+
+
+@mcp.tool()
+async def create_all_step_clips(
+    project_id: int,
+    skip_existing: bool = True,
+    num_frames: int = 33,
+) -> dict:
+    """Create within-step clips for every frame that has keyframes."""
+    return await sb_svc.generate_all_step_clips(
+        project_id, skip_existing=skip_existing, num_frames=num_frames
+    )
+
+
+@mcp.tool()
 def delete_frame_media(project_id: int, frame_id: int, kind: str) -> dict:
-    """Delete a frame still or preview. kind is 'still' or 'preview'."""
+    """Delete a frame still, preview, or keyframe. kind: still|preview|keyframe_first|keyframe_mid|keyframe_last."""
     return sb_svc.delete_frame_media(project_id, frame_id, kind)
 
 

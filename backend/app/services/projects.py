@@ -41,17 +41,21 @@ def get_project(project_id: int) -> dict[str, Any]:
         if not p:
             raise KeyError(f"project {project_id} not found")
         data = _project_dict(p)
-        data["frames"] = [
-            {
-                "id": f.id,
-                "position": f.position,
-                "description": f.description,
-                "visual_prompt": f.visual_prompt,
-                "still_path": f.still_path,
-                "preview_path": f.preview_path,
-                "duration_hint_sec": f.duration_hint_sec,
-                "is_new_shot": f.is_new_shot,
-            }
-            for f in p.frames
-        ]
+        data["frames"] = [_frame_dict_from_orm(f) for f in p.frames]
         return data
+
+
+def _frame_dict_from_orm(f) -> dict[str, Any]:
+    return {
+        "id": f.id,
+        "position": f.position,
+        "description": f.description,
+        "visual_prompt": f.visual_prompt,
+        "still_path": f.still_path,
+        "keyframe_first_path": getattr(f, "keyframe_first_path", None),
+        "keyframe_mid_path": getattr(f, "keyframe_mid_path", None),
+        "keyframe_last_path": getattr(f, "keyframe_last_path", None),
+        "preview_path": f.preview_path,
+        "duration_hint_sec": f.duration_hint_sec,
+        "is_new_shot": f.is_new_shot,
+    }

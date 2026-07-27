@@ -62,14 +62,38 @@ def encode_frames_to_mp4(frames_dir: Path, out_path: Path, fps: int = 24) -> Pat
     return out_path
 
 
-def concat_frame_dirs(dirs: list[Path], out_dir: Path) -> Path:
-    """Copy frames from multiple dirs into one contiguous sequence (no duplicates assumed)."""
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True)
-    idx = 0
-    for d in dirs:
-        for src in sorted(d.glob("*.png")):
-            shutil.copy2(src, out_dir / f"frame_{idx:05d}.png")
-            idx += 1
-    return out_dir
+def concat_videos(videos: list[Path], out_path: Path) -> Path:
+    """Lossless-ish concat of same-codec clips via ffmpeg concat demuxer."""
+    if not videos:
+        raise FFmpegError("no videos to concat")
+    if len(videos) == 1:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(videos[0], out_path)
+        return out_path
+    list_file = out_path.parent / f".concat_{out_path.stem}.txt"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for v in videos:
+        # ffmpeg concat demuxer needs escaped single quotes
+        safe = str(v.resolve()).replace("'", "'\\''")
+        lines.append(f"file '{safe}'")
+    list_file.write_text("\n".join(lines) + "\n")
+    try:
+        _run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(list_file),
+                "-c",
+                "copy",
+                str(out_path),
+            ]
+        )
+    finally:
+        list_file.unlink(missing_ok=True)
+    return out_path

@@ -241,30 +241,134 @@ function ProjectPage() {
     }
   };
 
-  const createAllStills = async () => {
+  const createMissingVisuals = async (kind) => {
+    const pathKey = kind === "preview" ? "preview_path" : "still_path";
+    const label = kind === "preview" ? "previews" : "stills";
     const frames = [...(project.frames || [])]
       .sort((a, b) => a.position - b.position)
-      .filter((f) => !f.still_path);
+      .filter((f) => !f[pathKey]);
     if (!frames.length) {
       setErr("");
       setBusy("");
       return;
     }
-    setBusy("create missing stills");
+    setBusy(`create missing ${label}`);
     setErr("");
     try {
       for (let i = 0; i < frames.length; i++) {
         const f = frames[i];
-        setBusy(`create missing stills (${i + 1}/${frames.length})`);
-        setVisualBusy({ frameId: f.id, kind: "still" });
+        setBusy(`create missing ${label} (${i + 1}/${frames.length})`);
+        setVisualBusy({ frameId: f.id, kind });
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         await api(`/projects/${id}/storyboard/frames/${f.id}/visual`, {
           method: "POST",
-          body: JSON.stringify({ kind: "still" }),
+          body: JSON.stringify({ kind, num_frames: 33 }),
         });
         setVisualBusy(null);
         await load();
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      }
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setVisualBusy(null);
+      setBusy("");
+    }
+  };
+
+  const createBetweenStills = async () => {
+    const frames = [...(project.frames || [])].sort((a, b) => a.position - b.position);
+    const pairs = [];
+    for (let i = 0; i < frames.length - 1; i++) {
+      if (frames[i].still_path && frames[i + 1].still_path && !frames[i].preview_path) {
+        pairs.push(frames[i]);
+      }
+    }
+    if (!pairs.length) {
+      setErr("");
+      setBusy("");
+      return;
+    }
+    setBusy("create between-stills");
+    setErr("");
+    try {
+      for (let i = 0; i < pairs.length; i++) {
+        const f = pairs[i];
+        setBusy(`create between-stills (${i + 1}/${pairs.length})`);
+        setVisualBusy({ frameId: f.id, kind: "between" });
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        await api(`/projects/${id}/storyboard/frames/${f.id}/between-stills`, {
+          method: "POST",
+          body: JSON.stringify({ num_frames: 33 }),
+        });
+        setVisualBusy(null);
+        await load();
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      }
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setVisualBusy(null);
+      setBusy("");
+    }
+  };
+
+  const createMissingKeyframes = async () => {
+    const frames = [...(project.frames || [])]
+      .sort((a, b) => a.position - b.position)
+      .filter(
+        (f) =>
+          !f.keyframe_first_path || !f.keyframe_mid_path || !f.keyframe_last_path
+      );
+    if (!frames.length) return;
+    setBusy("create keyframes");
+    setErr("");
+    try {
+      for (let i = 0; i < frames.length; i++) {
+        const f = frames[i];
+        setBusy(`create keyframes (${i + 1}/${frames.length})`);
+        setVisualBusy({ frameId: f.id, kind: "keyframes" });
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        await api(`/projects/${id}/storyboard/frames/${f.id}/keyframes`, {
+          method: "POST",
+          body: JSON.stringify({ skip_existing: true }),
+        });
+        setVisualBusy(null);
+        await load();
+      }
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setVisualBusy(null);
+      setBusy("");
+    }
+  };
+
+  const createStepClips = async () => {
+    const frames = [...(project.frames || [])]
+      .sort((a, b) => a.position - b.position)
+      .filter(
+        (f) =>
+          f.keyframe_first_path &&
+          f.keyframe_mid_path &&
+          f.keyframe_last_path &&
+          !f.preview_path
+      );
+    if (!frames.length) return;
+    setBusy("create step clips");
+    setErr("");
+    try {
+      for (let i = 0; i < frames.length; i++) {
+        const f = frames[i];
+        setBusy(`create step clips (${i + 1}/${frames.length})`);
+        setVisualBusy({ frameId: f.id, kind: "step_clips" });
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        await api(`/projects/${id}/storyboard/frames/${f.id}/step-clips`, {
+          method: "POST",
+          body: JSON.stringify({ num_frames: 33 }),
+        });
+        setVisualBusy(null);
+        await load();
       }
     } catch (e) {
       setErr(String(e.message || e));
@@ -378,7 +482,7 @@ function ProjectPage() {
             disabled={
               !!busy || !(project.frames || []).some((f) => !f.still_path)
             }
-            onClick={() => createAllStills()}
+            onClick={() => createMissingVisuals("still")}
             title="Generate stills only for frames that do not have one yet"
           >
             Create missing stills
@@ -425,6 +529,88 @@ function ProjectPage() {
                 >
                   Preview clip
                 </button>
+                <button
+                  type="button"
+                  disabled={!!busy}
+                  onClick={() =>
+                    run(`keyframes ${f.id}`, async () => {
+                      setVisualBusy({ frameId: f.id, kind: "keyframes" });
+                      try {
+                        await api(`/projects/${id}/storyboard/frames/${f.id}/keyframes`, {
+                          method: "POST",
+                          body: JSON.stringify({ skip_existing: true }),
+                        });
+                      } finally {
+                        setVisualBusy(null);
+                      }
+                    })
+                  }
+                  title="Create first, mid, and last keyframe images for this step"
+                >
+                  Keyframes
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    !!busy ||
+                    !(f.keyframe_first_path && f.keyframe_mid_path && f.keyframe_last_path)
+                  }
+                  onClick={() =>
+                    run(`step clips ${f.id}`, async () => {
+                      setVisualBusy({ frameId: f.id, kind: "step_clips" });
+                      try {
+                        await api(`/projects/${id}/storyboard/frames/${f.id}/step-clips`, {
+                          method: "POST",
+                          body: JSON.stringify({ num_frames: 33 }),
+                        });
+                      } finally {
+                        setVisualBusy(null);
+                      }
+                    })
+                  }
+                  title="I2V first→mid and mid→last, concat to preview"
+                >
+                  Step clips
+                </button>
+                {(() => {
+                  const frames = [...(project.frames || [])].sort(
+                    (a, b) => a.position - b.position
+                  );
+                  const next = frames.find((x) => x.position === f.position + 1);
+                  const canBetween = !!(
+                    (f.keyframe_last_path || f.still_path) &&
+                    (next?.keyframe_first_path || next?.still_path)
+                  );
+                  return (
+                    <button
+                      type="button"
+                      disabled={!!busy || !canBetween}
+                      onClick={() =>
+                        run(`between stills ${f.id}`, async () => {
+                          setVisualBusy({ frameId: f.id, kind: "between" });
+                          try {
+                            await api(
+                              `/projects/${id}/storyboard/frames/${f.id}/between-stills`,
+                              {
+                                method: "POST",
+                                body: JSON.stringify({ num_frames: 33 }),
+                              }
+                            );
+                          } finally {
+                            setVisualBusy(null);
+                          }
+                        })
+                      }
+                      title={
+                        canBetween
+                          ? "Bridge clip from this step toward the next"
+                          : "Needs this step's last keyframe/still and the next first"
+                      }
+                    >
+                      Between steps
+                    </button>
+                  );
+                })()}
               </div>
               {mediaUrl(f.still_path) && (
                 <div className="still-edit">
@@ -453,79 +639,162 @@ function ProjectPage() {
                   </button>
                 </div>
               )}
+              <div className="keyframe-row">
+                {[
+                  ["first", f.keyframe_first_path, "keyframe_first"],
+                  ["mid", f.keyframe_mid_path, "keyframe_mid"],
+                  ["last", f.keyframe_last_path, "keyframe_last"],
+                ].map(([label, path, kind]) => (
+                  <div key={label} className="keyframe-slot">
+                    <span className="tiny muted">{label}</span>
+                    {mediaUrl(path) ? (
+                      <div className="media-item">
+                        <button
+                          type="button"
+                          className="media-open"
+                          onClick={() =>
+                            setLightbox({
+                              frameId: f.id,
+                              kind,
+                              src: `${mediaUrl(path)}?t=${encodeURIComponent(path)}`,
+                              label: `Frame ${f.position + 1} ${label}`,
+                            })
+                          }
+                        >
+                          <img
+                            className="thumb keyframe-thumb"
+                            src={`${mediaUrl(path)}?t=${encodeURIComponent(path)}`}
+                            alt={`${label} keyframe`}
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          className="media-delete"
+                          aria-label={`Delete ${label} keyframe`}
+                          onClick={(e) => deleteMedia(f.id, kind, e)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ) : (
+                      <div
+                        className={`thumb-placeholder keyframe-thumb${
+                          visualBusy?.frameId === f.id && visualBusy.kind === "keyframes"
+                            ? " is-busy"
+                            : ""
+                        }`}
+                      >
+                        {visualBusy?.frameId === f.id && visualBusy.kind === "keyframes" && (
+                          <span className="spinner" />
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
               <div className="media-slot">
-                {mediaUrl(f.still_path) && (
+                {(mediaUrl(f.still_path) ||
+                  (visualBusy?.frameId === f.id &&
+                    (visualBusy.kind === "still" || visualBusy.kind === "edit"))) && (
                   <div className="media-item">
-                    <button
-                      type="button"
-                      className="media-open"
-                      onClick={() =>
-                        setLightbox({
-                          frameId: f.id,
-                          kind: "still",
-                          src: `${mediaUrl(f.still_path)}?t=${encodeURIComponent(f.still_path)}`,
-                          label: `Frame ${f.position + 1} still`,
-                        })
-                      }
-                    >
-                      <img
-                        className="thumb"
-                        src={`${mediaUrl(f.still_path)}?t=${encodeURIComponent(f.still_path)}`}
-                        alt={`Frame ${f.position + 1} still`}
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      className="media-delete"
-                      aria-label="Delete still"
-                      onClick={(e) => deleteMedia(f.id, "still", e)}
-                    >
-                      ×
-                    </button>
+                    {mediaUrl(f.still_path) ? (
+                      <>
+                        <button
+                          type="button"
+                          className="media-open"
+                          onClick={() =>
+                            setLightbox({
+                              frameId: f.id,
+                              kind: "still",
+                              src: `${mediaUrl(f.still_path)}?t=${encodeURIComponent(f.still_path)}`,
+                              label: `Frame ${f.position + 1} still`,
+                            })
+                          }
+                        >
+                          <img
+                            className="thumb"
+                            src={`${mediaUrl(f.still_path)}?t=${encodeURIComponent(f.still_path)}`}
+                            alt={`Frame ${f.position + 1} still`}
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          className="media-delete"
+                          aria-label="Delete still"
+                          onClick={(e) => deleteMedia(f.id, "still", e)}
+                        >
+                          ×
+                        </button>
+                      </>
+                    ) : (
+                      <div className="thumb-placeholder" aria-hidden="true" />
+                    )}
+                    {visualBusy?.frameId === f.id &&
+                      (visualBusy.kind === "still" || visualBusy.kind === "edit") && (
+                        <div className="thumb-overlay" aria-busy="true">
+                          <span className="spinner" />
+                          <span className="tiny">
+                            {visualBusy.kind === "edit" ? "Editing still…" : "Creating still…"}
+                          </span>
+                        </div>
+                      )}
                   </div>
                 )}
-                {mediaUrl(f.preview_path) && (
+                {(mediaUrl(f.preview_path) ||
+                  (visualBusy?.frameId === f.id &&
+                    (visualBusy.kind === "preview" ||
+                      visualBusy.kind === "between" ||
+                      visualBusy.kind === "step_clips"))) && (
                   <div className="media-item">
-                    <button
-                      type="button"
-                      className="media-open"
-                      onClick={() =>
-                        setLightbox({
-                          frameId: f.id,
-                          kind: "preview",
-                          src: `${mediaUrl(f.preview_path)}?t=${encodeURIComponent(f.preview_path)}`,
-                          label: `Frame ${f.position + 1} preview`,
-                        })
-                      }
-                    >
-                      <video
-                        className="thumb"
-                        src={`${mediaUrl(f.preview_path)}?t=${encodeURIComponent(f.preview_path)}`}
-                        muted
-                        playsInline
-                        preload="metadata"
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      className="media-delete"
-                      aria-label="Delete preview"
-                      onClick={(e) => deleteMedia(f.id, "preview", e)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                )}
-                {visualBusy?.frameId === f.id && (
-                  <div className="thumb-overlay" aria-busy="true">
-                    <span className="spinner" />
-                    <span className="tiny">
-                      {visualBusy.kind === "preview"
-                        ? "Creating preview…"
-                        : visualBusy.kind === "edit"
-                          ? "Editing still…"
-                          : "Creating still…"}
-                    </span>
+                    {mediaUrl(f.preview_path) ? (
+                      <>
+                        <button
+                          type="button"
+                          className="media-open"
+                          onClick={() =>
+                            setLightbox({
+                              frameId: f.id,
+                              kind: "preview",
+                              src: `${mediaUrl(f.preview_path)}?t=${encodeURIComponent(f.preview_path)}`,
+                              label: `Frame ${f.position + 1} preview`,
+                            })
+                          }
+                        >
+                          <video
+                            className="thumb"
+                            src={`${mediaUrl(f.preview_path)}?t=${encodeURIComponent(f.preview_path)}`}
+                            muted
+                            playsInline
+                            preload="metadata"
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          className="media-delete"
+                          aria-label="Delete preview"
+                          onClick={(e) => deleteMedia(f.id, "preview", e)}
+                        >
+                          ×
+                        </button>
+                      </>
+                    ) : (
+                      <div className="thumb-placeholder" aria-hidden="true" />
+                    )}
+                    {visualBusy?.frameId === f.id &&
+                      (visualBusy.kind === "preview" ||
+                        visualBusy.kind === "between" ||
+                        visualBusy.kind === "step_clips") && (
+                      <div className="thumb-overlay" aria-busy="true">
+                        <span className="spinner" />
+                        <span className="tiny">
+                          {visualBusy.kind === "between"
+                            ? "Between steps…"
+                            : visualBusy.kind === "step_clips"
+                              ? "Step clips…"
+                              : "Creating preview…"}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -535,7 +804,74 @@ function ProjectPage() {
       </section>
 
       <section className="card-like">
-        <h2>3. Movie wizard</h2>
+        <h2>3. Keyframes &amp; clips</h2>
+        <p className="muted">
+          After stills: build first / mid / last images per step, then animate between them
+          before the full movie.
+        </p>
+        <div className="row">
+          <button
+            type="button"
+            disabled={
+              !!busy ||
+              !(project.frames || []).some(
+                (f) =>
+                  !f.keyframe_first_path || !f.keyframe_mid_path || !f.keyframe_last_path
+              )
+            }
+            onClick={() => createMissingKeyframes()}
+            title="First, mid, and last stills for each storyboard step"
+          >
+            Create missing keyframes
+          </button>
+          <button
+            type="button"
+            disabled={
+              !!busy ||
+              !(project.frames || []).some(
+                (f) =>
+                  f.keyframe_first_path &&
+                  f.keyframe_mid_path &&
+                  f.keyframe_last_path &&
+                  !f.preview_path
+              )
+            }
+            onClick={() => createStepClips()}
+            title="I2V first→mid and mid→last for each step"
+          >
+            Create step clips
+          </button>
+          <button
+            type="button"
+            disabled={
+              !!busy ||
+              !(function () {
+                const frames = [...(project.frames || [])].sort(
+                  (a, b) => a.position - b.position
+                );
+                for (let i = 0; i < frames.length - 1; i++) {
+                  const a = frames[i];
+                  const b = frames[i + 1];
+                  if (
+                    (a.keyframe_last_path || a.still_path) &&
+                    (b.keyframe_first_path || b.still_path)
+                  ) {
+                    return true;
+                  }
+                }
+                return false;
+              })()
+            }
+            onClick={() => createBetweenStills()}
+            title="Bridge clips from each step toward the next"
+          >
+            Create between-steps clips
+          </button>
+        </div>
+      </section>
+
+      <section className="card-like">
+        <h2>4. Movie wizard</h2>
         <div className="grid three">
           <label>
             Length (sec)

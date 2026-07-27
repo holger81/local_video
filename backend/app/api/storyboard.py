@@ -35,6 +35,27 @@ class AllStillsIn(BaseModel):
     skip_existing: bool = True
 
 
+class BetweenStillsIn(BaseModel):
+    workflow_id: str | None = None
+    num_frames: int = 33
+
+
+class AllBetweenStillsIn(BaseModel):
+    workflow_id: str | None = None
+    skip_existing: bool = True
+    num_frames: int = 33
+
+
+class KeyframesIn(BaseModel):
+    skip_existing: bool = True
+
+
+class StepClipsIn(BaseModel):
+    workflow_id: str | None = None
+    num_frames: int = 33
+    skip_existing: bool = True
+
+
 @router.post("/propose")
 async def propose(project_id: int, body: ProposeIn | None = None):
     body = body or ProposeIn()
@@ -75,6 +96,51 @@ async def create_all_stills(project_id: int, body: AllStillsIn | None = None):
         raise HTTPException(500, str(e)) from e
 
 
+@router.post("/keyframes")
+async def create_all_keyframes(project_id: int, body: KeyframesIn | None = None):
+    body = body or KeyframesIn()
+    try:
+        return await sb_svc.generate_all_keyframes(
+            project_id, skip_existing=body.skip_existing
+        )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
+@router.post("/step-clips")
+async def create_all_step_clips(project_id: int, body: StepClipsIn | None = None):
+    body = body or StepClipsIn()
+    try:
+        return await sb_svc.generate_all_step_clips(
+            project_id,
+            skip_existing=body.skip_existing,
+            num_frames=body.num_frames,
+            # workflow passed via generate_step_clips default
+        )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
+@router.post("/between-stills")
+async def create_all_between_stills(project_id: int, body: AllBetweenStillsIn | None = None):
+    body = body or AllBetweenStillsIn()
+    try:
+        return await sb_svc.generate_all_between_stills(
+            project_id,
+            workflow_id=body.workflow_id,
+            skip_existing=body.skip_existing,
+            num_frames=body.num_frames,
+        )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
 @router.post("/frames/{frame_id}/visual")
 async def generate_visual(project_id: int, frame_id: int, body: VisualIn | None = None):
     body = body or VisualIn()
@@ -86,6 +152,59 @@ async def generate_visual(project_id: int, frame_id: int, body: VisualIn | None 
             workflow_id=body.workflow_id,
             num_frames=body.num_frames,
         )
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
+@router.post("/frames/{frame_id}/keyframes")
+async def frame_keyframes(project_id: int, frame_id: int, body: KeyframesIn | None = None):
+    body = body or KeyframesIn()
+    try:
+        return await sb_svc.generate_frame_keyframes(
+            project_id, frame_id, skip_existing=body.skip_existing
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
+@router.post("/frames/{frame_id}/step-clips")
+async def frame_step_clips(project_id: int, frame_id: int, body: StepClipsIn | None = None):
+    body = body or StepClipsIn()
+    try:
+        return await sb_svc.generate_step_clips(
+            project_id,
+            frame_id,
+            workflow_id=body.workflow_id,
+            num_frames=body.num_frames,
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
+@router.post("/frames/{frame_id}/between-stills")
+async def between_stills(project_id: int, frame_id: int, body: BetweenStillsIn | None = None):
+    body = body or BetweenStillsIn()
+    try:
+        return await sb_svc.generate_between_stills(
+            project_id,
+            frame_id,
+            workflow_id=body.workflow_id,
+            num_frames=body.num_frames,
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
     except Exception as e:
         raise HTTPException(500, str(e)) from e
 

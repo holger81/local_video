@@ -8,8 +8,29 @@ from app.config import get_settings
 from app.db.models import Project, SessionLocal, StoryboardFrame
 from app.services import llm
 from app.services.comfyui import ComfyUIClient
-from app.services.ffmpeg import extract_frames_from_video
+from app.services.ffmpeg import (
+    concat_frame_dirs,
+    concat_videos,
+    encode_frames_to_mp4,
+    extract_frames_from_video,
+)
 from app.services.workflows import apply_params, validate_frame_count
+
+
+def _frame_dict(f: StoryboardFrame) -> dict[str, Any]:
+    return {
+        "id": f.id,
+        "position": f.position,
+        "description": f.description,
+        "visual_prompt": f.visual_prompt,
+        "still_path": f.still_path,
+        "keyframe_first_path": f.keyframe_first_path,
+        "keyframe_mid_path": f.keyframe_mid_path,
+        "keyframe_last_path": f.keyframe_last_path,
+        "preview_path": f.preview_path,
+        "duration_hint_sec": f.duration_hint_sec,
+        "is_new_shot": f.is_new_shot,
+    }
 
 
 def _frames_payload(project_id: int) -> list[dict[str, Any]]:
@@ -17,19 +38,7 @@ def _frames_payload(project_id: int) -> list[dict[str, Any]]:
         p = db.get(Project, project_id)
         if not p:
             raise KeyError(f"project {project_id} not found")
-        return [
-            {
-                "id": f.id,
-                "position": f.position,
-                "description": f.description,
-                "visual_prompt": f.visual_prompt,
-                "still_path": f.still_path,
-                "preview_path": f.preview_path,
-                "duration_hint_sec": f.duration_hint_sec,
-                "is_new_shot": f.is_new_shot,
-            }
-            for f in p.frames
-        ]
+        return [_frame_dict(f) for f in p.frames]
 
 
 async def propose_storyboard(project_id: int, max_frames: int = 8) -> list[dict[str, Any]]:
@@ -84,43 +93,34 @@ def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any
                 setattr(f, k, v)
         db.commit()
         db.refresh(f)
-        return {
-            "id": f.id,
-            "position": f.position,
-            "description": f.description,
-            "visual_prompt": f.visual_prompt,
-            "still_path": f.still_path,
-            "preview_path": f.preview_path,
-            "duration_hint_sec": f.duration_hint_sec,
-            "is_new_shot": f.is_new_shot,
-        }
+        return _frame_dict(f)
 
 
 def delete_frame_media(project_id: int, frame_id: int, kind: str) -> dict[str, Any]:
-    """Clear still or preview path and remove the file if it lives under media_dir."""
-    if kind not in ("still", "preview"):
-        raise ValueError("kind must be 'still' or 'preview'")
+    """Clear still, preview, or a keyframe path and remove the file if under media_dir."""
+    kind_to_attr = {
+        "still": "still_path",
+        "preview": "preview_path",
+        "keyframe_first": "keyframe_first_path",
+        "keyframe_mid": "keyframe_mid_path",
+        "keyframe_last": "keyframe_last_path",
+    }
+    if kind not in kind_to_attr:
+        raise ValueError(
+            "kind must be still, preview, keyframe_first, keyframe_mid, or keyframe_last"
+        )
     settings = get_settings()
+    path_attr = kind_to_attr[kind]
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
             raise KeyError(f"frame {frame_id} not found")
-        path_attr = "still_path" if kind == "still" else "preview_path"
         old = getattr(f, path_attr)
         setattr(f, path_attr, None)
         db.commit()
         db.refresh(f)
-        payload = {
-            "id": f.id,
-            "position": f.position,
-            "description": f.description,
-            "visual_prompt": f.visual_prompt,
-            "still_path": f.still_path,
-            "preview_path": f.preview_path,
-            "duration_hint_sec": f.duration_hint_sec,
-            "is_new_shot": f.is_new_shot,
-            "deleted": kind,
-        }
+        payload = _frame_dict(f)
+        payload["deleted"] = kind
 
     if old:
         try:
@@ -293,26 +293,30 @@ async def generate_frame_visual(
         dest = media / out["filename"]
         await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
         saved_path = dest
-        # If video, also extract first frame as still
+        # Preview clips: only seed a still from the first frame when none exists yet.
         if out["kind"] in ("gifs", "videos") or dest.suffix.lower() in {".mp4", ".webm", ".gif"}:
-            frames_dir = media / "extracted"
-            frames = extract_frames_from_video(dest, frames_dir)
-            if frames:
-                still = media / "still.png"
-                still.write_bytes(frames[0].read_bytes())
-                with SessionLocal() as db:
-                    fr = db.get(StoryboardFrame, frame_id)
-                    assert fr
-                    fr.preview_path = str(dest)
-                    fr.still_path = str(still)
-                    db.commit()
-                return {
-                    "frame_id": frame_id,
-                    "kind": kind,
-                    "preview_path": str(dest),
-                    "still_path": str(still),
-                    "prompt_id": prompt_id,
-                }
+            with SessionLocal() as db:
+                fr = db.get(StoryboardFrame, frame_id)
+                assert fr
+                had_still = bool(fr.still_path)
+                fr.preview_path = str(dest)
+                still_out = fr.still_path
+                if not had_still:
+                    frames_dir = media / "extracted"
+                    frames = extract_frames_from_video(dest, frames_dir)
+                    if frames:
+                        still = media / "still_from_preview.png"
+                        still.write_bytes(frames[0].read_bytes())
+                        fr.still_path = str(still)
+                        still_out = str(still)
+                db.commit()
+            return {
+                "frame_id": frame_id,
+                "kind": kind,
+                "preview_path": str(dest),
+                "still_path": still_out,
+                "prompt_id": prompt_id,
+            }
 
     if saved_path:
         with SessionLocal() as db:
@@ -483,6 +487,576 @@ async def generate_all_stills(
         "project_id": project_id,
         "generated": len([r for r in results if not r.get("skipped")]),
         "skipped": len([r for r in results if r.get("skipped")]),
+        "failed": len(errors),
+        "results": results,
+        "errors": errors,
+    }
+
+
+def build_transition_prompt(
+    *,
+    premise: str,
+    start_prompt: str,
+    end_prompt: str,
+) -> str:
+    """Prompt for a clip that starts on one still and moves toward the next."""
+    world = _truncate(premise or "", 280)
+    start = _truncate(start_prompt or "", 220)
+    end = _truncate(end_prompt or "", 220)
+    parts = [
+        "Cinematic continuous video, one camera move, smooth motion between two keyframes.",
+        "Begin matched to the starting image; progress toward the ending beat.",
+    ]
+    if world:
+        parts.append(f"Film continuity for: {world}.")
+    if start:
+        parts.append(f"Starting beat: {start}.")
+    if end:
+        parts.append(f"Move toward: {end}.")
+    parts.append(
+        "Keep the same cast, wardrobe, and location; do not jump-cut or show a collage."
+    )
+    return " ".join(parts)
+
+
+async def generate_between_stills(
+    project_id: int,
+    frame_id: int,
+    *,
+    workflow_id: str | None = None,
+    num_frames: int = 33,
+) -> dict[str, Any]:
+    """Generate a preview clip from this frame's still toward the next frame's still.
+
+    Uses Wan I2V with the current still as start_image. True dual-keyframe FLF needs a
+    FLF2V checkpoint (not on the TI2V 5B host); the next still guides via prompt.
+    """
+    settings = get_settings()
+    validate_frame_count(num_frames)
+    with SessionLocal() as db:
+        p = db.get(Project, project_id)
+        if not p:
+            raise KeyError(f"project {project_id} not found")
+        frames = sorted(p.frames, key=lambda x: x.position)
+        idx = next((i for i, fr in enumerate(frames) if fr.id == frame_id), None)
+        if idx is None:
+            raise KeyError(f"frame {frame_id} not found")
+        if idx + 1 >= len(frames):
+            raise ValueError("last frame has no next still to transition toward")
+        cur = frames[idx]
+        nxt = frames[idx + 1]
+        # Prefer step keyframes when present: last of this step → first of next.
+        start_stored = cur.keyframe_last_path or cur.still_path
+        end_ref = nxt.keyframe_first_path or nxt.still_path
+        if not start_stored:
+            raise ValueError(
+                "current frame has no last keyframe or still — create keyframes/stills first"
+            )
+        if not end_ref:
+            raise ValueError(
+                "next frame has no first keyframe or still — create keyframes/stills first"
+            )
+        start_beat = cur.visual_prompt or cur.description or ""
+        end_beat = nxt.visual_prompt or nxt.description or ""
+        premise = p.premise or ""
+        next_frame_id = nxt.id
+
+    start_path = _resolve_media_file(start_stored)
+    prompt = build_transition_prompt(
+        premise=premise, start_prompt=start_beat, end_prompt=end_beat
+    )
+    workflow_id = workflow_id or "wan22_i2v"
+    comfy = ComfyUIClient()
+    uploaded = await comfy.upload_image(start_path)
+    params = {
+        "positive_prompt": prompt,
+        "negative_prompt": (
+            "blurry, watermark, text, static, jump cut, morphing face, flickering, "
+            "collage, comic, storyboard, panels, grid, split screen, montage"
+        ),
+        "seed": frame_id * 17 + 3,
+        "num_frames": num_frames,
+        "width": settings.default_width,
+        "height": settings.default_height,
+        "fps": settings.default_fps,
+        "cfg": settings.default_cfg,
+        "filename_prefix": f"local_video/p{project_id}_f{frame_id}_between",
+    }
+    graph = apply_params(workflow_id, params, uploaded_image_name=uploaded)
+    prompt_id = await comfy.queue_prompt(graph)
+    history = await comfy.wait_for_prompt(prompt_id)
+    outputs = comfy.collect_outputs(history)
+    if not outputs:
+        raise RuntimeError("ComfyUI produced no outputs")
+
+    media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+    media.mkdir(parents=True, exist_ok=True)
+    out = outputs[0]
+    dest = media / out["filename"]
+    await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+
+    with SessionLocal() as db:
+        fr = db.get(StoryboardFrame, frame_id)
+        assert fr
+        # Never overwrite the still — only the bridging preview clip.
+        fr.preview_path = str(dest)
+        db.commit()
+
+    return {
+        "frame_id": frame_id,
+        "next_frame_id": next_frame_id,
+        "kind": "between_stills",
+        "preview_path": str(dest),
+        "prompt_id": prompt_id,
+    }
+
+
+async def generate_all_between_stills(
+    project_id: int,
+    *,
+    workflow_id: str | None = None,
+    skip_existing: bool = True,
+    num_frames: int = 33,
+) -> dict[str, Any]:
+    """Generate between-stills clips for every consecutive still pair."""
+    with SessionLocal() as db:
+        p = db.get(Project, project_id)
+        if not p:
+            raise KeyError(f"project {project_id} not found")
+        frames = [
+            {
+                "id": f.id,
+                "still_path": f.still_path,
+                "preview_path": f.preview_path,
+                "keyframe_last_path": f.keyframe_last_path,
+                "keyframe_first_path": f.keyframe_first_path,
+            }
+            for f in sorted(p.frames, key=lambda x: x.position)
+        ]
+    if len(frames) < 2:
+        raise ValueError("need at least two storyboard frames")
+
+    pairs = []
+    for i in range(len(frames) - 1):
+        a, b = frames[i], frames[i + 1]
+        a_ok = a.get("keyframe_last_path") or a.get("still_path")
+        b_ok = b.get("keyframe_first_path") or b.get("still_path")
+        if a_ok and b_ok:
+            pairs.append(a)
+
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    skipped = 0
+    for fr in pairs:
+        if skip_existing and fr.get("preview_path"):
+            results.append(
+                {
+                    "frame_id": fr["id"],
+                    "skipped": True,
+                    "preview_path": fr["preview_path"],
+                }
+            )
+            skipped += 1
+            continue
+        try:
+            out = await generate_between_stills(
+                project_id,
+                fr["id"],
+                workflow_id=workflow_id,
+                num_frames=num_frames,
+            )
+            results.append(out)
+        except Exception as e:
+            errors.append({"frame_id": fr["id"], "error": str(e)})
+
+    return {
+        "project_id": project_id,
+        "generated": len([r for r in results if not r.get("skipped")]),
+        "skipped": skipped,
+        "failed": len(errors),
+        "results": results,
+        "errors": errors,
+    }
+
+
+_KEYFRAME_PHASES: tuple[tuple[str, str, str], ...] = (
+    (
+        "first",
+        "keyframe_first_path",
+        "Opening keyframe of this beat — establishing shot, action just beginning.",
+    ),
+    (
+        "mid",
+        "keyframe_mid_path",
+        "Midpoint keyframe of this beat — peak action and strongest pose.",
+    ),
+    (
+        "last",
+        "keyframe_last_path",
+        "Closing keyframe of this beat — action resolving, ready to continue.",
+    ),
+)
+
+
+def _phase_prompt(
+    *,
+    phase_label: str,
+    beat: str,
+    premise: str,
+    next_beat: str | None,
+) -> str:
+    world = _truncate(premise or "", 280)
+    beat_bit = _truncate(beat or "", 280)
+    parts = [
+        "Photorealistic cinematic still photograph, one continuous camera shot, one moment only.",
+        phase_label,
+    ]
+    if world:
+        parts.append(f"Film continuity for: {world}.")
+    if beat_bit:
+        parts.append(f"Beat: {beat_bit}.")
+    if next_beat and "Closing" in phase_label:
+        parts.append(f"Leans toward the next beat: {_truncate(next_beat, 160)}.")
+    parts.append(
+        "Same cast, wardrobe, and location look; do not show a multi-panel layout."
+    )
+    return " ".join(parts)
+
+
+async def _render_keyframe_image(
+    *,
+    project_id: int,
+    frame_id: int,
+    phase: str,
+    prompt: str,
+    source_still: str | None,
+    seed: int,
+) -> Path:
+    """Generate one keyframe image via edit-from-still when possible, else T2I."""
+    settings = get_settings()
+    media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+    media.mkdir(parents=True, exist_ok=True)
+    comfy = ComfyUIClient()
+    neg = still_negative_prompt(prompt)
+
+    if source_still:
+        src = _resolve_media_file(source_still)
+        uploaded = await comfy.upload_image(src)
+        edit_prompt = (
+            f"Edit this cinematic still. Instruction: {prompt} "
+            "Preserve composition, character identity, and setting unless the instruction changes them. "
+            "One continuous camera shot only — no collage or panels."
+        )
+        graph = apply_params(
+            "still_edit",
+            {
+                "positive_prompt": edit_prompt,
+                "negative_prompt": neg,
+                "seed": seed,
+                "filename_prefix": f"local_video/p{project_id}_f{frame_id}_kf_{phase}",
+                "width": 1024,
+                "height": 576,
+                "steps": 20,
+                "cfg": 5.0,
+            },
+            uploaded_image_name=uploaded,
+        )
+    else:
+        graph = apply_params(
+            "still_hero",
+            {
+                "positive_prompt": prompt,
+                "negative_prompt": neg,
+                "seed": seed,
+                "filename_prefix": f"local_video/p{project_id}_f{frame_id}_kf_{phase}",
+            },
+        )
+
+    prompt_id = await comfy.queue_prompt(graph)
+    history = await comfy.wait_for_prompt(prompt_id)
+    outputs = comfy.collect_outputs(history)
+    if not outputs:
+        raise RuntimeError(f"ComfyUI produced no outputs for keyframe {phase}")
+    out = outputs[0]
+    dest = media / f"keyframe_{phase}_{out['filename']}"
+    await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+    return dest
+
+
+async def generate_frame_keyframes(
+    project_id: int,
+    frame_id: int,
+    *,
+    skip_existing: bool = True,
+) -> dict[str, Any]:
+    """Create first / mid / last keyframe stills for one storyboard step."""
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+        p = db.get(Project, project_id)
+        assert p is not None
+        frames = sorted(p.frames, key=lambda x: x.position)
+        idx = next(i for i, fr in enumerate(frames) if fr.id == frame_id)
+        beat = f.visual_prompt or f.description or ""
+        premise = p.premise or ""
+        next_beat = None
+        if idx + 1 < len(frames):
+            nxt = frames[idx + 1]
+            next_beat = nxt.visual_prompt or nxt.description or ""
+        source_still = f.still_path
+        existing = {
+            "first": f.keyframe_first_path,
+            "mid": f.keyframe_mid_path,
+            "last": f.keyframe_last_path,
+        }
+
+    paths: dict[str, str | None] = dict(existing)
+    generated: list[str] = []
+    skipped: list[str] = []
+    for i, (phase, attr, label) in enumerate(_KEYFRAME_PHASES):
+        if skip_existing and existing.get(phase):
+            skipped.append(phase)
+            continue
+        prompt = _phase_prompt(
+            phase_label=label,
+            beat=beat,
+            premise=premise,
+            next_beat=next_beat,
+        )
+        dest = await _render_keyframe_image(
+            project_id=project_id,
+            frame_id=frame_id,
+            phase=phase,
+            prompt=prompt,
+            source_still=source_still,
+            seed=frame_id * 31 + i * 97,
+        )
+        with SessionLocal() as db:
+            fr = db.get(StoryboardFrame, frame_id)
+            assert fr
+            setattr(fr, attr, str(dest))
+            db.commit()
+        paths[phase] = str(dest)
+        generated.append(phase)
+
+    return {
+        "frame_id": frame_id,
+        "kind": "keyframes",
+        "generated": generated,
+        "skipped": skipped,
+        "keyframe_first_path": paths.get("first"),
+        "keyframe_mid_path": paths.get("mid"),
+        "keyframe_last_path": paths.get("last"),
+    }
+
+
+async def generate_all_keyframes(
+    project_id: int,
+    *,
+    skip_existing: bool = True,
+) -> dict[str, Any]:
+    """Generate first/mid/last keyframes for every storyboard frame."""
+    with SessionLocal() as db:
+        p = db.get(Project, project_id)
+        if not p:
+            raise KeyError(f"project {project_id} not found")
+        frame_ids = [f.id for f in sorted(p.frames, key=lambda x: x.position)]
+    if not frame_ids:
+        raise ValueError("no storyboard frames")
+
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for fid in frame_ids:
+        try:
+            results.append(
+                await generate_frame_keyframes(
+                    project_id, fid, skip_existing=skip_existing
+                )
+            )
+        except Exception as e:
+            errors.append({"frame_id": fid, "error": str(e)})
+
+    return {
+        "project_id": project_id,
+        "frames": len(frame_ids),
+        "completed": len(results),
+        "failed": len(errors),
+        "results": results,
+        "errors": errors,
+    }
+
+
+async def _i2v_clip_from_image(
+    *,
+    project_id: int,
+    frame_id: int,
+    start_image: Path,
+    prompt: str,
+    label: str,
+    num_frames: int,
+    seed: int,
+    workflow_id: str = "wan22_i2v",
+) -> Path:
+    settings = get_settings()
+    validate_frame_count(num_frames)
+    comfy = ComfyUIClient()
+    uploaded = await comfy.upload_image(start_image)
+    params = {
+        "positive_prompt": prompt,
+        "negative_prompt": (
+            "blurry, watermark, text, static, jump cut, morphing face, flickering, "
+            "collage, comic, storyboard, panels, grid, split screen, montage"
+        ),
+        "seed": seed,
+        "num_frames": num_frames,
+        "width": settings.default_width,
+        "height": settings.default_height,
+        "fps": settings.default_fps,
+        "cfg": settings.default_cfg,
+        "filename_prefix": f"local_video/p{project_id}_f{frame_id}_{label}",
+    }
+    graph = apply_params(workflow_id, params, uploaded_image_name=uploaded)
+    prompt_id = await comfy.queue_prompt(graph)
+    history = await comfy.wait_for_prompt(prompt_id)
+    outputs = comfy.collect_outputs(history)
+    if not outputs:
+        raise RuntimeError("ComfyUI produced no outputs")
+    media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+    media.mkdir(parents=True, exist_ok=True)
+    out = outputs[0]
+    dest = media / out["filename"]
+    await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+    return dest
+
+
+async def generate_step_clips(
+    project_id: int,
+    frame_id: int,
+    *,
+    num_frames: int = 33,
+    workflow_id: str | None = None,
+) -> dict[str, Any]:
+    """I2V first→mid and mid→last for a step; concat into preview_path."""
+    workflow_id = workflow_id or "wan22_i2v"
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+        p = db.get(Project, project_id)
+        assert p is not None
+        first = f.keyframe_first_path
+        mid = f.keyframe_mid_path
+        last = f.keyframe_last_path
+        beat = f.visual_prompt or f.description or ""
+        premise = p.premise or ""
+        if not (first and mid and last):
+            raise ValueError("frame needs first, mid, and last keyframes first")
+
+    first_p = _resolve_media_file(first)
+    mid_p = _resolve_media_file(mid)
+    _resolve_media_file(last)  # ensure end keyframe exists on disk
+
+    clip_a = await _i2v_clip_from_image(
+        project_id=project_id,
+        frame_id=frame_id,
+        start_image=first_p,
+        prompt=build_transition_prompt(
+            premise=premise, start_prompt=f"start: {beat}", end_prompt=f"midpoint: {beat}"
+        ),
+        label="clip_a",
+        num_frames=num_frames,
+        seed=frame_id * 17 + 11,
+        workflow_id=workflow_id,
+    )
+    clip_b = await _i2v_clip_from_image(
+        project_id=project_id,
+        frame_id=frame_id,
+        start_image=mid_p,
+        prompt=build_transition_prompt(
+            premise=premise, start_prompt=f"midpoint: {beat}", end_prompt=f"end: {beat}"
+        ),
+        label="clip_b",
+        num_frames=num_frames,
+        seed=frame_id * 17 + 13,
+        workflow_id=workflow_id,
+    )
+
+    settings = get_settings()
+    media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+    preview = media / f"step_preview_f{frame_id}.mp4"
+    # Prefer frame-extract concat for codec safety across Comfy outputs
+    raw_a = media / "_clip_a_frames"
+    raw_b = media / "_clip_b_frames"
+    fa = extract_frames_from_video(clip_a, raw_a)
+    fb = extract_frames_from_video(clip_b, raw_b)
+    if fa and fb:
+        seq = media / "_step_seq"
+        concat_frame_dirs([raw_a, raw_b], seq)
+        encode_frames_to_mp4(seq, preview, fps=settings.default_fps)
+    else:
+        concat_videos([clip_a, clip_b], preview)
+
+    with SessionLocal() as db:
+        fr = db.get(StoryboardFrame, frame_id)
+        assert fr
+        fr.preview_path = str(preview)
+        db.commit()
+
+    return {
+        "frame_id": frame_id,
+        "kind": "step_clips",
+        "preview_path": str(preview),
+        "clip_a": str(clip_a),
+        "clip_b": str(clip_b),
+        # mid/last available for cross-step bridges
+        "keyframe_last_path": last,
+    }
+
+
+async def generate_all_step_clips(
+    project_id: int,
+    *,
+    skip_existing: bool = True,
+    num_frames: int = 33,
+) -> dict[str, Any]:
+    with SessionLocal() as db:
+        p = db.get(Project, project_id)
+        if not p:
+            raise KeyError(f"project {project_id} not found")
+        frames = [
+            {
+                "id": f.id,
+                "preview_path": f.preview_path,
+                "ready": bool(
+                    f.keyframe_first_path and f.keyframe_mid_path and f.keyframe_last_path
+                ),
+            }
+            for f in sorted(p.frames, key=lambda x: x.position)
+        ]
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    skipped = 0
+    for fr in frames:
+        if not fr["ready"]:
+            errors.append({"frame_id": fr["id"], "error": "missing keyframes"})
+            continue
+        if skip_existing and fr.get("preview_path"):
+            results.append({"frame_id": fr["id"], "skipped": True})
+            skipped += 1
+            continue
+        try:
+            results.append(
+                await generate_step_clips(
+                    project_id, fr["id"], num_frames=num_frames
+                )
+            )
+        except Exception as e:
+            errors.append({"frame_id": fr["id"], "error": str(e)})
+    return {
+        "project_id": project_id,
+        "generated": len([r for r in results if not r.get("skipped")]),
+        "skipped": skipped,
         "failed": len(errors),
         "results": results,
         "errors": errors,
