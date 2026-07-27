@@ -187,6 +187,17 @@ button:disabled {
   margin-bottom: 0.5rem;
 }
 
+.thumb {
+  display: block;
+  width: 100%;
+  margin-top: 0.65rem;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  background: #0c100e;
+  max-height: 220px;
+  object-fit: cover;
+}
+
 .tag {
   font-size: 0.75rem;
   color: var(--accent);

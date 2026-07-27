@@ -17,6 +17,21 @@ const api = async (path, opts = {}) => {
   return data;
 };
 
+/** Map container paths like /media/projects/... to the public media API. */
+function mediaUrl(absPath) {
+  if (!absPath) return null;
+  const markers = ["/media/", "/data/"];
+  for (const marker of markers) {
+    const idx = absPath.indexOf(marker);
+    if (idx >= 0) {
+      const rel = absPath.slice(idx + marker.length);
+      return marker === "/media/" ? `/api/media/${rel}` : null;
+    }
+  }
+  if (!absPath.startsWith("/")) return `/api/media/${absPath}`;
+  return null;
+}
+
 function Shell({ children }) {
   return (
     <div className="app">
@@ -311,7 +326,16 @@ function ProjectPage() {
                   Preview clip
                 </button>
               </div>
-              {f.still_path && <p className="muted tiny">{f.still_path}</p>}
+              {mediaUrl(f.still_path) && (
+                <img
+                  className="thumb"
+                  src={mediaUrl(f.still_path)}
+                  alt={`Frame ${f.position + 1} still`}
+                />
+              )}
+              {mediaUrl(f.preview_path) && (
+                <video className="thumb" src={mediaUrl(f.preview_path)} controls muted playsInline />
+              )}
             </article>
           ))}
         </div>

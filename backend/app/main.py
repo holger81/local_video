@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -53,9 +53,9 @@ async def health():
 def media_file(path: str):
     full = (settings.media_dir / path).resolve()
     if not str(full).startswith(str(settings.media_dir.resolve())):
-        return {"error": "invalid path"}
-    if not full.exists():
-        return {"error": "not found"}
+        raise HTTPException(400, "invalid path")
+    if not full.exists() or not full.is_file():
+        raise HTTPException(404, "not found")
     return FileResponse(full)
 
 
