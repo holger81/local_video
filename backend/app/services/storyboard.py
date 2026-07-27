@@ -119,33 +119,37 @@ def build_visual_prompt(
     title: str,
     genre: str,
     frame_prompt: str,
-    frame_position: int,
-    total_frames: int,
     prev_prompt: str | None = None,
     next_prompt: str | None = None,
 ) -> str:
-    """Compose an image prompt that locks overall story continuity."""
+    """Compose an image prompt that locks overall story continuity.
+
+    Avoid words like "storyboard" / "panel" / "frame N of M" — image models
+    often render those as a multi-panel collage instead of one shot.
+    """
     story_bit = _truncate(story or "", 700)
     frame_bit = _truncate(frame_prompt or "", 400)
-    parts: list[str] = []
+    parts: list[str] = [
+        "Single cinematic still photograph, one shot only, full frame, no collage, no comic panels, no grid layout."
+    ]
     header = []
     if title:
-        header.append(f'Title "{title}"')
+        header.append(f'film "{title}"')
     if genre:
-        header.append(f"genre {genre}")
+        header.append(f"{genre} genre")
     if header:
         parts.append(", ".join(header) + ".")
     if story_bit:
-        parts.append(f"Overall story (keep characters, wardrobe, setting, tone consistent): {story_bit}")
-    parts.append(
-        f"Storyboard frame {frame_position + 1} of {max(total_frames, 1)} — depict this beat: {frame_bit}"
-    )
+        parts.append(
+            f"World and continuity (same characters, wardrobe, setting, tone): {story_bit}"
+        )
+    parts.append(f"Depict this moment: {frame_bit}")
     if prev_prompt:
-        parts.append(f"Continues after: {_truncate(prev_prompt, 160)}")
+        parts.append(f"Action continues after: {_truncate(prev_prompt, 160)}")
     if next_prompt:
         parts.append(f"Leads toward: {_truncate(next_prompt, 160)}")
     parts.append(
-        "Same film, same cast and world as the overall story; cohesive cinematic look across the storyboard."
+        "Match the same cast and location as the rest of the film; cohesive look, one camera angle."
     )
     return " ".join(parts)
 
@@ -178,8 +182,6 @@ async def generate_frame_visual(
             title=p.title or "",
             genre=p.genre or "",
             frame_prompt=f.visual_prompt or f.description or "",
-            frame_position=f.position if f.position is not None else idx,
-            total_frames=len(frames),
             prev_prompt=prev_prompt,
             next_prompt=next_prompt,
         )
@@ -190,7 +192,9 @@ async def generate_frame_visual(
             "positive_prompt": prompt,
             "negative_prompt": (
                 "blurry, watermark, text overlay, logo, inconsistent characters, "
-                "different person each frame, style change, collage"
+                "different person each frame, style change, collage, comic, manga, "
+                "storyboard, panels, grid, split screen, montage, multiple images, "
+                "contact sheet, triptych, scrapbook"
             ),
             "seed": frame_id * 17,
             "filename_prefix": f"local_video/p{project_id}_f{frame_id}_still",
@@ -201,7 +205,8 @@ async def generate_frame_visual(
         params = {
             "positive_prompt": prompt,
             "negative_prompt": (
-                "blurry, watermark, text, static, inconsistent characters, style change"
+                "blurry, watermark, text, static, inconsistent characters, style change, "
+                "collage, comic, storyboard, panels, grid, split screen, montage"
             ),
             "seed": frame_id * 17,
             "num_frames": num_frames,

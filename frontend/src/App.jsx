@@ -134,6 +134,7 @@ function ProjectPage() {
   const [storyEdit, setStoryEdit] = useState("");
   const [extendInstr, setExtendInstr] = useState("");
   const [busy, setBusy] = useState("");
+  const [visualBusy, setVisualBusy] = useState(null);
   const [err, setErr] = useState("");
   const [job, setJob] = useState(null);
   const [movieForm, setMovieForm] = useState({
@@ -149,6 +150,7 @@ function ProjectPage() {
     const p = await api(`/projects/${id}`);
     setProject(p);
     setStoryEdit(p.story || "");
+    return p;
   }, [id]);
 
   useEffect(() => {
@@ -182,6 +184,53 @@ function ProjectPage() {
     } catch (e) {
       setErr(String(e.message || e));
     } finally {
+      setBusy("");
+    }
+  };
+
+  const generateVisual = async (frameId, kind) => {
+    setBusy(kind === "still" ? `still ${frameId}` : `preview ${frameId}`);
+    setVisualBusy({ frameId, kind });
+    setErr("");
+    try {
+      await api(`/projects/${id}/storyboard/frames/${frameId}/visual`, {
+        method: "POST",
+        body: JSON.stringify({ kind, num_frames: 33 }),
+      });
+      await load();
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setVisualBusy(null);
+      setBusy("");
+    }
+  };
+
+  const createAllStills = async () => {
+    const frames = [...(project.frames || [])].sort((a, b) => a.position - b.position);
+    if (!frames.length) return;
+    setBusy("create all stills");
+    setErr("");
+    try {
+      for (let i = 0; i < frames.length; i++) {
+        const f = frames[i];
+        setBusy(`create all stills (${i + 1}/${frames.length})`);
+        setVisualBusy({ frameId: f.id, kind: "still" });
+        // Let React paint the spinner before the long ComfyUI call.
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        await api(`/projects/${id}/storyboard/frames/${f.id}/visual`, {
+          method: "POST",
+          body: JSON.stringify({ kind: "still" }),
+        });
+        // Clear spinner on this card so the new still can show, then refresh.
+        setVisualBusy(null);
+        await load();
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      }
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setVisualBusy(null);
       setBusy("");
     }
   };
@@ -272,14 +321,7 @@ function ProjectPage() {
           <button
             type="button"
             disabled={!!busy || !(project.frames || []).length}
-            onClick={() =>
-              run("create all stills", () =>
-                api(`/projects/${id}/storyboard/stills`, {
-                  method: "POST",
-                  body: JSON.stringify({ skip_existing: false }),
-                })
-              )
-            }
+            onClick={() => createAllStills()}
           >
             Create all stills
           </button>
@@ -314,42 +356,44 @@ function ProjectPage() {
                 <button
                   type="button"
                   disabled={!!busy}
-                  onClick={() =>
-                    run(`still ${f.id}`, () =>
-                      api(`/projects/${id}/storyboard/frames/${f.id}/visual`, {
-                        method: "POST",
-                        body: JSON.stringify({ kind: "still" }),
-                      })
-                    )
-                  }
+                  onClick={() => generateVisual(f.id, "still")}
                 >
                   Still
                 </button>
                 <button
                   type="button"
                   disabled={!!busy}
-                  onClick={() =>
-                    run(`preview ${f.id}`, () =>
-                      api(`/projects/${id}/storyboard/frames/${f.id}/visual`, {
-                        method: "POST",
-                        body: JSON.stringify({ kind: "preview", num_frames: 33 }),
-                      })
-                    )
-                  }
+                  onClick={() => generateVisual(f.id, "preview")}
                 >
                   Preview clip
                 </button>
               </div>
-              {mediaUrl(f.still_path) && (
-                <img
-                  className="thumb"
-                  src={mediaUrl(f.still_path)}
-                  alt={`Frame ${f.position + 1} still`}
-                />
-              )}
-              {mediaUrl(f.preview_path) && (
-                <video className="thumb" src={mediaUrl(f.preview_path)} controls muted playsInline />
-              )}
+              <div className="media-slot">
+                {mediaUrl(f.still_path) && (
+                  <img
+                    className="thumb"
+                    src={`${mediaUrl(f.still_path)}?t=${encodeURIComponent(f.still_path)}`}
+                    alt={`Frame ${f.position + 1} still`}
+                  />
+                )}
+                {mediaUrl(f.preview_path) && (
+                  <video
+                    className="thumb"
+                    src={`${mediaUrl(f.preview_path)}?t=${encodeURIComponent(f.preview_path)}`}
+                    controls
+                    muted
+                    playsInline
+                  />
+                )}
+                {visualBusy?.frameId === f.id && (
+                  <div className="thumb-overlay" aria-busy="true">
+                    <span className="spinner" />
+                    <span className="tiny">
+                      {visualBusy.kind === "preview" ? "Creating preview…" : "Creating still…"}
+                    </span>
+                  </div>
+                )}
+              </div>
             </article>
           ))}
         </div>

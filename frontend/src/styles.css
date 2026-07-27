@@ -198,6 +198,61 @@ button:disabled {
   object-fit: cover;
 }
 
+.media-slot {
+  position: relative;
+  min-height: 0;
+}
+
+.thumb-placeholder {
+  margin-top: 0.65rem;
+  min-height: 140px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  background: #0c100e;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+}
+
+.thumb-overlay {
+  position: absolute;
+  inset: 0.65rem 0 0;
+  min-height: 140px;
+  border-radius: 3px;
+  background: rgba(12, 16, 14, 0.72);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  color: var(--ink);
+  pointer-events: none;
+}
+
+.media-slot:not(:has(.thumb)) .thumb-overlay {
+  position: relative;
+  inset: auto;
+  margin-top: 0.65rem;
+  border: 1px solid var(--line);
+}
+
+.spinner {
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .tag {
   font-size: 0.75rem;
   color: var(--accent);
