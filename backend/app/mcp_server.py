@@ -173,7 +173,7 @@ async def generate_between_stills(
     workflow_id: str | None = None,
     num_frames: int = 33,
 ) -> dict:
-    """Generate a clip from this frame's still toward the next frame's still (I2V)."""
+    """Generate a clip from this frame's end into the next frame's start (FLF2V)."""
     return await sb_svc.generate_between_stills(
         project_id,
         frame_id,
@@ -223,7 +223,7 @@ async def generate_step_clips(
     num_frames: int = 33,
     workflow_id: str | None = None,
 ) -> dict:
-    """I2V first→mid and mid→last for a step; saves concatenated preview."""
+    """FLF2V between consecutive keyframes; saves concatenated preview."""
     return await sb_svc.generate_step_clips(
         project_id, frame_id, num_frames=num_frames, workflow_id=workflow_id
     )

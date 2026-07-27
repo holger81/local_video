@@ -20,11 +20,12 @@ When a storyboard shot has a **still** or **first keyframe**, chunk 0 uses that 
 Storyboard pipeline:
 1. Hero stills per beat
 2. **Keyframes** — first / mid / last images per beat
-3. **Step clips** — I2V first→mid and mid→last (concat to preview)
-4. **Between steps** — bridge from last keyframe of N to first of N+1
+3. **Step clips** — FLF2V between consecutive keyframes (concat to preview)
+4. **Between steps** — FLF2V bridge from last keyframe of N to first of N+1
 5. Movie agent
 
-True dual-frame FLF needs a FLF2V checkpoint; TI2V 5B only locks the start frame.
+True dual-frame FLF uses the `wan22_flf2v` workflow (Wan 2.2 14B first+last frame).
+TI2V 5B I2V (`wan22_i2v`) only locks the start frame.
 
 ## Handoff schema
 

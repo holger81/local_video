@@ -731,7 +731,7 @@ function ProjectPage() {
         <h2>3. Batch keyframes &amp; motion</h2>
         <p className="muted">
           Run across the board: LLM image prompts → edit-chain keyframes (new shot =
-          own series; continue = from prior end) → animate consecutive pairs → bridge beats.
+          own series; continue = from prior end) → FLF2V animate consecutive pairs → bridge beats.
         </p>
         <div className="frame-stage-actions batch-actions">
           <button
@@ -749,7 +749,7 @@ function ProjectPage() {
               !(project.frames || []).some((f) => keyframesReady(f) && !f.preview_path)
             }
             onClick={() => createStepClips()}
-            title="Animate consecutive keyframes for beats missing a preview"
+            title="FLF2V animate consecutive keyframes for beats missing a preview"
           >
             Animate beats missing a preview
           </button>
@@ -772,7 +772,7 @@ function ProjectPage() {
               })()
             }
             onClick={() => createBetweenStills()}
-            title="Create bridge clips from each beat’s end into the next beat’s start"
+            title="FLF2V bridge clips from each beat’s end into the next beat’s start"
           >
             Bridge clips between beats
           </button>
@@ -1310,7 +1310,7 @@ function ProjectPage() {
               <section className="frame-stage kf-editor-section">
                 <div className="frame-stage-head">
                   <strong>Motion</strong>
-                  <span className="tiny muted">Animate consecutive keyframes into a preview</span>
+                  <span className="tiny muted">FLF2V animate consecutive keyframes into a preview</span>
                 </div>
                 <div className="frame-stage-actions">
                   <button
@@ -1331,7 +1331,7 @@ function ProjectPage() {
                     }
                     title={
                       keyframesReady(f)
-                        ? "I2V between each consecutive keyframe, then combine into the preview"
+                        ? "FLF2V between each consecutive keyframe (locks start and end), then combine into the preview"
                         : "Needs a complete keyframe series first"
                     }
                   >
@@ -1370,7 +1370,7 @@ function ProjectPage() {
                         }
                         title={
                           canBetween
-                            ? "Create a bridge clip from this beat’s end into the next beat’s start"
+                            ? "FLF2V bridge from this beat’s end into the next beat’s start"
                             : "Needs this beat’s end image and the next beat’s start image"
                         }
                       >

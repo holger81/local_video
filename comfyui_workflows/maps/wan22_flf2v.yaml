@@ -1,0 +1,26 @@
+workflow: wan22_flf2v.json
+description: >
+  Wan 2.2 14B FLF2V (first+last frame → video) with lightx2v 4-step LoRAs.
+  Uploads start_image and end_image; locks both endpoints.
+model_files:
+  - models/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+  - models/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+  - models/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors
+  - models/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
+  - models/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
+  - models/vae/wan_2.1_vae.safetensors
+fields:
+  positive_prompt: {node: "6", input: text}
+  negative_prompt: {node: "7", input: text}
+  seed: {node: "57", input: noise_seed}
+  steps: {node: "57", input: steps}
+  cfg: {node: "57", input: cfg}
+  sampler_name: {node: "57", input: sampler_name}
+  scheduler: {node: "57", input: scheduler}
+  num_frames: {node: "67", input: length}
+  width: {node: "67", input: width}
+  height: {node: "67", input: height}
+  fps: {node: "60", input: fps}
+  filename_prefix: {node: "61", input: filename_prefix}
+  start_image: {node: "62", input: image, upload: true}
+  end_image: {node: "68", input: image, upload: true}

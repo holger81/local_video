@@ -17,6 +17,7 @@ This folder ships **simple atomic** Wan 2.2 graphs. Continuity (chunking, overla
    - `import/wan22_t2v.json` — official 14B T2V template (subgraph; inspect / customize)
    - `import/wan22_i2v.json` — official 14B I2V template
    - `import/wan22_t2v_5b.json` / `wan22_i2v_5b.json` — flat **5B TI2V** graphs tuned to **33 frames** (recommended for the agent)
+   - `import/wan22_flf2v.json` — official **14B FLF2V** template (first + last frame)
    - `import/still_hero.json` — simple SD1.5-style still (change checkpoint to yours)
 3. Confirm model filenames match your `ComfyUI/models/` tree.
 4. Run a test prompt once.
@@ -50,8 +51,8 @@ Agent defaults expect `length` / `num_frames` = **33** (`4n+1`).
 |---------|-----------|
 | `wan22_t2v` | Chunk 0 / `new_shot` |
 | `wan22_i2v` | `continue` — uploads previous `last_frame.png` into LoadImage |
+| `wan22_flf2v` | **Keyframe / beat bridges** — uploads `start_image` + `end_image` (14B FLF2V) |
 | `still_hero` | Storyboard stills (text → image) |
 | `still_edit` | Prompt-edit an existing still (ReferenceLatent) |
-| `wan22_i2v` | Continue / **between stills** (start image → clip) |
 
 No Wan Video Extender / chunk helper nodes required.

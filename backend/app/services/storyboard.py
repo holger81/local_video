@@ -750,12 +750,7 @@ async def generate_between_stills(
     workflow_id: str | None = None,
     num_frames: int = 33,
 ) -> dict[str, Any]:
-    """Generate a preview clip from this frame's still toward the next frame's still.
-
-    Uses Wan I2V with the current still as start_image. True dual-keyframe FLF needs a
-    FLF2V checkpoint (not on the TI2V 5B host); the next still guides via prompt.
-    """
-    settings = get_settings()
+    """Bridge this beat's end image into the next beat's start via Wan FLF2V."""
     validate_frame_count(num_frames)
     with SessionLocal() as db:
         p = db.get(Project, project_id)
@@ -769,9 +764,19 @@ async def generate_between_stills(
             raise ValueError("last frame has no next still to transition toward")
         cur = frames[idx]
         nxt = frames[idx + 1]
+        cur_kfs = _keyframes_list(cur)
+        nxt_kfs = _keyframes_list(nxt)
         # Prefer step keyframes when present: last of this step → first of next.
-        start_stored = cur.keyframe_last_path or cur.still_path
-        end_ref = nxt.keyframe_first_path or nxt.still_path
+        start_stored = (
+            (cur_kfs[-1].get("path") if cur_kfs else None)
+            or cur.keyframe_last_path
+            or cur.still_path
+        )
+        end_ref = (
+            (nxt_kfs[0].get("path") if nxt_kfs else None)
+            or nxt.keyframe_first_path
+            or nxt.still_path
+        )
         if not start_stored:
             raise ValueError(
                 "current frame has no last keyframe or still — create keyframes/stills first"
@@ -780,44 +785,35 @@ async def generate_between_stills(
             raise ValueError(
                 "next frame has no first keyframe or still — create keyframes/stills first"
             )
-        start_beat = cur.visual_prompt or cur.description or ""
-        end_beat = nxt.visual_prompt or nxt.description or ""
+        start_beat = (
+            (cur_kfs[-1].get("image_prompt") if cur_kfs else None)
+            or cur.visual_prompt
+            or cur.description
+            or ""
+        )
+        end_beat = (
+            (nxt_kfs[0].get("image_prompt") if nxt_kfs else None)
+            or nxt.visual_prompt
+            or nxt.description
+            or ""
+        )
         premise = p.premise or ""
         next_frame_id = nxt.id
 
-    start_path = _resolve_media_file(start_stored)
-    prompt = build_transition_prompt(
-        premise=premise, start_prompt=start_beat, end_prompt=end_beat
-    )
-    workflow_id = workflow_id or "wan22_i2v"
-    comfy = ComfyUIClient()
-    uploaded = await comfy.upload_image(start_path)
-    params = {
-        "positive_prompt": prompt,
-        "negative_prompt": (
-            "blurry, watermark, text, static, jump cut, morphing face, flickering, "
-            "collage, comic, storyboard, panels, grid, split screen, montage"
+    workflow_id = workflow_id or "wan22_flf2v"
+    dest = await _bridge_clip_between_images(
+        project_id=project_id,
+        frame_id=frame_id,
+        start_image=_resolve_media_file(start_stored),
+        end_image=_resolve_media_file(end_ref),
+        prompt=build_transition_prompt(
+            premise=premise, start_prompt=start_beat, end_prompt=end_beat
         ),
-        "seed": frame_id * 17 + 3,
-        "num_frames": num_frames,
-        "width": settings.default_width,
-        "height": settings.default_height,
-        "fps": settings.default_fps,
-        "cfg": settings.default_cfg,
-        "filename_prefix": f"local_video/p{project_id}_f{frame_id}_between",
-    }
-    graph = apply_params(workflow_id, params, uploaded_image_name=uploaded)
-    prompt_id = await comfy.queue_prompt(graph)
-    history = await comfy.wait_for_prompt(prompt_id)
-    outputs = comfy.collect_outputs(history)
-    if not outputs:
-        raise RuntimeError("ComfyUI produced no outputs")
-
-    media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
-    media.mkdir(parents=True, exist_ok=True)
-    out = outputs[0]
-    dest = media / out["filename"]
-    await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+        label="between",
+        num_frames=num_frames,
+        seed=frame_id * 17 + 3,
+        workflow_id=workflow_id,
+    )
 
     with SessionLocal() as db:
         fr = db.get(StoryboardFrame, frame_id)
@@ -831,7 +827,7 @@ async def generate_between_stills(
         "next_frame_id": next_frame_id,
         "kind": "between_stills",
         "preview_path": str(dest),
-        "prompt_id": prompt_id,
+        "workflow_id": workflow_id,
     }
 
 
@@ -1253,21 +1249,26 @@ async def generate_all_keyframes(
     }
 
 
-async def _i2v_clip_from_image(
+async def _bridge_clip_between_images(
     *,
     project_id: int,
     frame_id: int,
     start_image: Path,
+    end_image: Path | None = None,
     prompt: str,
     label: str,
     num_frames: int,
     seed: int,
-    workflow_id: str = "wan22_i2v",
+    workflow_id: str = "wan22_flf2v",
 ) -> Path:
+    """Generate a clip locked to start (and optionally end) image via FLF2V or I2V."""
     settings = get_settings()
     validate_frame_count(num_frames)
     comfy = ComfyUIClient()
-    uploaded = await comfy.upload_image(start_image)
+    start_name = await comfy.upload_image(start_image)
+    uploads: dict[str, str] = {"start_image": start_name}
+    if end_image is not None:
+        uploads["end_image"] = await comfy.upload_image(end_image)
     params = {
         "positive_prompt": prompt,
         "negative_prompt": (
@@ -1282,7 +1283,7 @@ async def _i2v_clip_from_image(
         "cfg": settings.default_cfg,
         "filename_prefix": f"local_video/p{project_id}_f{frame_id}_{label}",
     }
-    graph = apply_params(workflow_id, params, uploaded_image_name=uploaded)
+    graph = apply_params(workflow_id, params, uploaded_images=uploads)
     prompt_id = await comfy.queue_prompt(graph)
     history = await comfy.wait_for_prompt(prompt_id)
     outputs = comfy.collect_outputs(history)
@@ -1296,6 +1297,31 @@ async def _i2v_clip_from_image(
     return dest
 
 
+async def _i2v_clip_from_image(
+    *,
+    project_id: int,
+    frame_id: int,
+    start_image: Path,
+    prompt: str,
+    label: str,
+    num_frames: int,
+    seed: int,
+    workflow_id: str = "wan22_i2v",
+) -> Path:
+    """Legacy single-image I2V helper (start frame only)."""
+    return await _bridge_clip_between_images(
+        project_id=project_id,
+        frame_id=frame_id,
+        start_image=start_image,
+        end_image=None,
+        prompt=prompt,
+        label=label,
+        num_frames=num_frames,
+        seed=seed,
+        workflow_id=workflow_id,
+    )
+
+
 async def generate_step_clips(
     project_id: int,
     frame_id: int,
@@ -1303,8 +1329,8 @@ async def generate_step_clips(
     num_frames: int = 33,
     workflow_id: str | None = None,
 ) -> dict[str, Any]:
-    """I2V between consecutive keyframes in the series; concat into preview_path."""
-    workflow_id = workflow_id or "wan22_i2v"
+    """FLF2V between consecutive keyframes in the series; concat into preview_path."""
+    workflow_id = workflow_id or "wan22_flf2v"
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
@@ -1327,11 +1353,12 @@ async def generate_step_clips(
         a = keyframes[i]
         b = keyframes[i + 1]
         start_p = _resolve_media_file(a["path"])
-        _resolve_media_file(b["path"])
-        clip = await _i2v_clip_from_image(
+        end_p = _resolve_media_file(b["path"])
+        clip = await _bridge_clip_between_images(
             project_id=project_id,
             frame_id=frame_id,
             start_image=start_p,
+            end_image=end_p,
             prompt=build_transition_prompt(
                 premise=premise,
                 start_prompt=a.get("image_prompt") or f"t={a.get('t_sec')}s: {beat}",
