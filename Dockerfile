@@ -23,6 +23,6 @@ ENV DATA_DIR=/data
 ENV MEDIA_DIR=/media
 ENV WORKFLOWS_DIR=/app/comfyui_workflows
 
-EXPOSE 8000 8090
+EXPOSE 8000 8700
 WORKDIR /app/backend
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

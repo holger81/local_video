@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     default_scheduler: str = "simple"
 
     mcp_host: str = "0.0.0.0"
-    mcp_port: int = 8090
+    mcp_port: int = 8700
 
     cors_origins: str = "*"
 

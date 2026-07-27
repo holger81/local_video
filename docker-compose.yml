@@ -52,7 +52,7 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "app.mcp_server"]
     ports:
-      - "8090:8090"
+      - "8700:8700"
     env_file:
       - .env
     environment:
@@ -63,7 +63,7 @@ services:
       WORKFLOWS_DIR: /app/comfyui_workflows
       PYTHONPATH: /app/backend
       MCP_HOST: 0.0.0.0
-      MCP_PORT: "8090"
+      MCP_PORT: "8700"
     volumes:
       - lv_data:/data
       - lv_media:/media

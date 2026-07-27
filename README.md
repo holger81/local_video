@@ -6,7 +6,7 @@ LAN-hosted studio for storyboarding and long-form video generation. Continuity (
 
 - **Web UI** + **REST API** (`:8000`)
 - **ARQ worker** — durable movie agent (pause / resume / cancel)
-- **MCP server** (`:8090` SSE) — same tools for other LLMs
+- **MCP server** (`:8700` SSE) — same tools for other LLMs
 - Talks to your existing **ComfyUI** (`192.168.10.31:8188`) and **llama.cpp** (`192.168.10.31:9292`)
 
 ## Portainer / Docker
@@ -21,7 +21,7 @@ docker compose up -d --build
 ```
 
 4. Open `http://<host>:8000`
-5. MCP SSE: `http://<host>:8090/sse` (see MCP section below)
+5. MCP SSE: `http://<host>:8700/sse` (see MCP section below)
 
 Volumes: `lv_data` (SQLite), `lv_media` (frames / movies). Workflows mount from `./comfyui_workflows`.
 
@@ -48,7 +48,7 @@ Cursor / MCP client example (`mcp.json`):
 {
   "mcpServers": {
     "local_video": {
-      "url": "http://<host>:8090/sse"
+      "url": "http://<host>:8700/sse"
     }
   }
 }
