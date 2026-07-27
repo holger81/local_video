@@ -23,7 +23,16 @@ docker compose up -d --build
 4. Open `http://<host>:8000`
 5. MCP SSE: `http://<host>:8700/sse` (see MCP section below)
 
-Volumes: `lv_data` (SQLite), `lv_media` (frames / movies). Workflows mount from `./comfyui_workflows`.
+Volumes on the Portainer host:
+
+```
+/shared/local_video/
+  data/    # SQLite DB
+  media/   # frames, clips, final movies
+  redis/   # Redis persistence
+```
+
+Create them once if missing: `mkdir -p /shared/local_video/{data,media,redis}`. Workflows still mount from `./comfyui_workflows` in the stack.
 
 ## ComfyUI workflows
 

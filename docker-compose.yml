@@ -3,7 +3,7 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     volumes:
-      - redis_data:/data
+      - /shared/local_video/redis:/data
 
   api:
     build: .
@@ -19,8 +19,8 @@ services:
       MEDIA_DIR: /media
       WORKFLOWS_DIR: /app/comfyui_workflows
     volumes:
-      - lv_data:/data
-      - lv_media:/media
+      - /shared/local_video/data:/data
+      - /shared/local_video/media:/media
       - ./comfyui_workflows:/app/comfyui_workflows:ro
     depends_on:
       - redis
@@ -39,8 +39,8 @@ services:
       WORKFLOWS_DIR: /app/comfyui_workflows
       PYTHONPATH: /app/backend
     volumes:
-      - lv_data:/data
-      - lv_media:/media
+      - /shared/local_video/data:/data
+      - /shared/local_video/media:/media
       - ./comfyui_workflows:/app/comfyui_workflows:ro
     depends_on:
       - redis
@@ -65,15 +65,10 @@ services:
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8700"
     volumes:
-      - lv_data:/data
-      - lv_media:/media
+      - /shared/local_video/data:/data
+      - /shared/local_video/media:/media
       - ./comfyui_workflows:/app/comfyui_workflows:ro
     depends_on:
       - redis
       - api
     working_dir: /app/backend
-
-volumes:
-  redis_data:
-  lv_data:
-  lv_media:
