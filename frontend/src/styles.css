@@ -690,6 +690,44 @@ button.thumb-placeholder {
   font-size: 0.8rem;
 }
 
+.movie-result,
+.movie-card {
+  margin-top: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.movie-player {
+  width: 100%;
+  max-width: 720px;
+  border-radius: 3px;
+  background: #000;
+  border: 1px solid var(--line);
+}
+
+.movie-library {
+  margin-top: 1.25rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--line);
+}
+
+.movie-library h3 {
+  margin: 0 0 0.65rem;
+  font-size: 1rem;
+}
+
+.movie-library-grid {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.movie-card-actions {
+  justify-content: space-between;
+  align-items: center;
+}
+
 .timeline .shot {
   margin-bottom: 0.75rem;
 }

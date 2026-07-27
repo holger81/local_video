@@ -197,6 +197,7 @@ function ProjectPage() {
   const [kfEditDrafts, setKfEditDrafts] = useState({});
   const [err, setErr] = useState("");
   const [job, setJob] = useState(null);
+  const [movies, setMovies] = useState([]);
   const [movieForm, setMovieForm] = useState({
     target_length_sec: 20,
     chunk_frames: 33,
@@ -206,26 +207,67 @@ function ProjectPage() {
     seed: 42,
   });
 
+  const loadAssets = useCallback(async () => {
+    const a = await api(`/projects/${id}/assets`);
+    setMovies((a.movies || []).filter((m) => m.movie_path && m.status === "completed"));
+    return a;
+  }, [id]);
+
   const load = useCallback(async () => {
     const p = await api(`/projects/${id}`);
     setProject(p);
     setStoryEdit(p.story || "");
+    try {
+      await loadAssets();
+    } catch {
+      /* assets optional */
+    }
     return p;
-  }, [id]);
+  }, [id, loadAssets]);
 
   useEffect(() => {
     load().catch((e) => setErr(String(e.message || e)));
   }, [load]);
 
+  // On first load, restore the most recent job so completed movies reappear after refresh.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const a = await api(`/projects/${id}/assets`);
+        const list = a.movies || [];
+        if (!list.length || cancelled) return;
+        setMovies(list.filter((m) => m.movie_path && m.status === "completed"));
+        const latestId = list[0].job_id;
+        const j = await api(`/jobs/${latestId}`);
+        if (!cancelled) setJob(j);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
   useEffect(() => {
     if (!job || ["completed", "failed", "cancelled"].includes(job.status)) return;
     const t = setInterval(() => {
       api(`/jobs/${job.id}`)
-        .then(setJob)
+        .then(async (j) => {
+          setJob(j);
+          if (j.status === "completed") {
+            try {
+              await loadAssets();
+            } catch {
+              /* ignore */
+            }
+          }
+        })
         .catch(() => {});
     }, 3000);
     return () => clearInterval(t);
-  }, [job]);
+  }, [job, loadAssets]);
 
   useEffect(() => {
     if (!lightbox) return undefined;
@@ -893,8 +935,85 @@ function ProjectPage() {
                 </div>
               ))}
             </div>
-            {job.movie_path && <p className="ok">Movie: {job.movie_path}</p>}
+            {job.movie_path && mediaUrl(job.movie_path) && (
+              <div className="movie-result">
+                <video
+                  className="movie-player"
+                  src={`${mediaUrl(job.movie_path)}?t=${encodeURIComponent(job.movie_path)}`}
+                  controls
+                  playsInline
+                  preload="metadata"
+                />
+                <div className="row">
+                  <a
+                    className="linkish"
+                    href={mediaUrl(job.movie_path)}
+                    download={`project-${id}-job-${job.id}.mp4`}
+                  >
+                    Download movie
+                  </a>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() =>
+                      setLightbox({
+                        frameId: null,
+                        kind: "preview",
+                        src: `${mediaUrl(job.movie_path)}?t=${encodeURIComponent(job.movie_path)}`,
+                        label: `Job #${job.id} movie`,
+                      })
+                    }
+                  >
+                    Enlarge
+                  </button>
+                </div>
+              </div>
+            )}
+            {job.movie_path && !mediaUrl(job.movie_path) && (
+              <p className="ok">Movie saved at: {job.movie_path}</p>
+            )}
             {job.error && <p className="error">{job.error}</p>}
+          </div>
+        )}
+
+        {movies.length > 0 && (
+          <div className="movie-library">
+            <h3>Completed movies</h3>
+            <div className="movie-library-grid">
+              {movies.map((m) => {
+                const src = mediaUrl(m.movie_path);
+                if (!src) {
+                  return (
+                    <div key={m.job_id} className="movie-card">
+                      <p className="muted tiny">
+                        Job #{m.job_id} · path not served ({m.movie_path})
+                      </p>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={m.job_id} className="movie-card">
+                    <video
+                      className="movie-player"
+                      src={`${src}?t=${encodeURIComponent(m.movie_path)}`}
+                      controls
+                      playsInline
+                      preload="metadata"
+                    />
+                    <div className="row movie-card-actions">
+                      <span className="tiny muted">Job #{m.job_id}</span>
+                      <a
+                        className="linkish"
+                        href={src}
+                        download={`project-${id}-job-${m.job_id}.mp4`}
+                      >
+                        Download
+                      </a>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </section>
