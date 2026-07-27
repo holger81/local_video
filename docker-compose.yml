@@ -25,7 +25,9 @@ x-app-env: &app-env
 x-app-volumes: &app-volumes
   - /shared/local_video/data:/data
   - /shared/local_video/media:/media
-  - ./comfyui_workflows:/app/comfyui_workflows:ro
+  # Optional override of baked-in workflows (copy repo comfyui_workflows/ here to customize).
+  # If this host path is empty, leave the mount commented out so image workflows are used.
+  # - /shared/local_video/comfyui_workflows:/app/comfyui_workflows:ro
 
 services:
   redis:

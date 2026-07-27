@@ -32,7 +32,8 @@ Volumes on the Portainer host:
   redis/   # Redis persistence
 ```
 
-Create them once if missing: `mkdir -p /shared/local_video/{data,media,redis}`. Workflows still mount from `./comfyui_workflows` in the stack.
+Create them once if missing: `mkdir -p /shared/local_video/{data,media,redis}`. Workflow JSON ships **inside the Docker image** (no host mount). To customize, copy `comfyui_workflows/` to `/shared/local_video/comfyui_workflows` and uncomment that volume in `docker-compose.yml`.
+
 
 ## ComfyUI workflows
 
