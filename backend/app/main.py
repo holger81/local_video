@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import jobs, projects, story, storyboard
+from app.api import settings as settings_api
 from app.config import get_settings
 from app.db.models import init_db
 from app.services.comfyui import ComfyUIClient
@@ -24,6 +25,7 @@ app.include_router(projects.router, prefix="/api")
 app.include_router(story.router, prefix="/api")
 app.include_router(storyboard.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
+app.include_router(settings_api.router, prefix="/api")
 
 _STATIC = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
@@ -37,6 +39,7 @@ def on_startup() -> None:
 
 @app.get("/api/health")
 async def health():
+    s = get_settings()
     comfy_ok = False
     comfy_info = None
     try:
@@ -47,7 +50,9 @@ async def health():
     return {
         "status": "ok",
         "comfyui": {"ok": comfy_ok, "info": comfy_info},
-        "llama_base_url": settings.llama_base_url,
+        "llama_base_url": s.llama_base_url,
+        "llama_model": s.llama_model,
+        "llama_n_ctx": s.llama_n_ctx,
         "frontend_built": (_STATIC / "index.html").is_file(),
     }
 

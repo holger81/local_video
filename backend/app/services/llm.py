@@ -8,18 +8,66 @@ from openai import AsyncOpenAI
 
 from app.config import get_settings
 
+# Rough chars/token for English+JSON prompts when estimating budget.
+_CHARS_PER_TOKEN = 4
+# Keep headroom for model formatting / safety.
+_CTX_SAFETY = 256
+
 
 def _client() -> AsyncOpenAI:
     settings = get_settings()
     return AsyncOpenAI(base_url=settings.llama_base_url, api_key=settings.llama_api_key)
 
 
+def _effective_n_ctx() -> int:
+    settings = get_settings()
+    if settings.llama_n_ctx and settings.llama_n_ctx > 0:
+        return int(settings.llama_n_ctx)
+    # Sensible default when model meta wasn't saved yet.
+    return 8192
+
+
+def _budget_tokens() -> tuple[int, int]:
+    """Return (n_ctx, max_tokens) for the next completion."""
+    settings = get_settings()
+    n_ctx = _effective_n_ctx()
+    # Leave room for the prompt; never ask for more completion than ~1/4 of ctx.
+    configured = int(settings.llama_max_tokens or 2048)
+    max_tokens = min(configured, max(256, n_ctx // 4))
+    max_tokens = min(max_tokens, max(256, n_ctx - _CTX_SAFETY - 64))
+    return n_ctx, max_tokens
+
+
+def _truncate_to_tokens(text: str, max_tokens: int) -> str:
+    if max_tokens <= 0:
+        return ""
+    max_chars = max_tokens * _CHARS_PER_TOKEN
+    text = text or ""
+    if len(text) <= max_chars:
+        return text
+    keep_head = int(max_chars * 0.65)
+    keep_tail = max_chars - keep_head - 40
+    if keep_tail < 80:
+        return text[: max_chars - 20] + "\n…[truncated]…"
+    return text[:keep_head] + "\n…[truncated for context window]…\n" + text[-keep_tail:]
+
+
 async def chat(system: str, user: str, temperature: float = 0.4) -> str:
     settings = get_settings()
+    n_ctx, max_tokens = _budget_tokens()
+    system = system or ""
+    user = user or ""
+    sys_tokens = max(1, len(system) // _CHARS_PER_TOKEN)
+    # Prompt budget = ctx - completion - safety
+    prompt_budget = max(256, n_ctx - max_tokens - _CTX_SAFETY)
+    user_budget = max(128, prompt_budget - sys_tokens)
+    user = _truncate_to_tokens(user, user_budget)
+
     client = _client()
     resp = await client.chat.completions.create(
         model=settings.llama_model,
         temperature=temperature,
+        max_tokens=max_tokens,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -77,7 +125,9 @@ async def propose_storyboard(story: str, max_frames: int = 8) -> list[dict[str, 
             {
                 "position": i,
                 "description": str(item.get("description") or ""),
-                "visual_prompt": str(item.get("visual_prompt") or item.get("description") or ""),
+                "visual_prompt": str(
+                    item.get("visual_prompt") or item.get("description") or ""
+                ),
                 "duration_hint_sec": float(item.get("duration_hint_sec") or 4.0),
                 "is_new_shot": bool(item.get("is_new_shot", True)),
             }
@@ -129,7 +179,7 @@ async def plan_keyframe_image_prompt(
     """One self-contained image prompt for a keyframe slot (Comfy sees only this)."""
     system = (
         "You write ONE photorealistic cinematic still image prompt for a moment in a continuous shot. "
-        "Return ONLY valid JSON: {\"image_prompt\": \"...\"}. "
+        'Return ONLY valid JSON: {"image_prompt": "..."}. '
         "Rules: one moment; concrete subject/pose/camera/light; no collage or panels; "
         "no whole-film dump; never invent subjects not in the beat; do not say the word keyframe. "
         "If CONTINUATION: do not say new shot; keep identity from context. "

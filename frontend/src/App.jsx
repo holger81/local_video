@@ -96,10 +96,237 @@ function Shell({ children }) {
         </Link>
         <nav>
           <Link to="/">Projects</Link>
+          <Link to="/settings">Settings</Link>
         </nav>
       </header>
       <main>{children}</main>
     </div>
+  );
+}
+
+function formatCtx(n) {
+  if (!n || n <= 0) return "—";
+  if (n >= 1024) return `${Math.round(n / 1024)}k`;
+  return String(n);
+}
+
+function SettingsPage() {
+  const [settings, setSettings] = useState(null);
+  const [models, setModels] = useState([]);
+  const [baseUrl, setBaseUrl] = useState("");
+  const [model, setModel] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [nCtx, setNCtx] = useState("");
+  const [maxTokens, setMaxTokens] = useState("2048");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [ok, setOk] = useState("");
+
+  const load = useCallback(async () => {
+    setErr("");
+    const s = await api("/settings");
+    setSettings(s);
+    setBaseUrl(s.llama_base_url || "");
+    setModel(s.llama_model || "");
+    setApiKey("");
+    setNCtx(s.llama_n_ctx ? String(s.llama_n_ctx) : "");
+    setMaxTokens(String(s.llama_max_tokens || 2048));
+    try {
+      const m = await api("/llm/models");
+      setModels(m.models || []);
+    } catch (e) {
+      setModels([]);
+      setErr(String(e.message || e));
+    }
+  }, []);
+
+  useEffect(() => {
+    load().catch((e) => setErr(String(e.message || e)));
+  }, [load]);
+
+  const onModelChange = (id) => {
+    setModel(id);
+    const match = models.find((m) => m.id === id);
+    if (match?.n_ctx) setNCtx(String(match.n_ctx));
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setErr("");
+    setOk("");
+    try {
+      const body = {
+        llama_base_url: baseUrl.trim(),
+        llama_model: model.trim(),
+        llama_max_tokens: Number(maxTokens) || 2048,
+      };
+      if (apiKey.trim()) body.llama_api_key = apiKey.trim();
+      if (nCtx.trim()) body.llama_n_ctx = Number(nCtx);
+      const s = await api("/settings", { method: "PUT", body: JSON.stringify(body) });
+      setSettings(s);
+      setOk("Saved. New LLM calls use this model and context budget.");
+      const m = await api("/llm/models");
+      setModels(m.models || []);
+    } catch (ex) {
+      setErr(String(ex.message || ex));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const refreshModels = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      if (baseUrl.trim() !== settings?.llama_base_url) {
+        await api("/settings", {
+          method: "PUT",
+          body: JSON.stringify({ llama_base_url: baseUrl.trim() }),
+        });
+      }
+      const m = await api("/llm/models");
+      setModels(m.models || []);
+      setOk(`Loaded ${m.models?.length || 0} models from server.`);
+    } catch (ex) {
+      setErr(String(ex.message || ex));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const selectedMeta = models.find((m) => m.id === model);
+
+  return (
+    <Shell>
+      <section className="settings-page">
+        <h1>Settings</h1>
+        <p className="muted">
+          Choose which llama.cpp model story / storyboard prompts use. Context size
+          caps prompt length and completion tokens so large stories do not overflow
+          the window.
+        </p>
+        {err && <p className="error">{err}</p>}
+        {ok && <p className="ok">{ok}</p>}
+        <form className="settings-form" onSubmit={save}>
+          <label>
+            LLM base URL
+            <input
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="http://host:9292/v1"
+              required
+            />
+          </label>
+          <div className="row">
+            <button type="button" className="ghost" disabled={busy} onClick={refreshModels}>
+              Refresh models
+            </button>
+            <span className="tiny muted">
+              {models.length ? `${models.length} available` : "No models loaded yet"}
+            </span>
+          </div>
+          <label>
+            Model
+            <select value={model} onChange={(e) => onModelChange(e.target.value)} required>
+              {!models.some((m) => m.id === model) && model && (
+                <option value={model}>{model} (current)</option>
+              )}
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.status === "loaded" ? "● " : "○ "}
+                  {m.id}
+                  {m.n_ctx ? ` · ctx ${formatCtx(m.n_ctx)}` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          {selectedMeta && (
+            <p className="muted tiny settings-model-meta">
+              Status: {selectedMeta.status}
+              {selectedMeta.n_ctx_loaded
+                ? ` · loaded ctx ${formatCtx(selectedMeta.n_ctx_loaded)}`
+                : ""}
+              {selectedMeta.n_ctx_configured
+                ? ` · configured ${formatCtx(selectedMeta.n_ctx_configured)}`
+                : ""}
+              {selectedMeta.n_ctx_train
+                ? ` · train ${formatCtx(selectedMeta.n_ctx_train)}`
+                : ""}
+              {selectedMeta.input_modalities?.length
+                ? ` · ${selectedMeta.input_modalities.join("+")}`
+                : ""}
+            </p>
+          )}
+          <div className="settings-grid">
+            <label>
+              Context budget (tokens)
+              <input
+                type="number"
+                min="0"
+                step="256"
+                value={nCtx}
+                onChange={(e) => setNCtx(e.target.value)}
+                placeholder="auto from model"
+              />
+            </label>
+            <label>
+              Max completion tokens
+              <input
+                type="number"
+                min="64"
+                max="128000"
+                step="64"
+                value={maxTokens}
+                onChange={(e) => setMaxTokens(e.target.value)}
+                required
+              />
+            </label>
+          </div>
+          <p className="muted tiny">
+            Completion is capped to about ¼ of the context budget. Long story inputs
+            are truncated to fit the remaining prompt window.
+          </p>
+          <label>
+            API key {settings?.llama_api_key_set ? "(set — leave blank to keep)" : "(optional)"}
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="not-needed"
+              autoComplete="off"
+            />
+          </label>
+          <div className="row">
+            <button type="submit" disabled={busy}>
+              {busy ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </form>
+        {models.length > 0 && (
+          <div className="settings-model-list">
+            <h3>Available models</h3>
+            <ul>
+              {models.map((m) => (
+                <li key={m.id} className={m.id === model ? "selected" : ""}>
+                  <button
+                    type="button"
+                    className="linkish"
+                    onClick={() => onModelChange(m.id)}
+                  >
+                    {m.id}
+                  </button>
+                  <span className="tiny muted">
+                    {m.status}
+                    {m.n_ctx ? ` · ctx ${formatCtx(m.n_ctx)}` : " · ctx unknown"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
+    </Shell>
   );
 }
 
@@ -982,12 +1209,34 @@ function ProjectPage() {
             <div className="movie-library-grid">
               {movies.map((m) => {
                 const src = mediaUrl(m.movie_path);
+                const deleteMovie = async () => {
+                  if (
+                    !window.confirm(
+                      `Delete movie for job #${m.job_id}? This removes the file and job record.`
+                    )
+                  ) {
+                    return;
+                  }
+                  setErr("");
+                  try {
+                    await api(`/jobs/${m.job_id}`, { method: "DELETE" });
+                    if (job?.id === m.job_id) setJob(null);
+                    await loadAssets();
+                  } catch (ex) {
+                    setErr(String(ex.message || ex));
+                  }
+                };
                 if (!src) {
                   return (
                     <div key={m.job_id} className="movie-card">
                       <p className="muted tiny">
                         Job #{m.job_id} · path not served ({m.movie_path})
                       </p>
+                      <div className="row movie-card-actions">
+                        <button type="button" className="ghost danger" onClick={deleteMovie}>
+                          Delete
+                        </button>
+                      </div>
                     </div>
                   );
                 }
@@ -1002,13 +1251,18 @@ function ProjectPage() {
                     />
                     <div className="row movie-card-actions">
                       <span className="tiny muted">Job #{m.job_id}</span>
-                      <a
-                        className="linkish"
-                        href={src}
-                        download={`project-${id}-job-${m.job_id}.mp4`}
-                      >
-                        Download
-                      </a>
+                      <div className="row movie-card-links">
+                        <a
+                          className="linkish"
+                          href={src}
+                          download={`project-${id}-job-${m.job_id}.mp4`}
+                        >
+                          Download
+                        </a>
+                        <button type="button" className="ghost danger" onClick={deleteMovie}>
+                          Delete
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -1560,6 +1814,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Home />} />
       <Route path="/projects/:id" element={<ProjectPage />} />
+      <Route path="/settings" element={<SettingsPage />} />
     </Routes>
   );
 }

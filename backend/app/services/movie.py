@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
 from typing import Any
 
 from arq import create_pool
@@ -262,3 +264,36 @@ def get_movie(job_id: int) -> dict[str, Any]:
             "movie_path": job.movie_path,
             "error": job.error,
         }
+
+
+def delete_job(job_id: int) -> dict[str, Any]:
+    """Delete a render job row and its on-disk movie / chunk artifacts."""
+    settings = get_settings()
+    with SessionLocal() as db:
+        job = db.get(RenderJob, job_id)
+        if not job:
+            raise KeyError(f"job {job_id} not found")
+        if job.status in ("running", "pending", "cancelling"):
+            raise ValueError(
+                f"job {job_id} is {job.status}; cancel or wait before deleting"
+            )
+        project_id = job.project_id
+        movie_path = job.movie_path
+        db.delete(job)
+        db.commit()
+
+    job_dir = settings.media_dir / "projects" / str(project_id) / "jobs" / str(job_id)
+    if job_dir.is_dir():
+        shutil.rmtree(job_dir, ignore_errors=True)
+
+    if movie_path:
+        try:
+            mp = Path(movie_path)
+            if mp.is_file() and str(mp.resolve()).startswith(
+                str(settings.media_dir.resolve())
+            ):
+                mp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    return {"deleted": True, "job_id": job_id, "project_id": project_id}

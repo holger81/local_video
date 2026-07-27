@@ -52,6 +52,21 @@ a {
   color: var(--ink);
 }
 
+.top nav {
+  display: flex;
+  gap: 1rem;
+  align-items: baseline;
+}
+
+.top nav a {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.top nav a:hover {
+  color: var(--ink);
+}
+
 .hero-panel h1 {
   font-family: var(--display);
   font-size: clamp(2rem, 5vw, 3rem);
@@ -108,13 +123,18 @@ button {
 }
 
 input,
-textarea {
+textarea,
+select {
   background: #0c100e;
   border: 1px solid var(--line);
   color: var(--ink);
   border-radius: 3px;
   padding: 0.55rem 0.65rem;
   width: 100%;
+}
+
+select {
+  font: inherit;
 }
 
 button {
@@ -726,6 +746,84 @@ button.thumb-placeholder {
 .movie-card-actions {
   justify-content: space-between;
   align-items: center;
+}
+
+.movie-card-links {
+  margin-bottom: 0;
+  align-items: center;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  font-weight: 500;
+}
+
+button.ghost:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 35%, transparent);
+}
+
+button.ghost.danger {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 40%, transparent);
+}
+
+button.ghost.danger:hover:not(:disabled) {
+  color: #ffb0a4;
+  border-color: var(--err);
+}
+
+.settings-page h1 {
+  font-family: var(--display);
+  font-weight: 400;
+  margin: 0 0 0.5rem;
+}
+
+.settings-form {
+  max-width: 42rem;
+  margin-top: 1rem;
+}
+
+.settings-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.settings-model-meta {
+  margin: -0.35rem 0 0.85rem;
+}
+
+.settings-model-list {
+  margin-top: 1.75rem;
+  max-width: 42rem;
+}
+
+.settings-model-list h3 {
+  font-family: var(--display);
+  font-weight: 400;
+  margin: 0 0 0.65rem;
+}
+
+.settings-model-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.settings-model-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: baseline;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-model-list li.selected button {
+  color: var(--accent);
 }
 
 .timeline .shot {

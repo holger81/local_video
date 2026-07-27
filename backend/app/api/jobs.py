@@ -79,3 +79,13 @@ def get_movie(job_id: int):
         return movie_svc.get_movie(job_id)
     except KeyError as e:
         raise HTTPException(404, str(e)) from e
+
+
+@router.delete("/jobs/{job_id}")
+def delete_job(job_id: int):
+    try:
+        return movie_svc.delete_job(job_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e

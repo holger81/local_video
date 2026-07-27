@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     llama_base_url: str = "http://192.168.10.31:9292/v1"
     llama_model: str = "LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M"
     llama_api_key: str = "not-needed"
+    # Effective context budget for prompt truncation / max_tokens (0 = auto from model).
+    llama_n_ctx: int = 0
+    llama_max_tokens: int = 2048
 
     chunk_frames: int = 33
     overlap_frames: int = 12
@@ -43,5 +46,17 @@ class Settings(BaseSettings):
 
 
 @lru_cache
-def get_settings() -> Settings:
+def _env_settings() -> Settings:
     return Settings()
+
+
+def get_settings() -> Settings:
+    """Env defaults merged with optional runtime overlay under data_dir/app_settings.json."""
+    base = _env_settings()
+    # Local import avoids circular dependency at module load.
+    from app.services.runtime_settings import load_overlay
+
+    overlay = load_overlay(base.data_dir)
+    if not overlay:
+        return base
+    return base.model_copy(update=overlay)
