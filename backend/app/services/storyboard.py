@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 from typing import Any
@@ -1343,7 +1344,8 @@ async def _run_flf2v_two_pass(
     }
 
     # Pass 1: high-noise only → SaveLatent
-    await comfy.free_memory()
+    # Avoid POST /free on this ROCm host — it can kill the ComfyUI process.
+    # Separate prompts still let Comfy unload the high UNET before loading low.
     high_params = {
         **shared,
         "seed": seed,
@@ -1369,8 +1371,8 @@ async def _run_flf2v_two_pass(
         raise RuntimeError("FLF2V high pass produced no latent output")
     latent_ref = comfy.latent_annotated_path(latents[0])
 
-    # Unload high-noise UNET before loading low-noise
-    await comfy.free_memory()
+    # Brief pause so the high-noise model can leave GPU before low-noise loads.
+    await asyncio.sleep(2)
 
     # Pass 2: low-noise + tiled decode → video
     low_params = {

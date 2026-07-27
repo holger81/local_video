@@ -52,10 +52,10 @@ Video API graphs (`wan22_t2v`, `wan22_i2v`, `wan22_flf2v`) use **VAE Decode (Til
 Wan 2.2’s high→low noise handoff often crashes ComfyUI when both 14B UNETs load in one graph. The app runs FLF as:
 
 1. `wan22_flf2v_high` — high-noise sampler → `SaveLatent`
-2. `POST /free` — unload models
+2. short pause (separate prompt; avoid `POST /free` on ROCm — it can kill the server)
 3. `wan22_flf2v_low` — `LoadLatent` + low-noise sampler → tiled decode → video
 
-Keep the ComfyUI launch flags you already use (`--fp16-vae`, etc.). Extra host RAM helps during offload.
+UNET loaders use `weight_dtype: default` (explicit `fp8_e4m3fn` was less stable here).
 
 ## Agent usage
 
