@@ -582,6 +582,26 @@ def build_edit_prompt(*, instruction: str, frame_prompt: str = "") -> str:
     return " ".join(parts)
 
 
+def merge_keyframe_prompt_with_edit(existing_prompt: str, instruction: str) -> str:
+    """Keep keyframe generation prompt aligned with cumulative edit intent."""
+    base = (existing_prompt or "").strip()
+    instr = (instruction or "").strip()
+    if not instr:
+        raise ValueError("edit instruction is required")
+    if not base:
+        return instr
+
+    lower_base = base.lower()
+    lower_instr = instr.lower()
+    if lower_instr in lower_base:
+        return base
+
+    marker = "Edit adjustments:"
+    if marker in base:
+        return f"{base}\n- {instr}"
+    return f"{base}\n\n{marker}\n- {instr}"
+
+
 async def edit_frame_still(
     project_id: int,
     frame_id: int,
@@ -1163,13 +1183,17 @@ async def edit_frame_keyframe(
             raise ValueError(
                 f"frame has no keyframe {ki} or still to edit — generate one first"
             )
+        effective_prompt = merge_keyframe_prompt_with_edit(
+            str(keyframes[ki].get("image_prompt") or ""),
+            instruction,
+        )
 
     dest = await _render_keyframe_image(
         project_id=project_id,
         frame_id=frame_id,
         index=ki,
         role=str(keyframes[ki].get("role") or "middle"),
-        prompt=instruction,
+        prompt=effective_prompt,
         source_path=source_stored,
         seed=seed if seed is not None else (frame_id * 31 + 53 + ki),
         force_edit=True,
@@ -1183,6 +1207,7 @@ async def edit_frame_keyframe(
             pass
 
     keyframes[ki]["path"] = str(dest)
+    keyframes[ki]["image_prompt"] = effective_prompt
     with SessionLocal() as db:
         fr = db.get(StoryboardFrame, frame_id)
         assert fr
