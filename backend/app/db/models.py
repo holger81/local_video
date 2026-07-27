@@ -70,6 +70,8 @@ class StoryboardFrame(Base):
     keyframe_first_prompt: Mapped[str] = mapped_column(Text, default="")
     keyframe_mid_prompt: Mapped[str] = mapped_column(Text, default="")
     keyframe_last_prompt: Mapped[str] = mapped_column(Text, default="")
+    # Variable series: [{index, t_sec, role, image_prompt, path}] — first/last + ≤2s middles
+    keyframes: Mapped[list] = mapped_column(JSON, default=list)
     preview_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     duration_hint_sec: Mapped[float] = mapped_column(Float, default=4.0)
     is_new_shot: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -185,6 +187,7 @@ def _migrate_sqlite(engine) -> None:
             "keyframe_first_prompt": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_first_prompt TEXT DEFAULT ''",
             "keyframe_mid_prompt": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_mid_prompt TEXT DEFAULT ''",
             "keyframe_last_prompt": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_last_prompt TEXT DEFAULT ''",
+            "keyframes": "ALTER TABLE storyboard_frames ADD COLUMN keyframes JSON",
         }
         for name, ddl in additions.items():
             if name not in cols:

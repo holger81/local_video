@@ -32,6 +32,50 @@ function mediaUrl(absPath) {
   return null;
 }
 
+function frameKeyframes(f) {
+  if (Array.isArray(f?.keyframes) && f.keyframes.length) return f.keyframes;
+  const out = [];
+  if (f?.keyframe_first_path || f?.keyframe_first_prompt) {
+    out.push({
+      index: 0,
+      t_sec: 0,
+      role: "first",
+      image_prompt: f.keyframe_first_prompt || "",
+      path: f.keyframe_first_path || null,
+    });
+  }
+  if (f?.keyframe_mid_path || f?.keyframe_mid_prompt) {
+    out.push({
+      index: out.length,
+      t_sec: 2,
+      role: "middle",
+      image_prompt: f.keyframe_mid_prompt || "",
+      path: f.keyframe_mid_path || null,
+    });
+  }
+  if (f?.keyframe_last_path || f?.keyframe_last_prompt) {
+    out.push({
+      index: out.length,
+      t_sec: f.duration_hint_sec || 4,
+      role: "last",
+      image_prompt: f.keyframe_last_prompt || "",
+      path: f.keyframe_last_path || null,
+    });
+  }
+  return out;
+}
+
+function keyframesReady(f) {
+  const kfs = frameKeyframes(f);
+  return kfs.length >= 2 && kfs.every((k) => !!k.path);
+}
+
+function keyframeRoleLabel(role, index, total) {
+  if (role === "first") return "Start";
+  if (role === "last") return "End";
+  return `Mid ${index}`;
+}
+
 function Shell({ children }) {
   return (
     <div className="app">
@@ -194,9 +238,13 @@ function ProjectPage() {
       visual_prompt: f.visual_prompt || "",
       duration_hint_sec: f.duration_hint_sec ?? 4,
       is_new_shot: !!f.is_new_shot,
-      keyframe_first_prompt: f.keyframe_first_prompt || "",
-      keyframe_mid_prompt: f.keyframe_mid_prompt || "",
-      keyframe_last_prompt: f.keyframe_last_prompt || "",
+      keyframes: frameKeyframes(f).map((k, i) => ({
+        index: i,
+        t_sec: k.t_sec,
+        role: k.role,
+        image_prompt: k.image_prompt || "",
+        path: k.path || null,
+      })),
     });
   }, [keyframeEditorId, project]);
 
@@ -290,9 +338,13 @@ function ProjectPage() {
         visual_prompt: editorDraft.visual_prompt,
         duration_hint_sec: Number(editorDraft.duration_hint_sec) || 4,
         is_new_shot: !!editorDraft.is_new_shot,
-        keyframe_first_prompt: editorDraft.keyframe_first_prompt,
-        keyframe_mid_prompt: editorDraft.keyframe_mid_prompt,
-        keyframe_last_prompt: editorDraft.keyframe_last_prompt,
+        keyframes: (editorDraft.keyframes || []).map((k, i) => ({
+          index: i,
+          t_sec: k.t_sec,
+          role: k.role,
+          image_prompt: k.image_prompt,
+          path: k.path || null,
+        })),
       }),
     });
   };
@@ -322,15 +374,15 @@ function ProjectPage() {
     });
   };
 
-  const renderOneKeyframe = async (phase) => {
+  const renderOneKeyframe = async (phaseOrIndex) => {
     if (!keyframeEditorId) return;
-    setBusy(`keyframe ${phase}`);
-    setVisualBusy({ frameId: keyframeEditorId, kind: `keyframe_${phase}` });
+    setBusy(`keyframe ${phaseOrIndex}`);
+    setVisualBusy({ frameId: keyframeEditorId, kind: `keyframe_${phaseOrIndex}` });
     setErr("");
     try {
       await patchEditorFields();
       await api(
-        `/projects/${id}/storyboard/frames/${keyframeEditorId}/keyframes/${phase}`,
+        `/projects/${id}/storyboard/frames/${keyframeEditorId}/keyframes/${phaseOrIndex}`,
         { method: "POST", body: JSON.stringify({}) }
       );
       await load();
@@ -342,22 +394,22 @@ function ProjectPage() {
     }
   };
 
-  const editOneKeyframe = async (phase) => {
+  const editOneKeyframe = async (phaseOrIndex) => {
     if (!keyframeEditorId) return;
-    const instruction = (kfEditDrafts[phase] || "").trim();
+    const instruction = (kfEditDrafts[phaseOrIndex] || "").trim();
     if (!instruction) {
-      setErr(`Enter an edit instruction for the ${phase} keyframe.`);
+      setErr(`Enter an edit instruction for keyframe ${phaseOrIndex}.`);
       return;
     }
-    setBusy(`edit keyframe ${phase}`);
-    setVisualBusy({ frameId: keyframeEditorId, kind: `keyframe_${phase}` });
+    setBusy(`edit keyframe ${phaseOrIndex}`);
+    setVisualBusy({ frameId: keyframeEditorId, kind: `keyframe_${phaseOrIndex}` });
     setErr("");
     try {
       await api(
-        `/projects/${id}/storyboard/frames/${keyframeEditorId}/keyframes/${phase}/edit`,
+        `/projects/${id}/storyboard/frames/${keyframeEditorId}/keyframes/${phaseOrIndex}/edit`,
         { method: "POST", body: JSON.stringify({ instruction }) }
       );
-      setKfEditDrafts((prev) => ({ ...prev, [phase]: "" }));
+      setKfEditDrafts((prev) => ({ ...prev, [phaseOrIndex]: "" }));
       await load();
     } catch (e) {
       setErr(String(e.message || e));
@@ -442,10 +494,7 @@ function ProjectPage() {
   const createMissingKeyframes = async () => {
     const frames = [...(project.frames || [])]
       .sort((a, b) => a.position - b.position)
-      .filter(
-        (f) =>
-          !f.keyframe_first_path || !f.keyframe_mid_path || !f.keyframe_last_path
-      );
+      .filter((f) => !keyframesReady(f));
     if (!frames.length) return;
     setBusy("create keyframes");
     setErr("");
@@ -473,13 +522,7 @@ function ProjectPage() {
   const createStepClips = async () => {
     const frames = [...(project.frames || [])]
       .sort((a, b) => a.position - b.position)
-      .filter(
-        (f) =>
-          f.keyframe_first_path &&
-          f.keyframe_mid_path &&
-          f.keyframe_last_path &&
-          !f.preview_path
-      );
+      .filter((f) => keyframesReady(f) && !f.preview_path);
     if (!frames.length) return;
     setBusy("create step clips");
     setErr("");
@@ -708,7 +751,11 @@ function ProjectPage() {
               <div className="frame-stage">
                 <div className="frame-stage-head">
                   <strong>2. Keyframes</strong>
-                  <span className="tiny muted">First → mid → last moments in this beat</span>
+                  <span className="tiny muted">
+                    {f.is_new_shot
+                      ? "New shot — own series (start → middles every ≤2s → end)"
+                      : "Continue shot — first edits from previous beat’s end"}
+                  </span>
                 </div>
                 <div className="frame-stage-actions">
                   <button
@@ -736,79 +783,83 @@ function ProjectPage() {
                         }
                       })
                     }
-                    title="Create any missing first/mid/last keyframe images"
+                    title="Create any missing images in this beat’s keyframe series"
                   >
                     Create missing keyframe images
                   </button>
                 </div>
                 <div className="keyframe-row">
-                  {[
-                    ["first", f.keyframe_first_path, "keyframe_first", "Start"],
-                    ["mid", f.keyframe_mid_path, "keyframe_mid", "Middle"],
-                    ["last", f.keyframe_last_path, "keyframe_last", "End"],
-                  ].map(([label, path, kind, nice]) => (
-                    <div key={label} className="keyframe-slot">
-                      <span className="tiny muted">{nice}</span>
-                      {mediaUrl(path) ? (
-                        <div className="media-item">
+                  {frameKeyframes(f).map((kf, ki) => {
+                    const path = kf.path;
+                    const nice = keyframeRoleLabel(kf.role, ki, frameKeyframes(f).length);
+                    const kind = `keyframe:${ki}`;
+                    return (
+                      <div key={`${f.id}-kf-${ki}`} className="keyframe-slot">
+                        <span className="tiny muted">
+                          {nice} · {kf.t_sec}s
+                        </span>
+                        {mediaUrl(path) ? (
+                          <div className="media-item">
+                            <button
+                              type="button"
+                              className="media-open"
+                              onClick={() => openKeyframeEditor(f.id)}
+                              title={`Open keyframe editor (${nice})`}
+                            >
+                              <img
+                                className="thumb keyframe-thumb"
+                                src={`${mediaUrl(path)}?t=${encodeURIComponent(path)}`}
+                                alt={`${nice} keyframe`}
+                              />
+                            </button>
+                            <button
+                              type="button"
+                              className="media-delete"
+                              aria-label={`Delete ${nice} keyframe`}
+                              onClick={(e) => deleteMedia(f.id, kind, e)}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ) : (
                           <button
                             type="button"
-                            className="media-open"
+                            className={`thumb-placeholder keyframe-thumb${
+                              visualBusy?.frameId === f.id &&
+                              (visualBusy.kind === "keyframes" ||
+                                visualBusy.kind === `keyframe_${ki}` ||
+                                visualBusy.kind === `keyframe_${kf.role}`)
+                                ? " is-busy"
+                                : ""
+                            }`}
                             onClick={() => openKeyframeEditor(f.id)}
-                            title={`Open keyframe editor (${nice})`}
+                            title="Open keyframe editor"
                           >
-                            <img
-                              className="thumb keyframe-thumb"
-                              src={`${mediaUrl(path)}?t=${encodeURIComponent(path)}`}
-                              alt={`${nice} keyframe`}
-                            />
+                            {visualBusy?.frameId === f.id &&
+                              (visualBusy.kind === "keyframes" ||
+                                visualBusy.kind === `keyframe_${ki}`) && (
+                                <span className="spinner" />
+                              )}
                           </button>
-                          <button
-                            type="button"
-                            className="media-delete"
-                            aria-label={`Delete ${nice} keyframe`}
-                            onClick={(e) => deleteMedia(f.id, kind, e)}
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          className={`thumb-placeholder keyframe-thumb${
-                            visualBusy?.frameId === f.id &&
-                            (visualBusy.kind === "keyframes" ||
-                              visualBusy.kind === `keyframe_${label}`)
-                              ? " is-busy"
-                              : ""
-                          }`}
-                          onClick={() => openKeyframeEditor(f.id)}
-                          title="Open keyframe editor"
-                        >
-                          {visualBusy?.frameId === f.id &&
-                            (visualBusy.kind === "keyframes" ||
-                              visualBusy.kind === `keyframe_${label}`) && (
-                              <span className="spinner" />
-                            )}
-                        </button>
-                      )}
-                    </div>
-                  ))}
+                        )}
+                      </div>
+                    );
+                  })}
+                  {!frameKeyframes(f).length && (
+                    <p className="tiny muted">No keyframe series yet — open editor or rebuild prompts.</p>
+                  )}
                 </div>
               </div>
 
               <div className="frame-stage">
                 <div className="frame-stage-head">
                   <strong>3. Motion</strong>
-                  <span className="tiny muted">Turn keyframes into short video</span>
+                  <span className="tiny muted">Animate consecutive keyframes into a preview</span>
                 </div>
                 <div className="frame-stage-actions">
                   <button
                     type="button"
-                    disabled={
-                      !!busy ||
-                      !(f.keyframe_first_path && f.keyframe_mid_path && f.keyframe_last_path)
-                    }
+                    disabled={!!busy || !keyframesReady(f)}
                     onClick={() =>
                       run(`step clips ${f.id}`, async () => {
                         setVisualBusy({ frameId: f.id, kind: "step_clips" });
@@ -823,9 +874,9 @@ function ProjectPage() {
                       })
                     }
                     title={
-                      f.keyframe_first_path && f.keyframe_mid_path && f.keyframe_last_path
-                        ? "Animate start→middle and middle→end, then combine into the preview"
-                        : "Needs start, middle, and end keyframe images first"
+                      keyframesReady(f)
+                        ? "I2V between each consecutive keyframe, then combine into the preview"
+                        : "Needs a complete keyframe series first"
                     }
                   >
                     Animate this beat
@@ -835,10 +886,11 @@ function ProjectPage() {
                       (a, b) => a.position - b.position
                     );
                     const next = frames.find((x) => x.position === f.position + 1);
-                    const canBetween = !!(
-                      (f.keyframe_last_path || f.still_path) &&
-                      (next?.keyframe_first_path || next?.still_path)
-                    );
+                    const thisLast =
+                      frameKeyframes(f).slice(-1)[0]?.path || f.still_path;
+                    const nextFirst =
+                      frameKeyframes(next || {})[0]?.path || next?.still_path;
+                    const canBetween = !!(thisLast && nextFirst);
                     return (
                       <button
                         type="button"
@@ -987,21 +1039,15 @@ function ProjectPage() {
       <section className="card-like">
         <h2>3. Batch keyframes &amp; motion</h2>
         <p className="muted">
-          Run the same steps across the whole board: keyframe images, animate each beat,
-          then bridge into the next beat.
+          Run across the board: LLM image prompts → edit-chain keyframes (new shot =
+          own series; continue = from prior end) → animate consecutive pairs → bridge beats.
         </p>
         <div className="frame-stage-actions batch-actions">
           <button
             type="button"
-            disabled={
-              !!busy ||
-              !(project.frames || []).some(
-                (f) =>
-                  !f.keyframe_first_path || !f.keyframe_mid_path || !f.keyframe_last_path
-              )
-            }
+            disabled={!!busy || !(project.frames || []).some((f) => !keyframesReady(f))}
             onClick={() => createMissingKeyframes()}
-            title="Create start/middle/end keyframe images for every beat that is missing any"
+            title="Create missing images in each beat’s keyframe series"
           >
             Create missing keyframe images
           </button>
@@ -1009,16 +1055,10 @@ function ProjectPage() {
             type="button"
             disabled={
               !!busy ||
-              !(project.frames || []).some(
-                (f) =>
-                  f.keyframe_first_path &&
-                  f.keyframe_mid_path &&
-                  f.keyframe_last_path &&
-                  !f.preview_path
-              )
+              !(project.frames || []).some((f) => keyframesReady(f) && !f.preview_path)
             }
             onClick={() => createStepClips()}
-            title="Animate start→middle→end for beats that already have all three keyframes but no preview"
+            title="Animate consecutive keyframes for beats missing a preview"
           >
             Animate beats missing a preview
           </button>
@@ -1033,12 +1073,9 @@ function ProjectPage() {
                 for (let i = 0; i < frames.length - 1; i++) {
                   const a = frames[i];
                   const b = frames[i + 1];
-                  if (
-                    (a.keyframe_last_path || a.still_path) &&
-                    (b.keyframe_first_path || b.still_path)
-                  ) {
-                    return true;
-                  }
+                  const aEnd = frameKeyframes(a).slice(-1)[0]?.path || a.still_path;
+                  const bStart = frameKeyframes(b)[0]?.path || b.still_path;
+                  if (aEnd && bStart) return true;
                 }
                 return false;
               })()
@@ -1173,11 +1210,7 @@ function ProjectPage() {
       {keyframeEditorId && editorDraft && (() => {
         const f = (project.frames || []).find((x) => x.id === keyframeEditorId);
         if (!f) return null;
-        const phases = [
-          ["first", f.keyframe_first_path, "keyframe_first_prompt", "Start"],
-          ["mid", f.keyframe_mid_path, "keyframe_mid_prompt", "Middle"],
-          ["last", f.keyframe_last_path, "keyframe_last_prompt", "End"],
-        ];
+        const draftKfs = editorDraft.keyframes || [];
         return (
           <div
             className="kf-editor"
@@ -1197,7 +1230,8 @@ function ProjectPage() {
                 <div>
                   <h2>Step #{f.position + 1} editor</h2>
                   <p className="muted tiny">
-                    Edit the beat text the LLM wrote, plus the start / middle / end keyframe prompts.
+                    LLM image prompts only (Comfy never sees the full story). Middles fill
+                    ≤2s gaps. {f.is_new_shot ? "New shot = own series." : "Continue = edit from prior end."}
                   </p>
                 </div>
                 <button
@@ -1264,7 +1298,7 @@ function ProjectPage() {
                         setEditorDraft((d) => ({ ...d, is_new_shot: e.target.checked }))
                       }
                     />
-                    New shot
+                    New shot (own keyframe series)
                   </label>
                 </div>
               </div>
@@ -1277,9 +1311,9 @@ function ProjectPage() {
                   type="button"
                   disabled={!!busy}
                   onClick={rebuildKeyframePrompts}
-                  title="Rebuild first/mid/last prompts from description, visual prompt, and premise"
+                  title="LLM-plan start/middles/end image prompts from beat + duration (≤2s spacing)"
                 >
-                  Rebuild prompts from beat text
+                  Rebuild LLM keyframe prompts
                 </button>
                 <button
                   type="button"
@@ -1304,15 +1338,20 @@ function ProjectPage() {
               </div>
 
               <div className="kf-phases">
-                {phases.map(([phase, path, promptKey, nice]) => {
+                {draftKfs.map((kf, ki) => {
+                  const path = kf.path;
+                  const nice = keyframeRoleLabel(kf.role, ki, draftKfs.length);
                   const busyPhase =
                     visualBusy?.frameId === f.id &&
                     (visualBusy.kind === "keyframes" ||
-                      visualBusy.kind === `keyframe_${phase}`);
+                      visualBusy.kind === `keyframe_${ki}` ||
+                      visualBusy.kind === `keyframe_${kf.role}`);
                   return (
-                    <section key={phase} className="kf-phase">
+                    <section key={`draft-kf-${ki}`} className="kf-phase">
                       <header>
-                        <strong>{nice}</strong>
+                        <strong>
+                          {nice} · t={kf.t_sec}s
+                        </strong>
                         {mediaUrl(path) && (
                           <button
                             type="button"
@@ -1320,7 +1359,7 @@ function ProjectPage() {
                             onClick={() =>
                               setLightbox({
                                 frameId: f.id,
-                                kind: `keyframe_${phase}`,
+                                kind: `keyframe_${ki}`,
                                 src: `${mediaUrl(path)}?t=${encodeURIComponent(path)}`,
                                 label: `Frame ${f.position + 1} ${nice}`,
                               })
@@ -1354,16 +1393,17 @@ function ProjectPage() {
                           )}
                         </div>
                         <label className="kf-field">
-                          <span>{nice} keyframe prompt</span>
+                          <span>{nice} image prompt (sent to Comfy)</span>
                           <textarea
                             rows={5}
-                            value={editorDraft[promptKey]}
+                            value={kf.image_prompt}
                             disabled={!!busy}
                             onChange={(e) =>
-                              setEditorDraft((d) => ({
-                                ...d,
-                                [promptKey]: e.target.value,
-                              }))
+                              setEditorDraft((d) => {
+                                const next = [...(d.keyframes || [])];
+                                next[ki] = { ...next[ki], image_prompt: e.target.value };
+                                return { ...d, keyframes: next };
+                              })
                             }
                           />
                         </label>
@@ -1372,7 +1412,7 @@ function ProjectPage() {
                         <button
                           type="button"
                           disabled={!!busy}
-                          onClick={() => renderOneKeyframe(phase)}
+                          onClick={() => renderOneKeyframe(ki)}
                         >
                           Generate {nice.toLowerCase()} image
                         </button>
@@ -1380,26 +1420,26 @@ function ProjectPage() {
                       <div className="still-edit">
                         <input
                           className="still-edit-input"
-                          placeholder={`Tweak ${nice.toLowerCase()} image… e.g. warmer light`}
-                          value={kfEditDrafts[phase] || ""}
+                          placeholder={`Tweak ${nice.toLowerCase()}… e.g. warmer light`}
+                          value={kfEditDrafts[ki] || ""}
                           disabled={!!busy}
                           onChange={(e) =>
                             setKfEditDrafts((prev) => ({
                               ...prev,
-                              [phase]: e.target.value,
+                              [ki]: e.target.value,
                             }))
                           }
                           onKeyDown={(e) => {
                             if (e.key === "Enter") {
                               e.preventDefault();
-                              editOneKeyframe(phase);
+                              editOneKeyframe(ki);
                             }
                           }}
                         />
                         <button
                           type="button"
-                          disabled={!!busy || !(kfEditDrafts[phase] || "").trim()}
-                          onClick={() => editOneKeyframe(phase)}
+                          disabled={!!busy || !(kfEditDrafts[ki] || "").trim()}
+                          onClick={() => editOneKeyframe(ki)}
                         >
                           Apply {nice.toLowerCase()} edit
                         </button>
@@ -1407,6 +1447,11 @@ function ProjectPage() {
                     </section>
                   );
                 })}
+                {!draftKfs.length && (
+                  <p className="muted">
+                    No keyframe slots yet — click “Rebuild LLM keyframe prompts”.
+                  </p>
+                )}
               </div>
             </div>
           </div>

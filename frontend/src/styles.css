@@ -278,7 +278,7 @@ button.btn-secondary:hover:not(:disabled) {
 
 .keyframe-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
   gap: 0.4rem;
   margin-top: 0.65rem;
 }

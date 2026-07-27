@@ -100,3 +100,152 @@ async def prompt_delta_for_continue(
         "Write the next prompt_delta."
     )
     return await chat(system, user, temperature=0.3)
+
+
+def keyframe_plan_times(duration_sec: float) -> list[float]:
+    """Keyframe times so consecutive spacing is at most ~2s; always include 0 and D."""
+    import math
+
+    d = max(0.5, float(duration_sec or 4.0))
+    n_middle = max(0, math.ceil(d / 2.0) - 1)
+    total = n_middle + 2
+    if total == 2:
+        return [0.0, round(d, 3)]
+    step = d / (total - 1)
+    return [round(i * step, 3) for i in range(total)]
+
+
+async def plan_keyframe_image_prompt(
+    *,
+    description: str,
+    visual: str,
+    t_sec: float,
+    role: str,
+    is_new_shot: bool,
+    prev_prompt: str | None = None,
+    first_prompt: str | None = None,
+    last_goal: str | None = None,
+) -> str:
+    """One self-contained image prompt for a keyframe slot (Comfy sees only this)."""
+    system = (
+        "You write ONE photorealistic cinematic still image prompt for a moment in a continuous shot. "
+        "Return ONLY valid JSON: {\"image_prompt\": \"...\"}. "
+        "Rules: one moment; concrete subject/pose/camera/light; no collage or panels; "
+        "no whole-film dump; never invent subjects not in the beat; do not say the word keyframe. "
+        "If CONTINUATION: do not say new shot; keep identity from context. "
+        "If NEW SHOT and role is first: establish a fresh camera/composition."
+    )
+    shot = (
+        "NEW SHOT — independent keyframe series; fresh camera for the first frame."
+        if is_new_shot
+        else "CONTINUATION of the same shot — do NOT call this a new shot."
+    )
+    user = (
+        f"Shot type: {shot}\n"
+        f"Beat description: {description}\n"
+        f"Beat visual note: {visual}\n"
+        f"This frame role={role} at t={t_sec}s.\n"
+    )
+    if prev_prompt:
+        user += f"Previous frame prompt (edit starts from that image):\n{prev_prompt}\n"
+    if first_prompt and role != "first":
+        user += f"Shot first prompt:\n{first_prompt}\n"
+    if last_goal and role != "last":
+        user += f"Shot should end toward:\n{last_goal}\n"
+    if role == "last":
+        user += "Write the ENDING still of this shot."
+    elif role == "first":
+        user += "Write the STARTING still of this shot."
+    else:
+        user += "Write a MIDDLE still progressing from previous toward the ending goal."
+    raw = await chat(system, user, temperature=0.25)
+    data = _extract_json(raw)
+    if not isinstance(data, dict):
+        raise ValueError("keyframe prompt response was not an object")
+    prompt = str(data.get("image_prompt") or data.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("empty keyframe image_prompt")
+    return prompt
+
+
+async def plan_keyframe_series(
+    *,
+    description: str,
+    visual: str,
+    duration_sec: float,
+    is_new_shot: bool,
+    prev_last_prompt: str | None = None,
+) -> dict[str, Any]:
+    """Plan first + optional ≤2s middles + last via per-slot LLM calls."""
+    times = keyframe_plan_times(duration_sec)
+    roles = []
+    for i, _t in enumerate(times):
+        if i == 0:
+            roles.append("first")
+        elif i == len(times) - 1:
+            roles.append("last")
+        else:
+            roles.append("middle")
+
+    last_goal = await plan_keyframe_image_prompt(
+        description=description,
+        visual=visual,
+        t_sec=times[-1],
+        role="last",
+        is_new_shot=is_new_shot,
+        prev_prompt=prev_last_prompt if not is_new_shot else None,
+    )
+    first_prompt = await plan_keyframe_image_prompt(
+        description=description,
+        visual=visual,
+        t_sec=times[0],
+        role="first",
+        is_new_shot=is_new_shot,
+        prev_prompt=prev_last_prompt if not is_new_shot else None,
+        last_goal=last_goal,
+    )
+    keyframes: list[dict[str, Any]] = [
+        {
+            "index": 0,
+            "t_sec": times[0],
+            "role": "first",
+            "image_prompt": first_prompt,
+            "path": None,
+        }
+    ]
+    prev = first_prompt
+    for i, (t, role) in enumerate(zip(times[1:-1], roles[1:-1]), start=1):
+        prompt = await plan_keyframe_image_prompt(
+            description=description,
+            visual=visual,
+            t_sec=t,
+            role=role,
+            is_new_shot=is_new_shot,
+            prev_prompt=prev,
+            first_prompt=first_prompt,
+            last_goal=last_goal,
+        )
+        keyframes.append(
+            {
+                "index": i,
+                "t_sec": t,
+                "role": role,
+                "image_prompt": prompt,
+                "path": None,
+            }
+        )
+        prev = prompt
+    keyframes.append(
+        {
+            "index": len(times) - 1,
+            "t_sec": times[-1],
+            "role": "last",
+            "image_prompt": last_goal,
+            "path": None,
+        }
+    )
+    return {
+        "duration_sec": times[-1],
+        "is_new_shot": is_new_shot,
+        "keyframes": keyframes,
+    }

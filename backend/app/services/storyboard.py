@@ -17,13 +17,100 @@ from app.services.ffmpeg import (
 from app.services.workflows import apply_params, validate_frame_count
 
 
+def _empty_keyframe(index: int, t_sec: float, role: str, prompt: str = "", path: str | None = None) -> dict[str, Any]:
+    return {
+        "index": index,
+        "t_sec": float(t_sec),
+        "role": role,
+        "image_prompt": prompt or "",
+        "path": path,
+    }
+
+
+def _legacy_keyframes_from_columns(f: StoryboardFrame) -> list[dict[str, Any]]:
+    """Build a series from old first/mid/last columns when keyframes JSON is empty."""
+    out: list[dict[str, Any]] = []
+    if f.keyframe_first_path or (f.keyframe_first_prompt or "").strip():
+        out.append(
+            _empty_keyframe(0, 0.0, "first", f.keyframe_first_prompt or "", f.keyframe_first_path)
+        )
+    if f.keyframe_mid_path or (f.keyframe_mid_prompt or "").strip():
+        out.append(
+            _empty_keyframe(
+                len(out),
+                2.0,
+                "middle",
+                f.keyframe_mid_prompt or "",
+                f.keyframe_mid_path,
+            )
+        )
+    if f.keyframe_last_path or (f.keyframe_last_prompt or "").strip():
+        dur = float(f.duration_hint_sec or 4.0)
+        out.append(
+            _empty_keyframe(
+                len(out),
+                dur,
+                "last",
+                f.keyframe_last_prompt or "",
+                f.keyframe_last_path,
+            )
+        )
+    for i, kf in enumerate(out):
+        kf["index"] = i
+    return out
+
+
+def _keyframes_list(f: StoryboardFrame) -> list[dict[str, Any]]:
+    raw = getattr(f, "keyframes", None) or []
+    if isinstance(raw, list) and raw:
+        out = []
+        for i, item in enumerate(raw):
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "middle")
+            if i == 0:
+                role = "first"
+            out.append(
+                _empty_keyframe(
+                    i,
+                    float(item.get("t_sec") or 0.0),
+                    role,
+                    str(item.get("image_prompt") or item.get("prompt") or ""),
+                    item.get("path"),
+                )
+            )
+        if out:
+            out[-1]["role"] = "last" if len(out) > 1 else out[-1]["role"]
+            if len(out) == 1:
+                out[0]["role"] = "first"
+            return out
+    return _legacy_keyframes_from_columns(f)
+
+
+def _sync_legacy_keyframe_columns(f: StoryboardFrame, keyframes: list[dict[str, Any]]) -> None:
+    """Keep first/mid/last columns in sync for movie/continuity helpers."""
+    f.keyframes = keyframes
+    first = keyframes[0] if keyframes else None
+    last = keyframes[-1] if keyframes else None
+    middles = [k for k in keyframes if k.get("role") == "middle"]
+    mid = middles[len(middles) // 2] if middles else None
+    f.keyframe_first_path = (first or {}).get("path")
+    f.keyframe_last_path = (last or {}).get("path")
+    f.keyframe_mid_path = (mid or {}).get("path")
+    f.keyframe_first_prompt = (first or {}).get("image_prompt") or ""
+    f.keyframe_last_prompt = (last or {}).get("image_prompt") or ""
+    f.keyframe_mid_prompt = (mid or {}).get("image_prompt") or ""
+
+
 def _frame_dict(f: StoryboardFrame) -> dict[str, Any]:
+    keyframes = _keyframes_list(f)
     return {
         "id": f.id,
         "position": f.position,
         "description": f.description,
         "visual_prompt": f.visual_prompt,
         "still_path": f.still_path,
+        "keyframes": keyframes,
         "keyframe_first_path": f.keyframe_first_path,
         "keyframe_mid_path": f.keyframe_mid_path,
         "keyframe_last_path": f.keyframe_last_path,
@@ -36,94 +123,12 @@ def _frame_dict(f: StoryboardFrame) -> dict[str, Any]:
     }
 
 
-_KEYFRAME_PHASES: tuple[tuple[str, str, str], ...] = (
-    (
-        "first",
-        "keyframe_first_path",
-        "Opening keyframe of this beat — establishing shot, action just beginning.",
-    ),
-    (
-        "mid",
-        "keyframe_mid_path",
-        "Midpoint keyframe of this beat — peak action and strongest pose.",
-    ),
-    (
-        "last",
-        "keyframe_last_path",
-        "Closing keyframe of this beat — action resolving, ready to continue.",
-    ),
-)
-
-_KEYFRAME_PROMPT_ATTR = {
-    "first": "keyframe_first_prompt",
-    "mid": "keyframe_mid_prompt",
-    "last": "keyframe_last_prompt",
-}
-
-_KEYFRAME_PATH_ATTR = {
-    "first": "keyframe_first_path",
-    "mid": "keyframe_mid_path",
-    "last": "keyframe_last_path",
-}
+def _keyframes_ready(keyframes: list[dict[str, Any]]) -> bool:
+    return bool(keyframes) and all((k.get("path") or "").strip() for k in keyframes)
 
 
-def _phase_prompt(
-    *,
-    phase_label: str,
-    beat: str,
-    premise: str,
-    next_beat: str | None,
-) -> str:
-    world = _truncate(premise or "", 280)
-    beat_bit = _truncate(beat or "", 280)
-    parts = [
-        "Photorealistic cinematic still photograph, one continuous camera shot, one moment only.",
-        phase_label,
-    ]
-    if world:
-        parts.append(f"Film continuity for: {world}.")
-    if beat_bit:
-        parts.append(f"Beat: {beat_bit}.")
-    if next_beat and "Closing" in phase_label:
-        parts.append(f"Leans toward the next beat: {_truncate(next_beat, 160)}.")
-    parts.append(
-        "Same cast, wardrobe, and location look; do not show a multi-panel layout."
-    )
-    return " ".join(parts)
-
-
-def _seed_all_keyframe_prompts(project_id: int, *, force: bool = False) -> None:
-    with SessionLocal() as db:
-        p = db.get(Project, project_id)
-        if not p:
-            raise KeyError(f"project {project_id} not found")
-        frames = sorted(p.frames, key=lambda x: x.position)
-        premise = p.premise or ""
-        for i, f in enumerate(frames):
-            beat = f.visual_prompt or f.description or ""
-            next_beat = None
-            if i + 1 < len(frames):
-                nxt = frames[i + 1]
-                next_beat = nxt.visual_prompt or nxt.description or ""
-            for phase, _path_attr, label in _KEYFRAME_PHASES:
-                attr = _KEYFRAME_PROMPT_ATTR[phase]
-                if not force and (getattr(f, attr) or "").strip():
-                    continue
-                setattr(
-                    f,
-                    attr,
-                    _phase_prompt(
-                        phase_label=label,
-                        beat=beat,
-                        premise=premise,
-                        next_beat=next_beat,
-                    ),
-                )
-        db.commit()
-
-
-def rebuild_frame_keyframe_prompts(project_id: int, frame_id: int) -> dict[str, Any]:
-    """Recompute first/mid/last keyframe prompts from beat + premise (+ next beat)."""
+async def rebuild_frame_keyframe_prompts(project_id: int, frame_id: int) -> dict[str, Any]:
+    """LLM-plan a variable keyframe series (≤2s spacing). Keeps existing paths when prompts only."""
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
@@ -132,26 +137,39 @@ def rebuild_frame_keyframe_prompts(project_id: int, frame_id: int) -> dict[str, 
         assert p is not None
         frames = sorted(p.frames, key=lambda x: x.position)
         idx = next(i for i, fr in enumerate(frames) if fr.id == frame_id)
-        beat = f.visual_prompt or f.description or ""
-        premise = p.premise or ""
-        next_beat = None
-        if idx + 1 < len(frames):
-            nxt = frames[idx + 1]
-            next_beat = nxt.visual_prompt or nxt.description or ""
-        for phase, _path_attr, label in _KEYFRAME_PHASES:
-            setattr(
-                f,
-                _KEYFRAME_PROMPT_ATTR[phase],
-                _phase_prompt(
-                    phase_label=label,
-                    beat=beat,
-                    premise=premise,
-                    next_beat=next_beat,
-                ),
-            )
+        description = f.description or ""
+        visual = f.visual_prompt or f.description or ""
+        duration = float(f.duration_hint_sec or 4.0)
+        is_new = bool(f.is_new_shot)
+        prev_last_prompt = None
+        if not is_new and idx > 0:
+            prev_kfs = _keyframes_list(frames[idx - 1])
+            if prev_kfs:
+                prev_last_prompt = prev_kfs[-1].get("image_prompt") or None
+        existing_paths = {
+            i: (kf.get("path") or None) for i, kf in enumerate(_keyframes_list(f))
+        }
+
+    planned = await llm.plan_keyframe_series(
+        description=description,
+        visual=visual,
+        duration_sec=duration,
+        is_new_shot=is_new,
+        prev_last_prompt=prev_last_prompt,
+    )
+    keyframes = planned["keyframes"]
+    for kf in keyframes:
+        # Preserve rendered path if slot index still exists (best-effort)
+        if kf["index"] in existing_paths and existing_paths[kf["index"]]:
+            kf["path"] = existing_paths[kf["index"]]
+
+    with SessionLocal() as db:
+        fr = db.get(StoryboardFrame, frame_id)
+        assert fr
+        _sync_legacy_keyframe_columns(fr, keyframes)
         db.commit()
-        db.refresh(f)
-        return _frame_dict(f)
+        db.refresh(fr)
+        return _frame_dict(fr)
 
 
 def _frames_payload(project_id: int) -> list[dict[str, Any]]:
@@ -189,10 +207,20 @@ async def propose_storyboard(project_id: int, max_frames: int = 8) -> list[dict[
                     visual_prompt=item["visual_prompt"],
                     duration_hint_sec=item["duration_hint_sec"],
                     is_new_shot=item["is_new_shot"],
+                    keyframes=[],
                 )
             )
         db.commit()
-    _seed_all_keyframe_prompts(project_id, force=True)
+    # Plan prompts per frame (LLM). Failures leave empty keyframes for later rebuild.
+    with SessionLocal() as db:
+        p = db.get(Project, project_id)
+        assert p is not None
+        frame_ids = [f.id for f in sorted(p.frames, key=lambda x: x.position)]
+    for fid in frame_ids:
+        try:
+            await rebuild_frame_keyframe_prompts(project_id, fid)
+        except Exception:
+            continue
     return _frames_payload(project_id)
 
 
@@ -208,13 +236,38 @@ def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any
         "keyframe_first_prompt",
         "keyframe_mid_prompt",
         "keyframe_last_prompt",
+        "keyframes",
     }
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
             raise KeyError(f"frame {frame_id} not found")
         for k, v in fields.items():
-            if k in allowed and v is not None:
+            if k not in allowed or v is None:
+                continue
+            if k == "keyframes":
+                if not isinstance(v, list):
+                    raise ValueError("keyframes must be a list")
+                normalized = []
+                for i, item in enumerate(v):
+                    if not isinstance(item, dict):
+                        continue
+                    role = str(item.get("role") or "middle")
+                    if i == 0:
+                        role = "first"
+                    normalized.append(
+                        _empty_keyframe(
+                            i,
+                            float(item.get("t_sec") or 0.0),
+                            role,
+                            str(item.get("image_prompt") or item.get("prompt") or ""),
+                            item.get("path"),
+                        )
+                    )
+                if normalized:
+                    normalized[-1]["role"] = "last" if len(normalized) > 1 else normalized[0]["role"]
+                _sync_legacy_keyframe_columns(f, normalized)
+            else:
                 setattr(f, k, v)
         db.commit()
         db.refresh(f)
@@ -222,26 +275,52 @@ def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any
 
 
 def delete_frame_media(project_id: int, frame_id: int, kind: str) -> dict[str, Any]:
-    """Clear still, preview, or a keyframe path and remove the file if under media_dir."""
-    kind_to_attr = {
-        "still": "still_path",
-        "preview": "preview_path",
-        "keyframe_first": "keyframe_first_path",
-        "keyframe_mid": "keyframe_mid_path",
-        "keyframe_last": "keyframe_last_path",
-    }
-    if kind not in kind_to_attr:
-        raise ValueError(
-            "kind must be still, preview, keyframe_first, keyframe_mid, or keyframe_last"
-        )
+    """Clear still, preview, keyframe:N, or legacy keyframe_* kind."""
     settings = get_settings()
-    path_attr = kind_to_attr[kind]
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
             raise KeyError(f"frame {frame_id} not found")
-        old = getattr(f, path_attr)
-        setattr(f, path_attr, None)
+
+        old: str | None = None
+        if kind in ("still", "preview"):
+            path_attr = "still_path" if kind == "still" else "preview_path"
+            old = getattr(f, path_attr)
+            setattr(f, path_attr, None)
+        elif kind.startswith("keyframe:"):
+            idx = int(kind.split(":", 1)[1])
+            keyframes = _keyframes_list(f)
+            if idx < 0 or idx >= len(keyframes):
+                raise ValueError(f"keyframe index {idx} out of range")
+            old = keyframes[idx].get("path")
+            keyframes[idx]["path"] = None
+            _sync_legacy_keyframe_columns(f, keyframes)
+        elif kind in ("keyframe_first", "keyframe_mid", "keyframe_last"):
+            keyframes = _keyframes_list(f)
+            role = {
+                "keyframe_first": "first",
+                "keyframe_mid": "middle",
+                "keyframe_last": "last",
+            }[kind]
+            target = None
+            if role == "first" and keyframes:
+                target = 0
+            elif role == "last" and keyframes:
+                target = len(keyframes) - 1
+            elif role == "middle":
+                middles = [i for i, k in enumerate(keyframes) if k.get("role") == "middle"]
+                target = middles[len(middles) // 2] if middles else None
+            if target is None:
+                raise ValueError(f"no {kind} on frame")
+            old = keyframes[target].get("path")
+            keyframes[target]["path"] = None
+            _sync_legacy_keyframe_columns(f, keyframes)
+        else:
+            raise ValueError(
+                "kind must be still, preview, keyframe:N, keyframe_first, "
+                "keyframe_mid, or keyframe_last"
+            )
+
         db.commit()
         db.refresh(f)
         payload = _frame_dict(f)
@@ -808,33 +887,32 @@ async def _render_keyframe_image(
     *,
     project_id: int,
     frame_id: int,
-    phase: str,
+    index: int,
+    role: str,
     prompt: str,
-    source_still: str | None,
+    source_path: str | Path | None,
     seed: int,
+    force_edit: bool = False,
 ) -> Path:
-    """Generate one keyframe image via edit-from-still when possible, else T2I."""
+    """T2I when no source; otherwise edit-from-previous (preferred for continuity)."""
     settings = get_settings()
     media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
     media.mkdir(parents=True, exist_ok=True)
     comfy = ComfyUIClient()
     neg = still_negative_prompt(prompt)
+    label = f"{index:02d}_{role}"
 
-    if source_still:
-        src = _resolve_media_file(source_still)
+    if source_path:
+        src = _resolve_media_file(str(source_path))
         uploaded = await comfy.upload_image(src)
-        edit_prompt = (
-            f"Edit this cinematic still. Instruction: {prompt} "
-            "Preserve composition, character identity, and setting unless the instruction changes them. "
-            "One continuous camera shot only — no collage or panels."
-        )
+        edit_prompt = build_edit_prompt(instruction=prompt, frame_prompt=prompt)
         graph = apply_params(
             "still_edit",
             {
                 "positive_prompt": edit_prompt,
                 "negative_prompt": neg,
                 "seed": seed,
-                "filename_prefix": f"local_video/p{project_id}_f{frame_id}_kf_{phase}",
+                "filename_prefix": f"local_video/p{project_id}_f{frame_id}_kf_{label}",
                 "width": 1024,
                 "height": 576,
                 "steps": 20,
@@ -843,13 +921,15 @@ async def _render_keyframe_image(
             uploaded_image_name=uploaded,
         )
     else:
+        if force_edit:
+            raise ValueError("edit source required")
         graph = apply_params(
             "still_hero",
             {
                 "positive_prompt": prompt,
                 "negative_prompt": neg,
                 "seed": seed,
-                "filename_prefix": f"local_video/p{project_id}_f{frame_id}_kf_{phase}",
+                "filename_prefix": f"local_video/p{project_id}_f{frame_id}_kf_{label}",
             },
         )
 
@@ -857,9 +937,9 @@ async def _render_keyframe_image(
     history = await comfy.wait_for_prompt(prompt_id)
     outputs = comfy.collect_outputs(history)
     if not outputs:
-        raise RuntimeError(f"ComfyUI produced no outputs for keyframe {phase}")
+        raise RuntimeError(f"ComfyUI produced no outputs for keyframe {label}")
     out = outputs[0]
-    dest = media / f"keyframe_{phase}_{out['filename']}"
+    dest = media / f"keyframe_{label}_{out['filename']}"
     await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
     return dest
 
@@ -870,59 +950,121 @@ async def generate_frame_keyframes(
     *,
     skip_existing: bool = True,
 ) -> dict[str, Any]:
-    """Create first / mid / last keyframe stills for one storyboard step."""
-    _seed_all_keyframe_prompts(project_id, force=False)
+    """Create a variable keyframe series: edit-chain; new shot starts fresh T2I."""
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
             raise KeyError(f"frame {frame_id} not found")
-        source_still = f.still_path
-        existing = {
-            "first": f.keyframe_first_path,
-            "mid": f.keyframe_mid_path,
-            "last": f.keyframe_last_path,
-        }
-        prompts = {
-            "first": f.keyframe_first_prompt or "",
-            "mid": f.keyframe_mid_prompt or "",
-            "last": f.keyframe_last_prompt or "",
+        p = db.get(Project, project_id)
+        assert p is not None
+        frames = sorted(p.frames, key=lambda x: x.position)
+        idx = next(i for i, fr in enumerate(frames) if fr.id == frame_id)
+        is_new = bool(f.is_new_shot)
+        keyframes = _keyframes_list(f)
+        prev_last_path = None
+        if not is_new and idx > 0:
+            prev_kfs = _keyframes_list(frames[idx - 1])
+            if prev_kfs:
+                prev_last_path = prev_kfs[-1].get("path")
+
+    if not keyframes or not all((k.get("image_prompt") or "").strip() for k in keyframes):
+        await rebuild_frame_keyframe_prompts(project_id, frame_id)
+        with SessionLocal() as db:
+            f = db.get(StoryboardFrame, frame_id)
+            assert f
+            keyframes = _keyframes_list(f)
+
+    if skip_existing and _keyframes_ready(keyframes):
+        return {
+            "frame_id": frame_id,
+            "kind": "keyframes",
+            "generated": [],
+            "skipped": [k["role"] for k in keyframes],
+            "keyframes": keyframes,
+            "keyframe_first_path": keyframes[0].get("path") if keyframes else None,
+            "keyframe_last_path": keyframes[-1].get("path") if keyframes else None,
         }
 
-    paths: dict[str, str | None] = dict(existing)
-    generated: list[str] = []
-    skipped: list[str] = []
-    for i, (phase, attr, _label) in enumerate(_KEYFRAME_PHASES):
-        if skip_existing and existing.get(phase):
-            skipped.append(phase)
+    generated: list[int] = []
+    skipped: list[int] = []
+    last_path: str | None = None
+
+    for i, kf in enumerate(keyframes):
+        if skip_existing and (kf.get("path") or "").strip():
+            skipped.append(i)
+            last_path = kf.get("path")
             continue
-        prompt = (prompts.get(phase) or "").strip()
+
+        prompt = (kf.get("image_prompt") or "").strip()
         if not prompt:
-            raise ValueError(f"frame {frame_id} has no {phase} keyframe prompt")
+            raise ValueError(f"frame {frame_id} keyframe {i} has no image_prompt")
+
+        if i == 0:
+            if is_new or not prev_last_path:
+                source = None  # new shot / no prior → T2I (own series)
+            else:
+                source = prev_last_path
+                prompt = (
+                    f"{prompt} Continuation of the same shot — "
+                    "preserve identity, wardrobe, and setting."
+                )
+        else:
+            if not last_path:
+                raise ValueError(
+                    f"frame {frame_id} keyframe {i} needs previous keyframe image"
+                )
+            source = last_path
+
         dest = await _render_keyframe_image(
             project_id=project_id,
             frame_id=frame_id,
-            phase=phase,
+            index=i,
+            role=str(kf.get("role") or "middle"),
             prompt=prompt,
-            source_still=source_still,
+            source_path=source,
             seed=frame_id * 31 + i * 97,
         )
+        keyframes[i]["path"] = str(dest)
+        last_path = str(dest)
+        generated.append(i)
+
         with SessionLocal() as db:
             fr = db.get(StoryboardFrame, frame_id)
             assert fr
-            setattr(fr, attr, str(dest))
+            _sync_legacy_keyframe_columns(fr, keyframes)
             db.commit()
-        paths[phase] = str(dest)
-        generated.append(phase)
 
     return {
         "frame_id": frame_id,
         "kind": "keyframes",
         "generated": generated,
         "skipped": skipped,
-        "keyframe_first_path": paths.get("first"),
-        "keyframe_mid_path": paths.get("mid"),
-        "keyframe_last_path": paths.get("last"),
+        "keyframes": keyframes,
+        "keyframe_first_path": keyframes[0].get("path") if keyframes else None,
+        "keyframe_last_path": keyframes[-1].get("path") if keyframes else None,
+        "keyframe_mid_path": next(
+            (k.get("path") for k in keyframes if k.get("role") == "middle"), None
+        ),
     }
+
+
+def _resolve_keyframe_index(keyframes: list[dict[str, Any]], phase_or_index: str | int) -> int:
+    if isinstance(phase_or_index, int) or str(phase_or_index).isdigit():
+        idx = int(phase_or_index)
+        if idx < 0 or idx >= len(keyframes):
+            raise ValueError(f"keyframe index {idx} out of range")
+        return idx
+    phase = str(phase_or_index)
+    if phase in ("first", "start"):
+        return 0
+    if phase in ("last", "end"):
+        return len(keyframes) - 1
+    if phase in ("mid", "middle"):
+        middles = [i for i, k in enumerate(keyframes) if k.get("role") == "middle"]
+        if not middles:
+            raise ValueError("no middle keyframe")
+        return middles[len(middles) // 2]
+    raise ValueError("phase must be first, mid, last, or a keyframe index")
 
 
 async def generate_one_keyframe(
@@ -932,27 +1074,52 @@ async def generate_one_keyframe(
     *,
     seed: int | None = None,
 ) -> dict[str, Any]:
-    """Render a single keyframe phase from its stored prompt."""
-    if phase not in _KEYFRAME_PATH_ATTR:
-        raise ValueError("phase must be first, mid, or last")
-    _seed_all_keyframe_prompts(project_id, force=False)
+    """Render one keyframe slot; edits from previous in-series image when available."""
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
             raise KeyError(f"frame {frame_id} not found")
-        prompt = (getattr(f, _KEYFRAME_PROMPT_ATTR[phase]) or "").strip()
-        source_still = f.still_path
-        old_path = getattr(f, _KEYFRAME_PATH_ATTR[phase])
+        p = db.get(Project, project_id)
+        assert p is not None
+        frames = sorted(p.frames, key=lambda x: x.position)
+        idx = next(i for i, fr in enumerate(frames) if fr.id == frame_id)
+        is_new = bool(f.is_new_shot)
+        keyframes = _keyframes_list(f)
+        if not keyframes:
+            raise ValueError("no keyframe series — rebuild prompts first")
+        ki = _resolve_keyframe_index(keyframes, phase)
+        prompt = (keyframes[ki].get("image_prompt") or "").strip()
+        old_path = keyframes[ki].get("path")
+        prev_path = keyframes[ki - 1].get("path") if ki > 0 else None
+        prev_shot_last = None
+        if ki == 0 and not is_new and idx > 0:
+            prev_kfs = _keyframes_list(frames[idx - 1])
+            if prev_kfs:
+                prev_shot_last = prev_kfs[-1].get("path")
+
     if not prompt:
-        raise ValueError(f"frame {frame_id} has no {phase} keyframe prompt")
-    phase_index = next(i for i, (p, *_rest) in enumerate(_KEYFRAME_PHASES) if p == phase)
+        raise ValueError(f"frame {frame_id} keyframe {ki} has no image_prompt")
+
+    if ki == 0:
+        source = None if (is_new or not prev_shot_last) else prev_shot_last
+        if source:
+            prompt = (
+                f"{prompt} Continuation of the same shot — "
+                "preserve identity, wardrobe, and setting."
+            )
+    else:
+        source = prev_path
+        if not source:
+            raise ValueError("generate earlier keyframes first (edit chain)")
+
     dest = await _render_keyframe_image(
         project_id=project_id,
         frame_id=frame_id,
-        phase=phase,
+        index=ki,
+        role=str(keyframes[ki].get("role") or "middle"),
         prompt=prompt,
-        source_still=source_still,
-        seed=seed if seed is not None else (frame_id * 31 + phase_index * 97),
+        source_path=source,
+        seed=seed if seed is not None else (frame_id * 31 + ki * 97),
     )
     if old_path:
         try:
@@ -961,10 +1128,12 @@ async def generate_one_keyframe(
                 old.unlink()
         except (FileNotFoundError, ValueError, OSError):
             pass
+
+    keyframes[ki]["path"] = str(dest)
     with SessionLocal() as db:
         fr = db.get(StoryboardFrame, frame_id)
         assert fr
-        setattr(fr, _KEYFRAME_PATH_ATTR[phase], str(dest))
+        _sync_legacy_keyframe_columns(fr, keyframes)
         db.commit()
         db.refresh(fr)
         return _frame_dict(fr)
@@ -978,55 +1147,33 @@ async def edit_frame_keyframe(
     instruction: str,
     seed: int | None = None,
 ) -> dict[str, Any]:
-    """Prompt-edit an existing keyframe (or still as fallback) into that phase slot."""
-    if phase not in _KEYFRAME_PATH_ATTR:
-        raise ValueError("phase must be first, mid, or last")
-    settings = get_settings()
-    path_attr = _KEYFRAME_PATH_ATTR[phase]
+    """Prompt-edit an existing keyframe (or previous/still fallback) into that slot."""
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
             raise KeyError(f"frame {frame_id} not found")
-        keyframe_stored = getattr(f, path_attr)
-        source_stored = keyframe_stored or f.still_path
+        keyframes = _keyframes_list(f)
+        if not keyframes:
+            raise ValueError("no keyframe series — rebuild prompts first")
+        ki = _resolve_keyframe_index(keyframes, phase)
+        keyframe_stored = keyframes[ki].get("path")
+        prev_path = keyframes[ki - 1].get("path") if ki > 0 else None
+        source_stored = keyframe_stored or prev_path or f.still_path
         if not source_stored:
             raise ValueError(
-                f"frame has no {phase} keyframe or still to edit — generate one first"
+                f"frame has no keyframe {ki} or still to edit — generate one first"
             )
-        frame_prompt = (
-            getattr(f, _KEYFRAME_PROMPT_ATTR[phase])
-            or f.visual_prompt
-            or f.description
-            or ""
-        )
 
-    source = _resolve_media_file(source_stored)
-    prompt = build_edit_prompt(instruction=instruction, frame_prompt=frame_prompt)
-    comfy = ComfyUIClient()
-    uploaded = await comfy.upload_image(source)
-    params = {
-        "positive_prompt": prompt,
-        "negative_prompt": still_negative_prompt(frame_prompt),
-        "seed": seed if seed is not None else (frame_id * 31 + 53),
-        "filename_prefix": f"local_video/p{project_id}_f{frame_id}_kf_{phase}_edit",
-        "width": 1024,
-        "height": 576,
-        "steps": 20,
-        "cfg": 5.0,
-    }
-    graph = apply_params("still_edit", params, uploaded_image_name=uploaded)
-    prompt_id = await comfy.queue_prompt(graph)
-    history = await comfy.wait_for_prompt(prompt_id)
-    outputs = comfy.collect_outputs(history)
-    if not outputs:
-        raise RuntimeError("ComfyUI produced no outputs")
-
-    media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
-    media.mkdir(parents=True, exist_ok=True)
-    out = outputs[0]
-    dest = media / f"keyframe_{phase}_{out['filename']}"
-    await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
-
+    dest = await _render_keyframe_image(
+        project_id=project_id,
+        frame_id=frame_id,
+        index=ki,
+        role=str(keyframes[ki].get("role") or "middle"),
+        prompt=instruction,
+        source_path=source_stored,
+        seed=seed if seed is not None else (frame_id * 31 + 53 + ki),
+        force_edit=True,
+    )
     if keyframe_stored:
         try:
             old = _resolve_media_file(keyframe_stored)
@@ -1035,10 +1182,11 @@ async def edit_frame_keyframe(
         except (FileNotFoundError, ValueError, OSError):
             pass
 
+    keyframes[ki]["path"] = str(dest)
     with SessionLocal() as db:
         fr = db.get(StoryboardFrame, frame_id)
         assert fr
-        setattr(fr, path_attr, str(dest))
+        _sync_legacy_keyframe_columns(fr, keyframes)
         db.commit()
         db.refresh(fr)
         return _frame_dict(fr)
@@ -1130,7 +1278,7 @@ async def generate_step_clips(
     num_frames: int = 33,
     workflow_id: str | None = None,
 ) -> dict[str, Any]:
-    """I2V first→mid and mid→last for a step; concat into preview_path."""
+    """I2V between consecutive keyframes in the series; concat into preview_path."""
     workflow_id = workflow_id or "wan22_i2v"
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
@@ -1138,57 +1286,49 @@ async def generate_step_clips(
             raise KeyError(f"frame {frame_id} not found")
         p = db.get(Project, project_id)
         assert p is not None
-        first = f.keyframe_first_path
-        mid = f.keyframe_mid_path
-        last = f.keyframe_last_path
+        keyframes = _keyframes_list(f)
         beat = f.visual_prompt or f.description or ""
         premise = p.premise or ""
-        if not (first and mid and last):
-            raise ValueError("frame needs first, mid, and last keyframes first")
-
-    first_p = _resolve_media_file(first)
-    mid_p = _resolve_media_file(mid)
-    _resolve_media_file(last)  # ensure end keyframe exists on disk
-
-    clip_a = await _i2v_clip_from_image(
-        project_id=project_id,
-        frame_id=frame_id,
-        start_image=first_p,
-        prompt=build_transition_prompt(
-            premise=premise, start_prompt=f"start: {beat}", end_prompt=f"midpoint: {beat}"
-        ),
-        label="clip_a",
-        num_frames=num_frames,
-        seed=frame_id * 17 + 11,
-        workflow_id=workflow_id,
-    )
-    clip_b = await _i2v_clip_from_image(
-        project_id=project_id,
-        frame_id=frame_id,
-        start_image=mid_p,
-        prompt=build_transition_prompt(
-            premise=premise, start_prompt=f"midpoint: {beat}", end_prompt=f"end: {beat}"
-        ),
-        label="clip_b",
-        num_frames=num_frames,
-        seed=frame_id * 17 + 13,
-        workflow_id=workflow_id,
-    )
+        if len(keyframes) < 2 or not _keyframes_ready(keyframes):
+            raise ValueError("frame needs a complete keyframe series (at least first and last)")
 
     settings = get_settings()
     media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+    media.mkdir(parents=True, exist_ok=True)
+
+    clip_paths: list[Path] = []
+    frame_dirs: list[Path] = []
+    for i in range(len(keyframes) - 1):
+        a = keyframes[i]
+        b = keyframes[i + 1]
+        start_p = _resolve_media_file(a["path"])
+        _resolve_media_file(b["path"])
+        clip = await _i2v_clip_from_image(
+            project_id=project_id,
+            frame_id=frame_id,
+            start_image=start_p,
+            prompt=build_transition_prompt(
+                premise=premise,
+                start_prompt=a.get("image_prompt") or f"t={a.get('t_sec')}s: {beat}",
+                end_prompt=b.get("image_prompt") or f"t={b.get('t_sec')}s: {beat}",
+            ),
+            label=f"clip_{i:02d}",
+            num_frames=num_frames,
+            seed=frame_id * 17 + 11 + i,
+            workflow_id=workflow_id,
+        )
+        clip_paths.append(clip)
+        raw = media / f"_clip_{i:02d}_frames"
+        extract_frames_from_video(clip, raw)
+        frame_dirs.append(raw)
+
     preview = media / f"step_preview_f{frame_id}.mp4"
-    # Prefer frame-extract concat for codec safety across Comfy outputs
-    raw_a = media / "_clip_a_frames"
-    raw_b = media / "_clip_b_frames"
-    fa = extract_frames_from_video(clip_a, raw_a)
-    fb = extract_frames_from_video(clip_b, raw_b)
-    if fa and fb:
+    if frame_dirs and all(any(d.glob("*.png")) for d in frame_dirs):
         seq = media / "_step_seq"
-        concat_frame_dirs([raw_a, raw_b], seq)
+        concat_frame_dirs(frame_dirs, seq)
         encode_frames_to_mp4(seq, preview, fps=settings.default_fps)
     else:
-        concat_videos([clip_a, clip_b], preview)
+        concat_videos(clip_paths, preview)
 
     with SessionLocal() as db:
         fr = db.get(StoryboardFrame, frame_id)
@@ -1200,10 +1340,9 @@ async def generate_step_clips(
         "frame_id": frame_id,
         "kind": "step_clips",
         "preview_path": str(preview),
-        "clip_a": str(clip_a),
-        "clip_b": str(clip_b),
-        # mid/last available for cross-step bridges
-        "keyframe_last_path": last,
+        "clips": [str(c) for c in clip_paths],
+        "keyframes": keyframes,
+        "keyframe_last_path": keyframes[-1].get("path"),
     }
 
 
@@ -1221,9 +1360,7 @@ async def generate_all_step_clips(
             {
                 "id": f.id,
                 "preview_path": f.preview_path,
-                "ready": bool(
-                    f.keyframe_first_path and f.keyframe_mid_path and f.keyframe_last_path
-                ),
+                "ready": _keyframes_ready(_keyframes_list(f)),
             }
             for f in sorted(p.frames, key=lambda x: x.position)
         ]

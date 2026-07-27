@@ -86,9 +86,9 @@ def update_frame(
 
 
 @mcp.tool()
-def rebuild_frame_keyframe_prompts(project_id: int, frame_id: int) -> dict:
-    """Rebuild first/mid/last keyframe prompts from the beat + premise."""
-    return sb_svc.rebuild_frame_keyframe_prompts(project_id, frame_id)
+async def rebuild_frame_keyframe_prompts(project_id: int, frame_id: int) -> dict:
+    """LLM-plan first/middle(s)/last keyframe image prompts (≤2s spacing)."""
+    return await sb_svc.rebuild_frame_keyframe_prompts(project_id, frame_id)
 
 
 @mcp.tool()
