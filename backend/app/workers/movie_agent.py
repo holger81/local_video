@@ -164,8 +164,12 @@ async def _run_chunk(
     else:
         raise ComfyUIError("unsupported output types")
 
-    # Save overlap tail from full raw frames
-    save_tail_overlap(frames, overlap if mode == "continue" else min(overlap or job.overlap_frames, len(frames)), chunk_dir / "tail_overlap")
+    # Save overlap tail from full raw frames (new_shot: keep a small tail for QA only)
+    tail_n = overlap if mode == "continue" else min(job.overlap_frames, len(frames))
+    if mode != "continue":
+        # Do not treat falsy 0 as "use job overlap" via `or` — new_shot overlap in handoff is 0.
+        tail_n = min(max(tail_n, 0), len(frames))
+    save_tail_overlap(frames, tail_n, chunk_dir / "tail_overlap")
 
     if mode == "continue":
         kept = discard_overlap(frames, overlap)

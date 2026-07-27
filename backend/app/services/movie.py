@@ -101,7 +101,8 @@ async def start_movie(
             }
             for f in p.frames
         ]
-        base = prompt_base or p.story or p.premise
+        # Prefer premise as light world lock; full story scripts make Wan ignore the beat.
+        base = prompt_base or p.premise or ""
         neg = negative_prompt or (
             "blurry, watermark, text, static, morphing face, flickering"
         )

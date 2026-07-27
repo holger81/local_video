@@ -87,10 +87,23 @@ def plan_shots_from_frames(
         if n_chunks > 1:
             n_chunks = max(1, 1 + int(math.ceil(max(0, needed - chunk_frames) / max(1, effective))))
 
-        base = prompt_base.strip() or " ".join(
-            f.get("visual_prompt") or f.get("description") or "" for f in group
+        base = prompt_base.strip() or ""
+        # Prefer this shot's own beats — never dump a multi-scene script into every chunk.
+        shot_bits = [
+            (f.get("visual_prompt") or f.get("description") or "").strip() for f in group
+        ]
+        shot_bits = [b for b in shot_bits if b]
+        shot_prompt = " ".join(shot_bits) if shot_bits else "cinematic scene"
+        # Light world lock from premise/base only when it is not a scene list.
+        world = ""
+        for candidate in (base,):
+            low = candidate.lower()
+            if candidate and low.count("scene ") < 2 and "**scene" not in low:
+                world = candidate[:320]
+                break
+        prompt_for_shot = (
+            f"{shot_prompt}. Continuity: {world}" if world else shot_prompt
         )
-        # Prefer first keyframe, then hero still, as the shot's I2V start.
         start_still = (
             group[0].get("keyframe_first_path")
             or group[0].get("still_path")
@@ -109,7 +122,7 @@ def plan_shots_from_frames(
                 "chunk_index": ci,
                 "frame_count": chunk_frames,
                 "overlap_frames": overlap_frames if mode == "continue" else 0,
-                "prompt_base": base,
+                "prompt_base": prompt_for_shot,
                 "prompt_delta": delta if mode == "continue" else "",
                 "negative_prompt": negative_prompt,
                 "seed_policy": "continue" if mode == "continue" else "new_shot",
@@ -129,7 +142,7 @@ def plan_shots_from_frames(
             {
                 "position": si,
                 "title": f"Shot {si + 1}",
-                "prompt_base": base,
+                "prompt_base": prompt_for_shot,
                 "frame_id": group[0].get("id"),
                 "chunks": shot_chunks,
             }
