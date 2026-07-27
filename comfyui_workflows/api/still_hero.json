@@ -1,107 +1,206 @@
 {
-  "1": {
-    "class_type": "CheckpointLoaderSimple",
+  "70": {
+    "class_type": "UNETLoader",
     "inputs": {
-      "ckpt_name": "sd_xl_base_1.0.safetensors"
+      "unet_name": "flux-2-klein-base-4b.safetensors",
+      "weight_dtype": "default"
     },
     "_meta": {
-      "title": "Load Checkpoint"
+      "title": "Load Diffusion Model"
     }
   },
-  "2": {
+  "71": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_3_4b.safetensors",
+      "type": "flux2",
+      "device": "default"
+    },
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "72": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    },
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "74": {
     "class_type": "CLIPTextEncode",
     "inputs": {
-      "text": "a cinematic storyboard frame, detailed",
+      "text": "a cinematic storyboard frame",
       "clip": [
-        "1",
-        1
+        "71",
+        0
       ]
     },
     "_meta": {
       "title": "Positive"
     }
   },
-  "3": {
+  "67": {
     "class_type": "CLIPTextEncode",
     "inputs": {
-      "text": "blurry, low quality, text, watermark",
+      "text": "blurry, low quality, watermark, text",
       "clip": [
-        "1",
-        1
+        "71",
+        0
       ]
     },
     "_meta": {
       "title": "Negative"
     }
   },
-  "4": {
-    "class_type": "EmptyLatentImage",
+  "68": {
+    "class_type": "PrimitiveInt",
     "inputs": {
-      "width": 1024,
-      "height": 576,
+      "value": 1024
+    },
+    "_meta": {
+      "title": "width"
+    }
+  },
+  "69": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 576
+    },
+    "_meta": {
+      "title": "height"
+    }
+  },
+  "66": {
+    "class_type": "EmptyFlux2LatentImage",
+    "inputs": {
+      "width": [
+        "68",
+        0
+      ],
+      "height": [
+        "69",
+        0
+      ],
       "batch_size": 1
     },
     "_meta": {
       "title": "Empty Latent"
     }
   },
-  "5": {
-    "class_type": "KSampler",
+  "73": {
+    "class_type": "RandomNoise",
     "inputs": {
-      "seed": 0,
+      "noise_seed": 42
+    },
+    "_meta": {
+      "title": "RandomNoise"
+    }
+  },
+  "61": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "euler"
+    },
+    "_meta": {
+      "title": "KSamplerSelect"
+    }
+  },
+  "62": {
+    "class_type": "Flux2Scheduler",
+    "inputs": {
       "steps": 20,
-      "cfg": 7.0,
-      "sampler_name": "euler",
-      "scheduler": "normal",
-      "denoise": 1.0,
+      "width": [
+        "68",
+        0
+      ],
+      "height": [
+        "69",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Flux2Scheduler"
+    }
+  },
+  "63": {
+    "class_type": "CFGGuider",
+    "inputs": {
       "model": [
-        "1",
+        "70",
         0
       ],
       "positive": [
-        "2",
+        "74",
         0
       ],
       "negative": [
-        "3",
+        "67",
+        0
+      ],
+      "cfg": 5.0
+    },
+    "_meta": {
+      "title": "CFGGuider"
+    }
+  },
+  "64": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "73",
+        0
+      ],
+      "guider": [
+        "63",
+        0
+      ],
+      "sampler": [
+        "61",
+        0
+      ],
+      "sigmas": [
+        "62",
         0
       ],
       "latent_image": [
-        "4",
+        "66",
         0
       ]
     },
     "_meta": {
-      "title": "KSampler"
+      "title": "SamplerCustomAdvanced"
     }
   },
-  "6": {
+  "65": {
     "class_type": "VAEDecode",
     "inputs": {
       "samples": [
-        "5",
+        "64",
         0
       ],
       "vae": [
-        "1",
-        2
+        "72",
+        0
       ]
     },
     "_meta": {
-      "title": "VAE Decode"
+      "title": "VAEDecode"
     }
   },
-  "7": {
+  "9": {
     "class_type": "SaveImage",
     "inputs": {
       "filename_prefix": "local_video/still",
       "images": [
-        "6",
+        "65",
         0
       ]
     },
     "_meta": {
-      "title": "Save Image"
+      "title": "SaveImage"
     }
   }
 }
