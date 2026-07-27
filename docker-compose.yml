@@ -1,3 +1,32 @@
+# Portainer-friendly compose: no required .env file.
+# Override any variable in Portainer → Stack → Environment variables.
+
+x-app-env: &app-env
+  REDIS_URL: redis://redis:6379
+  DATABASE_URL: sqlite:////data/local_video.db
+  DATA_DIR: /data
+  MEDIA_DIR: /media
+  WORKFLOWS_DIR: /app/comfyui_workflows
+  COMFYUI_BASE_URL: http://192.168.10.31:8188
+  LLAMA_BASE_URL: http://192.168.10.31:9292/v1
+  LLAMA_MODEL: LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M
+  LLAMA_API_KEY: not-needed
+  CHUNK_FRAMES: "33"
+  OVERLAP_FRAMES: "12"
+  DEFAULT_FPS: "24"
+  DEFAULT_WIDTH: "1280"
+  DEFAULT_HEIGHT: "704"
+  DEFAULT_STEPS: "20"
+  DEFAULT_CFG: "1.0"
+  DEFAULT_SAMPLER: euler
+  DEFAULT_SCHEDULER: simple
+  CORS_ORIGINS: "*"
+
+x-app-volumes: &app-volumes
+  - /shared/local_video/data:/data
+  - /shared/local_video/media:/media
+  - ./comfyui_workflows:/app/comfyui_workflows:ro
+
 services:
   redis:
     image: redis:7-alpine
@@ -10,18 +39,9 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
-    env_file:
-      - .env
     environment:
-      REDIS_URL: redis://redis:6379
-      DATABASE_URL: sqlite:////data/local_video.db
-      DATA_DIR: /data
-      MEDIA_DIR: /media
-      WORKFLOWS_DIR: /app/comfyui_workflows
-    volumes:
-      - /shared/local_video/data:/data
-      - /shared/local_video/media:/media
-      - ./comfyui_workflows:/app/comfyui_workflows:ro
+      <<: *app-env
+    volumes: *app-volumes
     depends_on:
       - redis
 
@@ -29,19 +49,10 @@ services:
     build: .
     restart: unless-stopped
     command: ["arq", "app.workers.movie_agent.WorkerSettings"]
-    env_file:
-      - .env
     environment:
-      REDIS_URL: redis://redis:6379
-      DATABASE_URL: sqlite:////data/local_video.db
-      DATA_DIR: /data
-      MEDIA_DIR: /media
-      WORKFLOWS_DIR: /app/comfyui_workflows
+      <<: *app-env
       PYTHONPATH: /app/backend
-    volumes:
-      - /shared/local_video/data:/data
-      - /shared/local_video/media:/media
-      - ./comfyui_workflows:/app/comfyui_workflows:ro
+    volumes: *app-volumes
     depends_on:
       - redis
       - api
@@ -53,21 +64,12 @@ services:
     command: ["python", "-m", "app.mcp_server"]
     ports:
       - "8700:8700"
-    env_file:
-      - .env
     environment:
-      REDIS_URL: redis://redis:6379
-      DATABASE_URL: sqlite:////data/local_video.db
-      DATA_DIR: /data
-      MEDIA_DIR: /media
-      WORKFLOWS_DIR: /app/comfyui_workflows
+      <<: *app-env
       PYTHONPATH: /app/backend
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8700"
-    volumes:
-      - /shared/local_video/data:/data
-      - /shared/local_video/media:/media
-      - ./comfyui_workflows:/app/comfyui_workflows:ro
+    volumes: *app-volumes
     depends_on:
       - redis
       - api

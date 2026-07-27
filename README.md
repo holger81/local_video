@@ -12,16 +12,16 @@ LAN-hosted studio for storyboarding and long-form video generation. Continuity (
 ## Portainer / Docker
 
 1. Clone this repo onto the host that runs Portainer (not required to be the GPU box).
-2. Copy `.env.example` → `.env` and set URLs if needed.
-3. Deploy with Portainer **Stacks** → upload / paste `docker-compose.yml`, or:
+2. Create storage dirs: `mkdir -p /shared/local_video/{data,media,redis}`
+3. Deploy with Portainer **Stacks** (paste/repo `docker-compose.yml`). No `.env` file required — defaults are in compose; override ComfyUI/llama URLs in the stack Environment UI if needed.
+4. Or via CLI:
 
 ```bash
-cp .env.example .env
 docker compose up -d --build
 ```
 
-4. Open `http://<host>:8000`
-5. MCP SSE: `http://<host>:8700/sse` (see MCP section below)
+5. Open `http://<host>:8000`
+6. MCP SSE: `http://<host>:8700/sse` (see MCP section below)
 
 Volumes on the Portainer host:
 
