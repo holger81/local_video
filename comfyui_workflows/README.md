@@ -45,6 +45,8 @@ If you change an `import/` graph in ComfyUI:
 
 Agent defaults expect `length` / `num_frames` = **33** (`4n+1`).
 
+Video API graphs (`wan22_t2v`, `wan22_i2v`, `wan22_flf2v`) use **VAE Decode (Tiled)** (`VAEDecodeTiled`) to reduce VRAM during decode.
+
 ## Agent usage
 
 | Profile | When used |
