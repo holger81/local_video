@@ -1,0 +1,16 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+sqlalchemy==2.0.40
+pydantic==2.11.3
+pydantic-settings==2.8.1
+httpx==0.28.1
+websockets==15.0.1
+arq==0.26.1
+redis==5.2.1
+python-multipart==0.0.20
+aiofiles==24.1.0
+pyyaml==6.0.2
+openai==1.75.0
+pillow==11.2.1
+mcp==1.6.0
+sse-starlette==2.2.1

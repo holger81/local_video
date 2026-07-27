@@ -1,0 +1,20 @@
+workflow: wan22_i2v.json
+description: Wan 2.2 TI2V 5B I2V continue from last frame. Upload start_image before queueing.
+model_files:
+  - models/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors
+  - models/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
+  - models/vae/wan2.2_vae.safetensors
+fields:
+  positive_prompt: {node: "6", input: text}
+  negative_prompt: {node: "7", input: text}
+  seed: {node: "3", input: seed}
+  steps: {node: "3", input: steps}
+  cfg: {node: "3", input: cfg}
+  sampler_name: {node: "3", input: sampler_name}
+  scheduler: {node: "3", input: scheduler}
+  num_frames: {node: "55", input: length}
+  width: {node: "55", input: width}
+  height: {node: "55", input: height}
+  fps: {node: "57", input: fps}
+  filename_prefix: {node: "58", input: filename_prefix}
+  start_image: {node: "56", input: image, upload: true}

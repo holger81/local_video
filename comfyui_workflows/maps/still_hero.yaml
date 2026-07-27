@@ -1,0 +1,27 @@
+workflow: still_hero.json
+description: Simple storyboard still (swap CheckpointLoaderSimple ckpt_name to your local model).
+fields:
+  positive_prompt:
+    node: "2"
+    input: text
+  negative_prompt:
+    node: "3"
+    input: text
+  seed:
+    node: "5"
+    input: seed
+  steps:
+    node: "5"
+    input: steps
+  cfg:
+    node: "5"
+    input: cfg
+  width:
+    node: "4"
+    input: width
+  height:
+    node: "4"
+    input: height
+  filename_prefix:
+    node: "7"
+    input: filename_prefix

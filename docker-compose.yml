@@ -1,0 +1,79 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: sqlite:////data/local_video.db
+      DATA_DIR: /data
+      MEDIA_DIR: /media
+      WORKFLOWS_DIR: /app/comfyui_workflows
+    volumes:
+      - lv_data:/data
+      - lv_media:/media
+      - ./comfyui_workflows:/app/comfyui_workflows:ro
+    depends_on:
+      - redis
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["arq", "app.workers.movie_agent.WorkerSettings"]
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: sqlite:////data/local_video.db
+      DATA_DIR: /data
+      MEDIA_DIR: /media
+      WORKFLOWS_DIR: /app/comfyui_workflows
+      PYTHONPATH: /app/backend
+    volumes:
+      - lv_data:/data
+      - lv_media:/media
+      - ./comfyui_workflows:/app/comfyui_workflows:ro
+    depends_on:
+      - redis
+      - api
+    working_dir: /app/backend
+
+  mcp:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "app.mcp_server"]
+    ports:
+      - "8090:8090"
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: sqlite:////data/local_video.db
+      DATA_DIR: /data
+      MEDIA_DIR: /media
+      WORKFLOWS_DIR: /app/comfyui_workflows
+      PYTHONPATH: /app/backend
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8090"
+    volumes:
+      - lv_data:/data
+      - lv_media:/media
+      - ./comfyui_workflows:/app/comfyui_workflows:ro
+    depends_on:
+      - redis
+      - api
+    working_dir: /app/backend
+
+volumes:
+  redis_data:
+  lv_data:
+  lv_media:
