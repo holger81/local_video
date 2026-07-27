@@ -1,0 +1,139 @@
+{
+  "37": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+      "weight_dtype": "fp8_e4m3fn"
+    },
+    "_meta": {
+      "title": "UNETLoader high noise"
+    }
+  },
+  "91": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": ["37", 0],
+      "lora_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors",
+      "strength_model": 1.0
+    },
+    "_meta": {
+      "title": "Lightning LoRA high"
+    }
+  },
+  "38": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "_meta": {
+      "title": "CLIPLoader"
+    }
+  },
+  "39": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    },
+    "_meta": {
+      "title": "VAELoader"
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["38", 0],
+      "text": "smooth cinematic transition between two keyframes"
+    },
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["38", 0],
+      "text": "blurry, watermark, text, static, jump cut, morphing face, flickering, collage, comic, storyboard, panels, grid, split screen, montage"
+    },
+    "_meta": {
+      "title": "CLIP Text Encode (Negative Prompt)"
+    }
+  },
+  "62": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "start.png"
+    },
+    "_meta": {
+      "title": "Load start image"
+    }
+  },
+  "68": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "end.png"
+    },
+    "_meta": {
+      "title": "Load end image"
+    }
+  },
+  "67": {
+    "class_type": "WanFirstLastFrameToVideo",
+    "inputs": {
+      "positive": ["6", 0],
+      "negative": ["7", 0],
+      "vae": ["39", 0],
+      "start_image": ["62", 0],
+      "end_image": ["68", 0],
+      "width": 1280,
+      "height": 704,
+      "length": 33,
+      "batch_size": 1
+    },
+    "_meta": {
+      "title": "WanFirstLastFrameToVideo"
+    }
+  },
+  "54": {
+    "class_type": "ModelSamplingSD3",
+    "inputs": {
+      "model": ["91", 0],
+      "shift": 5.0
+    },
+    "_meta": {
+      "title": "ModelSamplingSD3 high"
+    }
+  },
+  "57": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "model": ["54", 0],
+      "positive": ["67", 0],
+      "negative": ["67", 1],
+      "latent_image": ["67", 2],
+      "add_noise": "enable",
+      "noise_seed": 1,
+      "steps": 4,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 0,
+      "end_at_step": 2,
+      "return_with_leftover_noise": "enable"
+    },
+    "_meta": {
+      "title": "KSamplerAdvanced high"
+    }
+  },
+  "99": {
+    "class_type": "SaveLatent",
+    "inputs": {
+      "samples": ["57", 0],
+      "filename_prefix": "latents/local_video_flf_high"
+    },
+    "_meta": {
+      "title": "Save Latent (high pass)"
+    }
+  }
+}

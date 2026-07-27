@@ -47,13 +47,23 @@ Agent defaults expect `length` / `num_frames` = **33** (`4n+1`).
 
 Video API graphs (`wan22_t2v`, `wan22_i2v`, `wan22_flf2v`) use **VAE Decode (Tiled)** (`VAEDecodeTiled`) to reduce VRAM during decode.
 
+### FLF2V two-pass (AMD / ROCm)
+
+Wan 2.2’s high→low noise handoff often crashes ComfyUI when both 14B UNETs load in one graph. The app runs FLF as:
+
+1. `wan22_flf2v_high` — high-noise sampler → `SaveLatent`
+2. `POST /free` — unload models
+3. `wan22_flf2v_low` — `LoadLatent` + low-noise sampler → tiled decode → video
+
+Keep the ComfyUI launch flags you already use (`--fp16-vae`, etc.). Extra host RAM helps during offload.
+
 ## Agent usage
 
 | Profile | When used |
 |---------|-----------|
 | `wan22_t2v` | Chunk 0 / `new_shot` |
 | `wan22_i2v` | `continue` — uploads previous `last_frame.png` into LoadImage |
-| `wan22_flf2v` | **Keyframe / beat bridges** — uploads `start_image` + `end_image` (14B FLF2V) |
+| `wan22_flf2v` | **Keyframe / beat bridges** — two-pass 14B FLF2V (`start_image` + `end_image`); unloads between high/low UNETs |
 | `still_hero` | Storyboard stills (text → image) |
 | `still_edit` | Prompt-edit an existing still (ReferenceLatent) |
 

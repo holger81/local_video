@@ -1,25 +1,20 @@
-workflow: wan22_flf2v_high.json
+workflow: wan22_flf2v_low.json
 description: >
-  Wan 2.2 14B FLF2V (first+last frame → video). Executed as two ComfyUI prompts
-  (high then low) with model unload between passes to avoid dual-UNET crashes.
-  Orchestrated by the app when workflow_id is wan22_flf2v.
+  Wan 2.2 14B FLF2V low-noise pass + tiled VAE decode. Loads latent from the high pass
+  via LoadLatent annotated [output] path after ComfyUI /free unload.
 model_files:
-  - models/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
   - models/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
-  - models/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors
   - models/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
   - models/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
   - models/vae/wan_2.1_vae.safetensors
-two_pass: true
-high_workflow: wan22_flf2v_high
-low_workflow: wan22_flf2v_low
 fields:
   positive_prompt: {node: "6", input: text}
   negative_prompt: {node: "7", input: text}
-  seed: {node: "57", input: noise_seed}
   num_frames: {node: "67", input: length}
   width: {node: "67", input: width}
   height: {node: "67", input: height}
-  latent_prefix: {node: "99", input: filename_prefix}
+  fps: {node: "60", input: fps}
+  filename_prefix: {node: "61", input: filename_prefix}
+  latent_file: {node: "100", input: latent}
   start_image: {node: "62", input: image, upload: true}
   end_image: {node: "68", input: image, upload: true}

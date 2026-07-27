@@ -1262,6 +1262,20 @@ async def _bridge_clip_between_images(
     workflow_id: str = "wan22_flf2v",
 ) -> Path:
     """Generate a clip locked to start (and optionally end) image via FLF2V or I2V."""
+    if workflow_id == "wan22_flf2v":
+        if end_image is None:
+            raise ValueError("wan22_flf2v requires both start_image and end_image")
+        return await _run_flf2v_two_pass(
+            project_id=project_id,
+            frame_id=frame_id,
+            start_image=start_image,
+            end_image=end_image,
+            prompt=prompt,
+            label=label,
+            num_frames=num_frames,
+            seed=seed,
+        )
+
     settings = get_settings()
     validate_frame_count(num_frames)
     comfy = ComfyUIClient()
@@ -1289,6 +1303,93 @@ async def _bridge_clip_between_images(
     outputs = comfy.collect_outputs(history)
     if not outputs:
         raise RuntimeError("ComfyUI produced no outputs")
+    media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+    media.mkdir(parents=True, exist_ok=True)
+    out = outputs[0]
+    dest = media / out["filename"]
+    await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+    return dest
+
+
+async def _run_flf2v_two_pass(
+    *,
+    project_id: int,
+    frame_id: int,
+    start_image: Path,
+    end_image: Path,
+    prompt: str,
+    label: str,
+    num_frames: int,
+    seed: int,
+) -> Path:
+    """FLF2V as high-noise then low-noise prompts with /free between (avoids dual-UNET crash)."""
+    settings = get_settings()
+    validate_frame_count(num_frames)
+    comfy = ComfyUIClient()
+    neg = (
+        "blurry, watermark, text, static, jump cut, morphing face, flickering, "
+        "collage, comic, storyboard, panels, grid, split screen, montage"
+    )
+    uploads = {
+        "start_image": await comfy.upload_image(start_image),
+        "end_image": await comfy.upload_image(end_image),
+    }
+    shared = {
+        "positive_prompt": prompt,
+        "negative_prompt": neg,
+        "num_frames": num_frames,
+        "width": settings.default_width,
+        "height": settings.default_height,
+    }
+
+    # Pass 1: high-noise only → SaveLatent
+    await comfy.free_memory()
+    high_params = {
+        **shared,
+        "seed": seed,
+        "latent_prefix": f"latents/local_video/p{project_id}_f{frame_id}_{label}_high",
+    }
+    high_graph = apply_params("wan22_flf2v_high", high_params, uploaded_images=uploads)
+    high_id = await comfy.queue_prompt(high_graph)
+    high_hist = await comfy.wait_for_prompt(high_id)
+    latents = [o for o in comfy.collect_outputs(high_hist) if o.get("kind") == "latents"]
+    if not latents:
+        # Some Comfy builds nest SaveLatent under outputs without a kind we expect.
+        for _nid, node_out in (high_hist.get("outputs") or {}).items():
+            for item in node_out.get("latents") or []:
+                latents.append(
+                    {
+                        "kind": "latents",
+                        "filename": item.get("filename"),
+                        "subfolder": item.get("subfolder") or "",
+                        "type": item.get("type") or "output",
+                    }
+                )
+    if not latents or not latents[0].get("filename"):
+        raise RuntimeError("FLF2V high pass produced no latent output")
+    latent_ref = comfy.latent_annotated_path(latents[0])
+
+    # Unload high-noise UNET before loading low-noise
+    await comfy.free_memory()
+
+    # Pass 2: low-noise + tiled decode → video
+    low_params = {
+        **shared,
+        "fps": settings.default_fps,
+        "filename_prefix": f"local_video/p{project_id}_f{frame_id}_{label}",
+        "latent_file": latent_ref,
+    }
+    low_graph = apply_params("wan22_flf2v_low", low_params, uploaded_images=uploads)
+    low_id = await comfy.queue_prompt(low_graph)
+    low_hist = await comfy.wait_for_prompt(low_id)
+    outputs = [
+        o
+        for o in comfy.collect_outputs(low_hist)
+        if o.get("kind") in ("videos", "gifs", "images")
+    ]
+    if not outputs:
+        raise RuntimeError("FLF2V low pass produced no video output")
+
     media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
     media.mkdir(parents=True, exist_ok=True)
     out = outputs[0]

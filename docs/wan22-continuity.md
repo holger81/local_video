@@ -24,8 +24,9 @@ Storyboard pipeline:
 4. **Between steps** — FLF2V bridge from last keyframe of N to first of N+1
 5. Movie agent
 
-True dual-frame FLF uses the `wan22_flf2v` workflow (Wan 2.2 14B first+last frame).
-TI2V 5B I2V (`wan22_i2v`) only locks the start frame.
+True dual-frame FLF uses the `wan22_flf2v` workflow (Wan 2.2 14B first+last frame),
+run as **two ComfyUI prompts** (high-noise → unload → low-noise) so both 14B UNETs are
+never resident together. TI2V 5B I2V (`wan22_i2v`) only locks the start frame.
 
 ## Handoff schema
 

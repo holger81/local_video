@@ -108,10 +108,17 @@ class ComfyUIClient:
             dest.write_bytes(r.content)
             return dest
 
+    async def free_memory(self, *, unload_models: bool = True) -> None:
+        """Ask ComfyUI to unload models and free VRAM/RAM (POST /free)."""
+        body = {"unload_models": unload_models, "free_memory": True}
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(f"{self.base_url}/free", json=body)
+            r.raise_for_status()
+
     def collect_outputs(self, history_entry: dict[str, Any]) -> list[dict[str, Any]]:
         outputs: list[dict[str, Any]] = []
         for _node_id, node_out in (history_entry.get("outputs") or {}).items():
-            for key in ("images", "gifs", "videos"):
+            for key in ("images", "gifs", "videos", "latents"):
                 for item in node_out.get(key) or []:
                     outputs.append(
                         {
@@ -122,3 +129,11 @@ class ComfyUIClient:
                         }
                     )
         return outputs
+
+    def latent_annotated_path(self, item: dict[str, Any]) -> str:
+        """Build a LoadLatent path that reads a file from ComfyUI output/."""
+        filename = item.get("filename") or ""
+        subfolder = (item.get("subfolder") or "").strip().strip("/")
+        rel = f"{subfolder}/{filename}" if subfolder else filename
+        # annotated_filepath strips trailing " [output]" (9 chars including space)
+        return f"{rel} [output]"
