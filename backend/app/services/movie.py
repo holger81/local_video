@@ -8,6 +8,7 @@ from arq.connections import RedisSettings
 from app.config import get_settings
 from app.db.models import Chunk, Project, RenderJob, SessionLocal, Shot
 from app.services.continuity import plan_shots_from_frames
+from app.services.storyboard import _keyframes_list
 from app.services.workflows import validate_frame_count
 
 
@@ -77,7 +78,9 @@ async def start_movie(
 ) -> dict[str, Any]:
     settings = get_settings()
     chunk_frames = chunk_frames or settings.chunk_frames
-    overlap_frames = overlap_frames if overlap_frames is not None else settings.overlap_frames
+    overlap_frames = (
+        overlap_frames if overlap_frames is not None else settings.overlap_frames
+    )
     width = width or settings.default_width
     height = height or settings.default_height
     fps = fps or settings.default_fps
@@ -95,9 +98,13 @@ async def start_movie(
                 "duration_hint_sec": f.duration_hint_sec,
                 "is_new_shot": f.is_new_shot,
                 "still_path": f.still_path,
+                "keyframes": _keyframes_list(f),
                 "keyframe_first_path": f.keyframe_first_path,
                 "keyframe_mid_path": f.keyframe_mid_path,
                 "keyframe_last_path": f.keyframe_last_path,
+                "keyframe_first_prompt": f.keyframe_first_prompt or "",
+                "keyframe_mid_prompt": f.keyframe_mid_prompt or "",
+                "keyframe_last_prompt": f.keyframe_last_prompt or "",
             }
             for f in p.frames
         ]
@@ -227,7 +234,9 @@ def list_assets(project_id: int) -> dict[str, Any]:
     if root.exists():
         for p in sorted(root.rglob("*")):
             if p.is_file():
-                files.append({"path": str(p), "relative": str(p.relative_to(settings.media_dir))})
+                files.append(
+                    {"path": str(p), "relative": str(p.relative_to(settings.media_dir))}
+                )
     with SessionLocal() as db:
         jobs = (
             db.query(RenderJob)
@@ -235,7 +244,10 @@ def list_assets(project_id: int) -> dict[str, Any]:
             .order_by(RenderJob.id.desc())
             .all()
         )
-        movies = [{"job_id": j.id, "movie_path": j.movie_path, "status": j.status} for j in jobs]
+        movies = [
+            {"job_id": j.id, "movie_path": j.movie_path, "status": j.status}
+            for j in jobs
+        ]
     return {"files": files, "movies": movies}
 
 

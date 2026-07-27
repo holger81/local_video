@@ -18,7 +18,9 @@ from app.services.ffmpeg import (
 from app.services.workflows import apply_params, validate_frame_count
 
 
-def _empty_keyframe(index: int, t_sec: float, role: str, prompt: str = "", path: str | None = None) -> dict[str, Any]:
+def _empty_keyframe(
+    index: int, t_sec: float, role: str, prompt: str = "", path: str | None = None
+) -> dict[str, Any]:
     return {
         "index": index,
         "t_sec": float(t_sec),
@@ -33,7 +35,9 @@ def _legacy_keyframes_from_columns(f: StoryboardFrame) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if f.keyframe_first_path or (f.keyframe_first_prompt or "").strip():
         out.append(
-            _empty_keyframe(0, 0.0, "first", f.keyframe_first_prompt or "", f.keyframe_first_path)
+            _empty_keyframe(
+                0, 0.0, "first", f.keyframe_first_prompt or "", f.keyframe_first_path
+            )
         )
     if f.keyframe_mid_path or (f.keyframe_mid_prompt or "").strip():
         out.append(
@@ -88,7 +92,9 @@ def _keyframes_list(f: StoryboardFrame) -> list[dict[str, Any]]:
     return _legacy_keyframes_from_columns(f)
 
 
-def _sync_legacy_keyframe_columns(f: StoryboardFrame, keyframes: list[dict[str, Any]]) -> None:
+def _sync_legacy_keyframe_columns(
+    f: StoryboardFrame, keyframes: list[dict[str, Any]]
+) -> None:
     """Keep first/mid/last columns in sync for movie/continuity helpers."""
     f.keyframes = keyframes
     first = keyframes[0] if keyframes else None
@@ -128,7 +134,9 @@ def _keyframes_ready(keyframes: list[dict[str, Any]]) -> bool:
     return bool(keyframes) and all((k.get("path") or "").strip() for k in keyframes)
 
 
-async def rebuild_frame_keyframe_prompts(project_id: int, frame_id: int) -> dict[str, Any]:
+async def rebuild_frame_keyframe_prompts(
+    project_id: int, frame_id: int
+) -> dict[str, Any]:
     """LLM-plan a variable keyframe series (≤2s spacing). Keeps existing paths when prompts only."""
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
@@ -181,7 +189,9 @@ def _frames_payload(project_id: int) -> list[dict[str, Any]]:
         return [_frame_dict(f) for f in p.frames]
 
 
-async def propose_storyboard(project_id: int, max_frames: int = 8) -> list[dict[str, Any]]:
+async def propose_storyboard(
+    project_id: int, max_frames: int = 8
+) -> list[dict[str, Any]]:
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         if not p:
@@ -266,7 +276,9 @@ def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any
                         )
                     )
                 if normalized:
-                    normalized[-1]["role"] = "last" if len(normalized) > 1 else normalized[0]["role"]
+                    normalized[-1]["role"] = (
+                        "last" if len(normalized) > 1 else normalized[0]["role"]
+                    )
                 _sync_legacy_keyframe_columns(f, normalized)
             else:
                 setattr(f, k, v)
@@ -309,7 +321,9 @@ def delete_frame_media(project_id: int, frame_id: int, kind: str) -> dict[str, A
             elif role == "last" and keyframes:
                 target = len(keyframes) - 1
             elif role == "middle":
-                middles = [i for i, k in enumerate(keyframes) if k.get("role") == "middle"]
+                middles = [
+                    i for i, k in enumerate(keyframes) if k.get("role") == "middle"
+                ]
                 target = middles[len(middles) // 2] if middles else None
             if target is None:
                 raise ValueError(f"no {kind} on frame")
@@ -499,7 +513,11 @@ async def generate_frame_visual(
         await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
         saved_path = dest
         # Preview clips: only seed a still from the first frame when none exists yet.
-        if out["kind"] in ("gifs", "videos") or dest.suffix.lower() in {".mp4", ".webm", ".gif"}:
+        if out["kind"] in ("gifs", "videos") or dest.suffix.lower() in {
+            ".mp4",
+            ".webm",
+            ".gif",
+        }:
             with SessionLocal() as db:
                 fr = db.get(StoryboardFrame, frame_id)
                 assert fr
@@ -695,7 +713,9 @@ async def generate_all_stills(
     errors: list[dict[str, Any]] = []
     for fr in frames:
         if skip_existing and fr.get("still_path"):
-            results.append({"frame_id": fr["id"], "skipped": True, "still_path": fr["still_path"]})
+            results.append(
+                {"frame_id": fr["id"], "skipped": True, "still_path": fr["still_path"]}
+            )
             continue
         try:
             out = await generate_frame_visual(
@@ -984,7 +1004,9 @@ async def generate_frame_keyframes(
             if prev_kfs:
                 prev_last_path = prev_kfs[-1].get("path")
 
-    if not keyframes or not all((k.get("image_prompt") or "").strip() for k in keyframes):
+    if not keyframes or not all(
+        (k.get("image_prompt") or "").strip() for k in keyframes
+    ):
         await rebuild_frame_keyframe_prompts(project_id, frame_id)
         with SessionLocal() as db:
             f = db.get(StoryboardFrame, frame_id)
@@ -1065,7 +1087,9 @@ async def generate_frame_keyframes(
     }
 
 
-def _resolve_keyframe_index(keyframes: list[dict[str, Any]], phase_or_index: str | int) -> int:
+def _resolve_keyframe_index(
+    keyframes: list[dict[str, Any]], phase_or_index: str | int
+) -> int:
     if isinstance(phase_or_index, int) or str(phase_or_index).isdigit():
         idx = int(phase_or_index)
         if idx < 0 or idx >= len(keyframes):
@@ -1322,12 +1346,18 @@ async def _run_flf2v_two_pass(
     label: str,
     num_frames: int,
     seed: int,
+    width: int | None = None,
+    height: int | None = None,
+    fps: int | None = None,
+    dest_dir: Path | None = None,
+    filename_prefix: str | None = None,
+    negative_prompt: str | None = None,
 ) -> Path:
-    """FLF2V as high-noise then low-noise prompts with /free between (avoids dual-UNET crash)."""
+    """FLF2V as high-noise then low-noise prompts (avoids dual-UNET crash)."""
     settings = get_settings()
     validate_frame_count(num_frames)
     comfy = ComfyUIClient()
-    neg = (
+    neg = negative_prompt or (
         "blurry, watermark, text, static, jump cut, morphing face, flickering, "
         "collage, comic, storyboard, panels, grid, split screen, montage"
     )
@@ -1339,9 +1369,10 @@ async def _run_flf2v_two_pass(
         "positive_prompt": prompt,
         "negative_prompt": neg,
         "num_frames": num_frames,
-        "width": settings.default_width,
-        "height": settings.default_height,
+        "width": width if width is not None else settings.default_width,
+        "height": height if height is not None else settings.default_height,
     }
+    prefix = filename_prefix or f"local_video/p{project_id}_f{frame_id}_{label}"
 
     # Pass 1: high-noise only → SaveLatent
     # Avoid POST /free on this ROCm host — it can kill the ComfyUI process.
@@ -1349,12 +1380,14 @@ async def _run_flf2v_two_pass(
     high_params = {
         **shared,
         "seed": seed,
-        "latent_prefix": f"latents/local_video/p{project_id}_f{frame_id}_{label}_high",
+        "latent_prefix": f"latents/{prefix}_high",
     }
     high_graph = apply_params("wan22_flf2v_high", high_params, uploaded_images=uploads)
     high_id = await comfy.queue_prompt(high_graph)
     high_hist = await comfy.wait_for_prompt(high_id)
-    latents = [o for o in comfy.collect_outputs(high_hist) if o.get("kind") == "latents"]
+    latents = [
+        o for o in comfy.collect_outputs(high_hist) if o.get("kind") == "latents"
+    ]
     if not latents:
         # Some Comfy builds nest SaveLatent under outputs without a kind we expect.
         for _nid, node_out in (high_hist.get("outputs") or {}).items():
@@ -1377,8 +1410,8 @@ async def _run_flf2v_two_pass(
     # Pass 2: low-noise + tiled decode → video
     low_params = {
         **shared,
-        "fps": settings.default_fps,
-        "filename_prefix": f"local_video/p{project_id}_f{frame_id}_{label}",
+        "fps": fps if fps is not None else settings.default_fps,
+        "filename_prefix": prefix,
         "latent_file": latent_ref,
     }
     low_graph = apply_params("wan22_flf2v_low", low_params, uploaded_images=uploads)
@@ -1392,7 +1425,9 @@ async def _run_flf2v_two_pass(
     if not outputs:
         raise RuntimeError("FLF2V low pass produced no video output")
 
-    media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+    media = dest_dir or (
+        settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+    )
     media.mkdir(parents=True, exist_ok=True)
     out = outputs[0]
     dest = media / out["filename"]
@@ -1444,7 +1479,9 @@ async def generate_step_clips(
         beat = f.visual_prompt or f.description or ""
         premise = p.premise or ""
         if len(keyframes) < 2 or not _keyframes_ready(keyframes):
-            raise ValueError("frame needs a complete keyframe series (at least first and last)")
+            raise ValueError(
+                "frame needs a complete keyframe series (at least first and last)"
+            )
 
     settings = get_settings()
     media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
@@ -1532,9 +1569,7 @@ async def generate_all_step_clips(
             continue
         try:
             results.append(
-                await generate_step_clips(
-                    project_id, fr["id"], num_frames=num_frames
-                )
+                await generate_step_clips(project_id, fr["id"], num_frames=num_frames)
             )
         except Exception as e:
             errors.append({"frame_id": fr["id"], "error": str(e)})

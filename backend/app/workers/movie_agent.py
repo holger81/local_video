@@ -73,64 +73,12 @@ async def _run_chunk(
     settings = get_settings()
     handoff = dict(chunk.handoff or {})
     mode = chunk.mode
-    overlap = int(handoff.get("overlap_frames") or (job.overlap_frames if mode == "continue" else 0))
+    overlap = int(
+        handoff.get("overlap_frames")
+        or (job.overlap_frames if mode == "continue" else 0)
+    )
     frame_count = int(handoff.get("frame_count") or job.chunk_frames)
     prompt = compose_prompt(handoff)
-
-    workflow_id = job.t2v_workflow if mode == "new_shot" else job.i2v_workflow
-    start_still = handoff.get("start_image_path")
-    # Storyboard still keyframe → animate with I2V even on chunk 0 / new_shot.
-    if mode == "new_shot" and start_still:
-        workflow_id = job.i2v_workflow
-    params = {
-        "positive_prompt": prompt,
-        "negative_prompt": handoff.get("negative_prompt") or job.negative_prompt,
-        "seed": int(handoff.get("seed") or job.seed),
-        "steps": int(handoff.get("steps") or settings.default_steps),
-        "cfg": float(handoff.get("cfg") or settings.default_cfg),
-        "sampler_name": handoff.get("sampler") or settings.default_sampler,
-        "scheduler": handoff.get("scheduler") or settings.default_scheduler,
-        "num_frames": frame_count,
-        "width": job.width,
-        "height": job.height,
-        "fps": job.fps,
-        "filename_prefix": f"local_video/job{job.id}/shot{shot.position}/chunk{chunk.chunk_index}",
-    }
-
-    comfy = ComfyUIClient()
-    uploaded = None
-    if mode == "continue":
-        last = prev_last_frame or (Path(chunk.last_frame_path) if chunk.last_frame_path else None)
-        if last is None or not Path(last).exists():
-            # try previous chunk last frame from handoff
-            lf = handoff.get("last_frame")
-            last = Path(lf) if lf else None
-        if last is None or not last.exists():
-            raise ComfyUIError("continue mode requires last_frame")
-        uploaded = await comfy.upload_image(Path(last))
-    elif mode == "new_shot" and start_still:
-        still_path = Path(start_still)
-        if not still_path.exists():
-            # Resolve container /media paths when worker uses the same MEDIA_DIR.
-            media_root = settings.media_dir.resolve()
-            raw = str(start_still)
-            for marker in ("/media/", "media/"):
-                idx = raw.find(marker)
-                if idx >= 0:
-                    still_path = media_root / raw[idx + len(marker) :]
-                    break
-        if not still_path.exists():
-            raise ComfyUIError(f"storyboard still not found: {start_still}")
-        uploaded = await comfy.upload_image(still_path)
-
-    graph = apply_params(workflow_id, params, uploaded_image_name=uploaded)
-    _set_chunk(chunk.id, status="running")
-    prompt_id = await comfy.queue_prompt(graph)
-    _set_chunk(chunk.id, comfy_prompt_id=prompt_id)
-    history = await comfy.wait_for_prompt(prompt_id)
-    outputs = comfy.collect_outputs(history)
-    if not outputs:
-        raise ComfyUIError("no outputs from ComfyUI")
 
     chunk_dir = (
         settings.media_dir
@@ -146,32 +94,128 @@ async def _run_chunk(
         shutil.rmtree(raw_dir)
     raw_dir.mkdir(parents=True)
 
-    video_path = None
-    image_paths: list[Path] = []
-    for out in outputs:
-        dest = chunk_dir / out["filename"]
-        await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
-        if dest.suffix.lower() in {".mp4", ".webm", ".gif", ".mkv", ".mov"}:
-            video_path = dest
-        elif dest.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
-            image_paths.append(dest)
+    # Keyframe-locked FLF2V: start + end images, no rolling I2V freewheel.
+    if mode == "flf2v" or handoff.get("end_image_path"):
+        from app.services.storyboard import _resolve_media_file, _run_flf2v_two_pass
 
-    if video_path:
+        start_ref = handoff.get("start_image_path")
+        end_ref = handoff.get("end_image_path")
+        if not start_ref or not end_ref:
+            raise ComfyUIError(
+                "flf2v mode requires start_image_path and end_image_path"
+            )
+        start_path = _resolve_media_file(str(start_ref))
+        end_path = _resolve_media_file(str(end_ref))
+        _set_chunk(chunk.id, status="running")
+        video_path = await _run_flf2v_two_pass(
+            project_id=job.project_id,
+            frame_id=int(handoff.get("frame_id") or 0),
+            start_image=start_path,
+            end_image=end_path,
+            prompt=prompt,
+            label=f"movie_s{shot.position}_c{chunk.chunk_index}",
+            num_frames=frame_count,
+            seed=int(handoff.get("seed") or job.seed),
+            width=job.width,
+            height=job.height,
+            fps=job.fps,
+            dest_dir=chunk_dir,
+            filename_prefix=(
+                f"local_video/job{job.id}/shot{shot.position}/chunk{chunk.chunk_index}"
+            ),
+            negative_prompt=handoff.get("negative_prompt") or job.negative_prompt,
+        )
         frames = extract_frames_from_video(video_path, raw_dir)
-    elif image_paths:
-        # single image treated as 1-frame (still); copy
-        frames = write_kept_frames(image_paths, raw_dir)
     else:
-        raise ComfyUIError("unsupported output types")
+        workflow_id = job.t2v_workflow if mode == "new_shot" else job.i2v_workflow
+        start_still = handoff.get("start_image_path")
+        # Storyboard still keyframe → animate with I2V even on chunk 0 / new_shot.
+        if mode == "new_shot" and start_still:
+            workflow_id = job.i2v_workflow
+        params = {
+            "positive_prompt": prompt,
+            "negative_prompt": handoff.get("negative_prompt") or job.negative_prompt,
+            "seed": int(handoff.get("seed") or job.seed),
+            "steps": int(handoff.get("steps") or settings.default_steps),
+            "cfg": float(handoff.get("cfg") or settings.default_cfg),
+            "sampler_name": handoff.get("sampler") or settings.default_sampler,
+            "scheduler": handoff.get("scheduler") or settings.default_scheduler,
+            "num_frames": frame_count,
+            "width": job.width,
+            "height": job.height,
+            "fps": job.fps,
+            "filename_prefix": f"local_video/job{job.id}/shot{shot.position}/chunk{chunk.chunk_index}",
+        }
 
-    # Save overlap tail from full raw frames (new_shot: keep a small tail for QA only)
-    tail_n = overlap if mode == "continue" else min(job.overlap_frames, len(frames))
-    if mode != "continue":
+        comfy = ComfyUIClient()
+        uploaded = None
+        if mode == "continue":
+            last = prev_last_frame or (
+                Path(chunk.last_frame_path) if chunk.last_frame_path else None
+            )
+            if last is None or not Path(last).exists():
+                # try previous chunk last frame from handoff
+                lf = handoff.get("last_frame")
+                last = Path(lf) if lf else None
+            if last is None or not last.exists():
+                raise ComfyUIError("continue mode requires last_frame")
+            uploaded = await comfy.upload_image(Path(last))
+        elif mode == "new_shot" and start_still:
+            still_path = Path(start_still)
+            if not still_path.exists():
+                # Resolve container /media paths when worker uses the same MEDIA_DIR.
+                media_root = settings.media_dir.resolve()
+                raw = str(start_still)
+                for marker in ("/media/", "media/"):
+                    idx = raw.find(marker)
+                    if idx >= 0:
+                        still_path = media_root / raw[idx + len(marker) :]
+                        break
+            if not still_path.exists():
+                raise ComfyUIError(f"storyboard still not found: {start_still}")
+            uploaded = await comfy.upload_image(still_path)
+
+        graph = apply_params(workflow_id, params, uploaded_image_name=uploaded)
+        _set_chunk(chunk.id, status="running")
+        prompt_id = await comfy.queue_prompt(graph)
+        _set_chunk(chunk.id, comfy_prompt_id=prompt_id)
+        history = await comfy.wait_for_prompt(prompt_id)
+        outputs = comfy.collect_outputs(history)
+        if not outputs:
+            raise ComfyUIError("no outputs from ComfyUI")
+
+        video_path = None
+        image_paths: list[Path] = []
+        for out in outputs:
+            dest = chunk_dir / out["filename"]
+            await comfy.download_view(
+                out["filename"], dest, out["subfolder"], out["type"]
+            )
+            if dest.suffix.lower() in {".mp4", ".webm", ".gif", ".mkv", ".mov"}:
+                video_path = dest
+            elif dest.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+                image_paths.append(dest)
+
+        if video_path:
+            frames = extract_frames_from_video(video_path, raw_dir)
+        elif image_paths:
+            # single image treated as 1-frame (still); copy
+            frames = write_kept_frames(image_paths, raw_dir)
+        else:
+            raise ComfyUIError("unsupported output types")
+
+    # Save overlap tail from full raw frames (new_shot/flf2v: keep a small tail for QA only)
+    if mode == "continue":
+        tail_n = overlap
+    elif mode == "flf2v":
+        tail_n = min(max(overlap, 0), len(frames))
+    else:
         # Do not treat falsy 0 as "use job overlap" via `or` — new_shot overlap in handoff is 0.
+        tail_n = min(job.overlap_frames, len(frames))
         tail_n = min(max(tail_n, 0), len(frames))
     save_tail_overlap(frames, tail_n, chunk_dir / "tail_overlap")
 
-    if mode == "continue":
+    if mode in ("continue", "flf2v") and overlap > 0:
         kept = discard_overlap(frames, overlap)
     else:
         kept = frames
@@ -188,7 +232,7 @@ async def _run_chunk(
     handoff["last_frame"] = str(last_path)
     handoff["last_frames_dir"] = str(chunk_dir / "tail_overlap")
 
-    if not ok and chunk.retries < 2:
+    if not ok and chunk.retries < 2 and mode != "flf2v":
         _set_chunk(
             chunk.id,
             status="failed",
@@ -290,7 +334,7 @@ async def run_movie_job(ctx: dict, job_id: int) -> str:
                     chunk_index = ch.chunk_index
                     handoff = dict(ch.handoff or {})
 
-                # Refresh prompt_delta for continue chunks
+                # Refresh prompt_delta for continue chunks (not FLF2V keyframe locks)
                 if chunk_mode == "continue":
                     try:
                         delta = await prompt_delta_for_continue(
@@ -325,11 +369,15 @@ async def run_movie_job(ctx: dict, job_id: int) -> str:
                             assert ch
                             if ch.kept_frames_dir:
                                 kept_dirs.append(Path(ch.kept_frames_dir))
-                            prev_last = Path(ch.last_frame_path) if ch.last_frame_path else last
+                            prev_last = (
+                                Path(ch.last_frame_path) if ch.last_frame_path else last
+                            )
                         break
                     except Exception as e:
                         logger.exception("chunk failed")
-                        _set_chunk(chunk_id, status="failed", error=str(e), retries=attempts)
+                        _set_chunk(
+                            chunk_id, status="failed", error=str(e), retries=attempts
+                        )
                         if attempts >= 3:
                             _set_job(job_id, status="failed", error=str(e))
                             return "failed"
@@ -374,7 +422,7 @@ async def run_movie_job(ctx: dict, job_id: int) -> str:
             job_id,
             status="completed",
             movie_path=str(movie_path),
-            progress={"phase": "done", "frames": len(list(out_frames.glob('*.png')))},
+            progress={"phase": "done", "frames": len(list(out_frames.glob("*.png")))},
         )
         return "completed"
     except Exception as e:
