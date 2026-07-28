@@ -1,19 +1,16 @@
 workflow: ltx_t2v.json
 description: >
-  LTX text-to-video fallback. Node IDs empty until api/ltx_t2v.json is
-  exported from ComfyUI — do not invent bindings.
-model_files: []
-fields: {}
-expected_fields:
-  - positive_prompt
-  - negative_prompt
-  - seed
-  - steps
-  - cfg
-  - sampler_name
-  - scheduler
-  - num_frames
-  - width
-  - height
-  - fps
-  - filename_prefix
+  LTX 2.3 text-to-video. Distilled single-pass graph derived from ltx_flf2v with
+  image guides removed; latent size from width/height primitives. Frame rule: 8n+1.
+model_files:
+  - models/checkpoints/ltx-2.3-22b-distilled-fp8.safetensors
+  - models/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors
+fields:
+  positive_prompt: {node: "222", input: text}
+  negative_prompt: {node: "217", input: text}
+  seed: {node: "196", input: noise_seed}
+  num_frames: {node: "198", input: value}
+  width: {node: "215", input: value}
+  height: {node: "216", input: value}
+  fps: {node: "205", input: value}
+  filename_prefix: {node: "9003", input: filename_prefix}

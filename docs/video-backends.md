@@ -30,10 +30,10 @@ Prefer a hard cut (`is_new_shot`) when switching Wan ↔ LTX. Continuous FLF acr
 ## LTX
 
 - Same interface (`render_flf2v` / `render_i2v` / `render_t2v`).
-- **FLF is shipped** as a single graph (`api/ltx_flf2v.json` + `maps/ltx_flf2v.yaml`) from the Comfy-Org LTX 2.3 first+last blueprint (FP8 distilled + Gemma FP4).
+- **T2V / I2V / FLF are shipped** as distilled single-pass graphs (`api/ltx_*.json` + maps).
 - Frame rule: **`8n+1`** (e.g. 33). Planning snaps to this when the job/shot backend is `ltx`.
-- I2V / T2V slots (`ltx_i2v`, `ltx_t2v`) are still empty — continue/new-shot fallbacks need those graphs before non-FLF LTX paths work.
-- Host needs custom nodes used by the graph (`ComfyMathExpression`, `ResizeImageMaskNode`) and matching model filenames under `ComfyUI/models/`.
+- I2V reuses the FLF topology with the start image as both guides; T2V drops image guides and sizes the latent from width/height.
+- Host needs custom nodes used by the graphs (`ComfyMathExpression`, `ResizeImageMaskNode`) and matching model filenames under `ComfyUI/models/`.
 
 ## Workflow IDs
 

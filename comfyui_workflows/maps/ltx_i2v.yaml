@@ -1,20 +1,23 @@
 workflow: ltx_i2v.json
 description: >
-  LTX image-to-video (start-only continue fallback). Node IDs empty until
-  api/ltx_i2v.json is exported from ComfyUI — do not invent bindings.
-model_files: []
-fields: {}
-expected_fields:
-  - positive_prompt
-  - negative_prompt
-  - seed
-  - steps
-  - cfg
-  - sampler_name
-  - scheduler
-  - num_frames
-  - width
-  - height
-  - fps
-  - filename_prefix
-  - start_image
+  LTX 2.3 image-to-video (start-locked). Same distilled single-pass topology as
+  ltx_flf2v with start image fed as both first and last guide (proven I2V path).
+  Frame rule: 8n+1.
+model_files:
+  - models/checkpoints/ltx-2.3-22b-distilled-fp8.safetensors
+  - models/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors
+fields:
+  positive_prompt: {node: "222", input: text}
+  negative_prompt: {node: "217", input: text}
+  seed: {node: "196", input: noise_seed}
+  num_frames: {node: "198", input: value}
+  width: {node: "215", input: value}
+  height: {node: "216", input: value}
+  fps: {node: "205", input: value}
+  filename_prefix: {node: "9003", input: filename_prefix}
+  start_image:
+    node: "9001"
+    input: image
+    upload: true
+    also:
+      - {node: "9002", input: image}
