@@ -35,7 +35,7 @@ next beat’s internal keyframe pairs.
 Storyboard pipeline:
 1. **Characters** — cast ground truth (auto-detected from story; appearance prompts + refs)
 2. Hero stills per beat (cast sheet injected)
-3. **Keyframes** — variable series per beat; continues share prior end as first
+3. **Keyframes** — variable series per beat; cast sheet reinjected at Comfy render; first frame prefers character reference still when available; continues share prior end as first
 4. **Step clips** — FLF2V between consecutive keyframes (concat with boundary subtract)
 5. **Between steps** — FLF2V only across true discontinuities (new shots)
 6. **Movie agent** — same keyframe pairs / shared-boundary rules

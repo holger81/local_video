@@ -250,7 +250,8 @@ async def plan_keyframe_image_prompt(
         'Return ONLY valid JSON: {"image_prompt": "..."}. '
         "Rules: one moment; concrete subject/pose/camera/light; no collage or panels; "
         "no whole-film dump; never invent subjects not in the beat; do not say the word keyframe. "
-        "If a cast lock is provided, use those exact names and visual looks. "
+        "If a cast lock is provided, you MUST name those characters and weave their exact visual "
+        "looks (face, hair, wardrobe) into the image_prompt — do not drop or rewrite the look. "
         "If CONTINUATION: do not say new shot; keep identity from context. "
         "If NEW SHOT and role is first: establish a fresh camera/composition."
     )

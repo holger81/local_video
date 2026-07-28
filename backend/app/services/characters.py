@@ -56,6 +56,60 @@ def cast_sheet_for_project(project_id: int) -> str:
         )
 
 
+def pick_character_reference_path(
+    project_id: int, prompt: str = ""
+) -> Path | None:
+    """Best character reference still for locking identity in a keyframe/still render.
+
+    Prefers a name/alias mentioned in the prompt; otherwise a sole cast member with a
+    reference, or a single approved reference when several exist.
+    """
+    with SessionLocal() as db:
+        p = db.get(Project, project_id)
+        if not p:
+            raise KeyError(f"project {project_id} not found")
+        chars = [
+            c
+            for c in sorted(p.characters, key=lambda x: x.position)
+            if (c.reference_image_path or "").strip()
+        ]
+    if not chars:
+        return None
+
+    prompt_l = (prompt or "").lower()
+    matched: list[Character] = []
+    for c in chars:
+        names = [c.name or "", *(c.aliases or [])]
+        if any(n.strip() and n.strip().lower() in prompt_l for n in names):
+            matched.append(c)
+
+    chosen: Character | None = None
+    if len(matched) == 1:
+        chosen = matched[0]
+    elif len(matched) > 1:
+        approved = [c for c in matched if c.approved]
+        chosen = approved[0] if approved else matched[0]
+    elif len(chars) == 1:
+        chosen = chars[0]
+    else:
+        approved = [c for c in chars if c.approved]
+        if len(approved) == 1:
+            chosen = approved[0]
+        else:
+            return None
+
+    stored = (chosen.reference_image_path or "").strip()
+    if not stored:
+        return None
+    try:
+        from app.services.storyboard import _resolve_media_file
+
+        path = _resolve_media_file(stored)
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    return path if path.is_file() else None
+
+
 def create_character(
     project_id: int,
     *,

@@ -673,7 +673,9 @@ def _resolve_media_file(stored: str) -> Path:
     return candidate
 
 
-def build_edit_prompt(*, instruction: str, frame_prompt: str = "") -> str:
+def build_edit_prompt(
+    *, instruction: str, frame_prompt: str = "", cast_sheet: str = ""
+) -> str:
     instr = _truncate((instruction or "").strip(), 500)
     if not instr:
         raise ValueError("edit instruction is required")
@@ -685,8 +687,34 @@ def build_edit_prompt(*, instruction: str, frame_prompt: str = "") -> str:
         "and setting unless the instruction explicitly changes them.",
         "Output one continuous camera shot only — no collage, panels, or grid.",
     ]
+    cast = (cast_sheet or "").strip()
+    if cast:
+        parts.append(f"{cast}")
+        parts.append("Keep faces, hair, and wardrobe locked to the cast look.")
     if beat:
         parts.append(f"Original beat context: {beat}.")
+    return " ".join(parts)
+
+
+def compose_keyframe_prompt(
+    prompt: str, *, cast_sheet: str = "", genre: str = ""
+) -> str:
+    """Inject cast lock into a keyframe image prompt at Comfy render time."""
+    body = (prompt or "").strip()
+    if not body:
+        raise ValueError("keyframe prompt is required")
+    parts: list[str] = []
+    if genre:
+        parts.append(f"{genre} genre.")
+    cast = (cast_sheet or "").strip()
+    if cast:
+        parts.append(cast)
+        parts.append("Match these exact character looks.")
+    parts.append(body)
+    if cast:
+        parts.append(
+            "Same named people and wardrobe as the cast lock; do not invent look changes."
+        )
     return " ".join(parts)
 
 
@@ -1035,18 +1063,37 @@ async def _render_keyframe_image(
     seed: int,
     force_edit: bool = False,
 ) -> Path:
-    """T2I when no source; otherwise edit-from-previous (preferred for continuity)."""
+    """T2I when no source; otherwise edit-from-previous (preferred for continuity).
+
+    Always reinjects the project cast sheet into the Comfy prompt (LLM planning alone
+    is not enough). When generating a fresh first frame with no prior keyframe, prefer
+    editing from a matching character reference still if one exists.
+    """
+    from app.services.characters import (
+        cast_sheet_for_project,
+        pick_character_reference_path,
+    )
+
     settings = get_settings()
     media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
     media.mkdir(parents=True, exist_ok=True)
     comfy = ComfyUIClient()
+    cast_sheet = cast_sheet_for_project(project_id)
+    with SessionLocal() as db:
+        p = db.get(Project, project_id)
+        genre = (p.genre or "") if p else ""
+    composed = compose_keyframe_prompt(prompt, cast_sheet=cast_sheet, genre=genre)
     neg = still_negative_prompt(prompt)
     label = f"{index:02d}_{role}"
 
     if source_path:
         src = _resolve_media_file(str(source_path))
         uploaded = await comfy.upload_image(src)
-        edit_prompt = build_edit_prompt(instruction=prompt, frame_prompt=prompt)
+        edit_prompt = build_edit_prompt(
+            instruction=prompt,
+            frame_prompt=prompt,
+            cast_sheet=cast_sheet,
+        )
         graph = apply_params(
             "still_edit",
             {
@@ -1064,15 +1111,41 @@ async def _render_keyframe_image(
     else:
         if force_edit:
             raise ValueError("edit source required")
-        graph = apply_params(
-            "still_hero",
-            {
-                "positive_prompt": prompt,
-                "negative_prompt": neg,
-                "seed": seed,
-                "filename_prefix": f"local_video/p{project_id}_f{frame_id}_kf_{label}",
-            },
-        )
+        char_ref = pick_character_reference_path(project_id, prompt)
+        if char_ref is not None:
+            uploaded = await comfy.upload_image(char_ref)
+            edit_prompt = build_edit_prompt(
+                instruction=(
+                    "Restage this same person into a new cinematic shot matching the "
+                    f"instruction while keeping their face, hair, and wardrobe: {prompt}"
+                ),
+                frame_prompt=prompt,
+                cast_sheet=cast_sheet,
+            )
+            graph = apply_params(
+                "still_edit",
+                {
+                    "positive_prompt": edit_prompt,
+                    "negative_prompt": neg,
+                    "seed": seed,
+                    "filename_prefix": f"local_video/p{project_id}_f{frame_id}_kf_{label}",
+                    "width": 1024,
+                    "height": 576,
+                    "steps": 20,
+                    "cfg": 5.0,
+                },
+                uploaded_image_name=uploaded,
+            )
+        else:
+            graph = apply_params(
+                "still_hero",
+                {
+                    "positive_prompt": composed,
+                    "negative_prompt": neg,
+                    "seed": seed,
+                    "filename_prefix": f"local_video/p{project_id}_f{frame_id}_kf_{label}",
+                },
+            )
 
     prompt_id = await comfy.queue_prompt(graph)
     history = await comfy.wait_for_prompt(prompt_id)
