@@ -20,16 +20,22 @@ def chunks_for_duration(duration_sec: float, chunk_frames: int, fps: int) -> int
     return max(1, int(math.ceil(total_frames / chunk_frames)))
 
 
-def snap_frame_count(n: int, *, minimum: int = 5, maximum: int = 81) -> int:
-    """Nearest valid Wan frame count (4n+1) within [minimum, maximum]."""
+def snap_frame_count(
+    n: int,
+    *,
+    minimum: int = 5,
+    maximum: int = 81,
+    step: int = 4,
+) -> int:
+    """Nearest valid frame count (step*n+1) within [minimum, maximum]."""
     n = max(minimum, min(maximum, int(n)))
-    k = max(1, round((n - 1) / 4))
-    out = 4 * k + 1
+    k = max(1, round((n - 1) / step))
+    out = step * k + 1
     if out > maximum:
-        out = 4 * ((maximum - 1) // 4) + 1
+        out = step * ((maximum - 1) // step) + 1
     if out < minimum:
-        out = 5
-    validate_frame_count(out)
+        out = step + 1
+    validate_frame_count(out, step=step)
     return out
 
 
@@ -40,11 +46,14 @@ def frame_count_for_span(
     *,
     default: int = 33,
     maximum: int = 81,
+    step: int = 4,
 ) -> int:
     dt = max(0.0, float(t1) - float(t0))
     if dt <= 0:
-        return snap_frame_count(default, maximum=maximum)
-    return snap_frame_count(int(round(dt * fps)) or default, maximum=maximum)
+        return snap_frame_count(default, maximum=maximum, step=step)
+    return snap_frame_count(
+        int(round(dt * fps)) or default, maximum=maximum, step=step
+    )
 
 
 def _normalize_keyframes(fr: dict[str, Any]) -> list[dict[str, Any]]:
@@ -254,6 +263,7 @@ def _plan_flf_chunks_for_group(
             fps,
             default=33,
             maximum=max_frames,
+            step=8 if video_backend == "ltx" else 4,
         )
         prompt = _transition_prompt(
             premise=prompt_base or prompt_for_shot,

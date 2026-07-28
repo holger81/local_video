@@ -6,7 +6,7 @@ Condensed from the chunked video station brief. **This app owns control**; Comfy
 
 ## Rules
 
-1. Frame counts are **`4n+1`** (default chunk = **33**).
+1. Frame counts are **`4n+1`** for Wan (default chunk = **33**). LTX uses **`8n+1`** (33 still valid).
 2. Same continuous shot → `mode=continue` with overlap discard; new scene → `mode=new_shot`.
 3. Lock `prompt_base`, size, fps, steps, CFG, sampler across continues; vary only `prompt_delta`.
 4. Intermediate handoff uses **PNG frames**, not repeated lossy MP4 encodes.

@@ -1,20 +1,19 @@
 workflow: ltx_flf2v.json
 description: >
-  LTX first+last frame → video (primary path for keyframes / movie FLF).
-  Map fields are declared for the registry; node IDs are intentionally empty
-  until a real ComfyUI API export is dropped into api/ltx_flf2v.json.
-  Rendering fails with WorkflowError until that graph exists.
-model_files: []
-# Fill node/input after: Workflow → Export (API) → api/ltx_flf2v.json
-fields: {}
-expected_fields:
-  - positive_prompt
-  - negative_prompt
-  - seed
-  - num_frames
-  - width
-  - height
-  - fps
-  - filename_prefix
-  - start_image
-  - end_image
+  LTX 2.3 first+last frame → video (single-graph FLF for keyframes / movie).
+  Packaged from the working Comfy-Org FLF blueprint (FP8 distilled + Gemma FP4).
+  Frame rule: 8n+1 (e.g. 33). Host needs ComfyMathExpression + ResizeImageMaskNode.
+model_files:
+  - models/checkpoints/ltx-2.3-22b-distilled-fp8.safetensors
+  - models/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors
+fields:
+  positive_prompt: {node: "222", input: text}
+  negative_prompt: {node: "217", input: text}
+  seed: {node: "196", input: noise_seed}
+  num_frames: {node: "198", input: value}
+  width: {node: "215", input: value}
+  height: {node: "216", input: value}
+  fps: {node: "205", input: value}
+  filename_prefix: {node: "9003", input: filename_prefix}
+  start_image: {node: "9001", input: image, upload: true}
+  end_image: {node: "9002", input: image, upload: true}

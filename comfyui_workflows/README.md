@@ -17,16 +17,23 @@ See also [docs/video-backends.md](../docs/video-backends.md) for Wan vs LTX sele
 | Backend | Role | T2V / I2V / FLF map IDs |
 |---------|------|-------------------------|
 | **wan** (default) | Proven Wan 2.2 path; FLF is two-pass high→low | `wan22_t2v`, `wan22_i2v`, `wan22_flf2v` |
-| **ltx** | LTX adapter; fails clearly until API graphs exist | `ltx_t2v`, `ltx_i2v`, `ltx_flf2v` |
+| **ltx** | LTX 2.3 FLF packaged; I2V/T2V still TBD | `ltx_t2v`, `ltx_i2v`, `ltx_flf2v` |
 
-LTX maps declare `expected_fields` but **do not invent node IDs**. After you import an LTX FLF (or I2V/T2V) graph in ComfyUI:
+### LTX FLF (ready)
 
-1. *Workflow → Export (API)*
-2. Save as `api/ltx_flf2v.json` (or `ltx_i2v` / `ltx_t2v`)
-3. Fill `maps/ltx_*.yaml` `fields:` with real `node` / `input` bindings
-4. Confirm `GET /api/video-backends` shows `flf2v_ready: true` for `ltx`
+`api/ltx_flf2v.json` is a parameterized first+last graph (SaveVideo only). Confirm `GET /api/video-backends` → `ltx.flf2v_ready: true`.
 
-Model paths for LTX are TBD (document them in the map `model_files` once known).
+Models (map `model_files`):
+
+```
+ComfyUI/models/
+  checkpoints/ltx-2.3-22b-distilled-fp8.safetensors
+  text_encoders/gemma_3_12B_it_fp4_mixed.safetensors
+```
+
+Frame counts for LTX must be **`8n+1`** (default **33**). On ROCm, avoid `--fp16-vae` with FP8 LTX (can yield black frames).
+
+I2V / T2V: maps declare `expected_fields` but API JSON is not shipped yet — export from ComfyUI into `api/ltx_i2v.json` / `ltx_t2v.json` and fill `maps/ltx_*.yaml` when needed.
 
 ## Import into ComfyUI
 
@@ -36,6 +43,7 @@ Model paths for LTX are TBD (document them in the map `model_files` once known).
    - `import/wan22_i2v.json` — official 14B I2V template
    - `import/wan22_t2v_5b.json` / `wan22_i2v_5b.json` — flat **5B TI2V** graphs tuned to **33 frames** (recommended for the agent)
    - `import/wan22_flf2v.json` — official **14B FLF2V** template (first + last frame)
+   - `import/ltx_flf2v.json` — LTX 2.3 first+last UI blueprint (optional inspect)
    - `import/still_hero.json` — simple SD1.5-style still (change checkpoint to yours)
 3. Confirm model filenames match your `ComfyUI/models/` tree.
 4. Run a test prompt once.
@@ -82,7 +90,8 @@ UNET loaders use `weight_dtype: default` (explicit `fp8_e4m3fn` was less stable 
 | `wan22_t2v` | Chunk 0 / `new_shot` (Wan) |
 | `wan22_i2v` | `continue` — uploads previous `last_frame.png` into LoadImage |
 | `wan22_flf2v` | **Keyframe / beat bridges** — two-pass 14B FLF2V (`start_image` + `end_image`); unloads between high/low UNETs |
-| `ltx_t2v` / `ltx_i2v` / `ltx_flf2v` | Same roles when job/shot backend is `ltx` (requires API JSON) |
+| `ltx_flf2v` | **Keyframe / beat bridges** when backend is `ltx` (single-graph; requires FP8 LTX + Gemma on host) |
+| `ltx_t2v` / `ltx_i2v` | Same roles as Wan when API graphs exist (not shipped yet) |
 | `still_hero` | Storyboard stills (text → image) |
 | `still_edit` | Prompt-edit an existing still (ReferenceLatent) |
 

@@ -77,22 +77,34 @@ def apply_params(
             continue
         if key in uploads:
             continue
-        spec = fields[key]
-        node_id = str(spec["node"])
-        input_name = spec["input"]
-        if node_id not in graph:
-            raise WorkflowError(f"node {node_id} missing in {workflow_id}")
-        graph[node_id]["inputs"][input_name] = value
+        _apply_field(graph, workflow_id, fields[key], value)
 
     for key, filename in uploads.items():
         if key not in fields or not filename:
             continue
-        spec = fields[key]
-        graph[str(spec["node"])]["inputs"][spec["input"]] = filename
+        _apply_field(graph, workflow_id, fields[key], filename)
 
     return graph
 
 
-def validate_frame_count(n: int) -> None:
-    if n < 5 or (n - 1) % 4 != 0:
-        raise WorkflowError(f"frame_count must be 4n+1 (got {n})")
+def _apply_field(
+    graph: dict[str, Any],
+    workflow_id: str,
+    spec: dict[str, Any],
+    value: Any,
+) -> None:
+    targets = [spec, *(spec.get("also") or [])]
+    for target in targets:
+        node_id = str(target["node"])
+        input_name = target["input"]
+        if node_id not in graph:
+            raise WorkflowError(f"node {node_id} missing in {workflow_id}")
+        graph[node_id]["inputs"][input_name] = value
+
+
+def validate_frame_count(n: int, *, step: int = 4) -> None:
+    """Wan uses 4n+1; LTX Comfy graphs want 8n+1 (also satisfies 4n+1)."""
+    if step < 1:
+        raise WorkflowError(f"invalid frame step {step}")
+    if n < step + 1 or (n - 1) % step != 0:
+        raise WorkflowError(f"frame_count must be {step}n+1 (got {n})")

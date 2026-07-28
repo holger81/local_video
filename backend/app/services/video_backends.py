@@ -340,8 +340,8 @@ class LtxBackend:
         }
 
     def validate_num_frames(self, n: int) -> int:
-        # Keep Wan-compatible 4n+1 until real LTX graphs document otherwise.
-        validate_frame_count(n)
+        # LTX EmptyLTXVLatentVideo expects 8n+1 (subset of Wan's 4n+1).
+        validate_frame_count(n, step=8)
         return n
 
     def flf2v_ready(self) -> bool:

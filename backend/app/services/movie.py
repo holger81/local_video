@@ -11,7 +11,6 @@ from app.config import get_settings
 from app.db.models import Chunk, Project, RenderJob, SessionLocal, Shot
 from app.services.continuity import plan_shots_from_frames
 from app.services.storyboard import _keyframes_list
-from app.services.workflows import validate_frame_count
 
 
 def _redis_settings() -> RedisSettings:
@@ -95,7 +94,6 @@ async def start_movie(
     width = width or settings.default_width
     height = height or settings.default_height
     fps = fps or settings.default_fps
-    validate_frame_count(chunk_frames)
 
     with SessionLocal() as db:
         p = db.get(Project, project_id)
@@ -106,6 +104,7 @@ async def start_movie(
             video_backend or project_backend or settings.default_video_backend
         )
         backend = get_video_backend(job_backend)
+        chunk_frames = backend.validate_num_frames(chunk_frames)
         wfs = backend.workflows()
         t2v_workflow = t2v_workflow or wfs["t2v"]
         i2v_workflow = i2v_workflow or wfs["i2v"]
