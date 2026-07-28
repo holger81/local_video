@@ -35,11 +35,20 @@ Prefer a hard cut (`is_new_shot`) when switching Wan ↔ LTX. Continuous FLF acr
 - I2V reuses the FLF topology with the start image as both guides; T2V drops image guides and sizes the latent from width/height.
 - Host needs custom nodes used by the graphs (`ComfyMathExpression`, `ResizeImageMaskNode`) and matching model filenames under `ComfyUI/models/`.
 
+### LTX IC-LoRA Ingredients (reference sheet)
+
+For strong character/prop/location identity, use workflow id **`ltx_ic_lora`** ([model card](https://huggingface.co/Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients)):
+
+- Control: composite **reference sheet** → repeated to ≥121 frames → `LTXVAddGuide` + Ingredients LoRA
+- Prompt: `### Reference Sheet Description` … / `### Target Description` …
+- Bucket: **768×448**, **121** frames, **24** fps (best results)
+- Not yet the default movie renderer — packaged for Comfy import / direct workflow runs; studio sheet-builder + agent routing TBD
+
 ## Workflow IDs
 
-| Backend | T2V | I2V | FLF2V |
-|---------|-----|-----|-------|
-| wan | `wan22_t2v` | `wan22_i2v` | `wan22_flf2v` (two-pass) |
-| ltx | `ltx_t2v` | `ltx_i2v` | `ltx_flf2v` |
+| Backend | T2V | I2V | FLF2V | Extra |
+|---------|-----|-----|-------|-------|
+| wan | `wan22_t2v` | `wan22_i2v` | `wan22_flf2v` (two-pass) | |
+| ltx | `ltx_t2v` | `ltx_i2v` | `ltx_flf2v` | `ltx_ic_lora` (sheet) |
 
 See `GET /api/video-backends` for readiness (`flf2v_ready`) and `comfyui_workflows/README.md` for packaging.

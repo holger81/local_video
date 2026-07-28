@@ -1,0 +1,402 @@
+{
+  "101": {
+    "class_type": "LTXVEmptyLatentAudio",
+    "inputs": {
+      "audio_vae": [
+        "126",
+        0
+      ],
+      "frames_number": [
+        "9003",
+        0
+      ],
+      "frame_rate": 24
+    }
+  },
+  "106": {
+    "class_type": "LTXVCropGuides",
+    "inputs": {
+      "positive": [
+        "115",
+        0
+      ],
+      "negative": [
+        "115",
+        1
+      ],
+      "latent": [
+        "121",
+        0
+      ]
+    }
+  },
+  "108": {
+    "class_type": "EmptyLTXVLatentVideo",
+    "inputs": {
+      "width": [
+        "9010",
+        0
+      ],
+      "height": [
+        "9011",
+        0
+      ],
+      "length": [
+        "9003",
+        0
+      ]
+    }
+  },
+  "109": {
+    "class_type": "LTXVConditioning",
+    "inputs": {
+      "positive": [
+        "128",
+        0
+      ],
+      "negative": [
+        "112",
+        0
+      ],
+      "frame_rate": 24.0
+    }
+  },
+  "114": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 25
+    }
+  },
+  "115": {
+    "class_type": "LTXVAddGuide",
+    "inputs": {
+      "positive": [
+        "109",
+        0
+      ],
+      "negative": [
+        "109",
+        1
+      ],
+      "vae": [
+        "127",
+        2
+      ],
+      "latent": [
+        "198",
+        0
+      ],
+      "iclora_parameters": [
+        "196",
+        0
+      ],
+      "frame_idx": 0,
+      "strength": 1.0,
+      "image": [
+        "9004",
+        0
+      ]
+    }
+  },
+  "119": {
+    "class_type": "LTXVConcatAVLatent",
+    "inputs": {
+      "video_latent": [
+        "115",
+        2
+      ],
+      "audio_latent": [
+        "101",
+        0
+      ]
+    }
+  },
+  "123": {
+    "class_type": "ComfyMathExpression",
+    "inputs": {
+      "values.a": [
+        "114",
+        0
+      ],
+      "expression": "a"
+    }
+  },
+  "113": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 1280
+    }
+  },
+  "98": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 704
+    }
+  },
+  "112": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "103",
+        0
+      ],
+      "text": "worst quality, inconsistent motion, blurry, jittery, distorted, deformed facial features, extra limbs, wrong hand count, text artifacts"
+    }
+  },
+  "122": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": [
+        "105",
+        0
+      ],
+      "audio": [
+        "107",
+        0
+      ],
+      "fps": 24.0
+    }
+  },
+  "105": {
+    "class_type": "VAEDecodeTiled",
+    "inputs": {
+      "samples": [
+        "106",
+        2
+      ],
+      "vae": [
+        "127",
+        2
+      ],
+      "tile_size": 768,
+      "overlap": 64,
+      "temporal_size": 4096,
+      "temporal_overlap": 64
+    }
+  },
+  "107": {
+    "class_type": "LTXVAudioVAEDecode",
+    "inputs": {
+      "samples": [
+        "121",
+        1
+      ],
+      "audio_vae": [
+        "126",
+        0
+      ]
+    }
+  },
+  "121": {
+    "class_type": "LTXVSeparateAVLatent",
+    "inputs": {
+      "av_latent": [
+        "704",
+        0
+      ]
+    }
+  },
+  "128": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "103",
+        0
+      ],
+      "text": "### Reference Sheet Description\n**Top Row Left (Character):** An anthropomorphic bipedal German Shepherd news anchor with realistic brown, tan, and black fur, a calm professional expression, and thin round copper-bronze framed glasses. Full-body front, three-quarter, side, and back views; vibrant multicolored patterned button-down shirt, dark charcoal dress pants, dark leather dress shoes.\n**Top Row Right (Prop):** Professional black studio condenser microphone on a desk stand, plus black wireless earpieces.\n**Middle Row Right (Prop):** Flat product view of the same multicolored patterned shirt.\n**Bottom Row (Setting):** High-end news studio with curved dark teal anchor desk and digital \"NEWS\" backdrop.\n\n### Target Description\nCinematic news studio. Wide establishing shot of the teal desk and NEWS backdrop, then a smooth push-in to a medium shot of the German Shepherd news anchor seated at the desk. He leans toward the microphone and says: \"Good evening, and welcome to tonight's top stories.\"\n"
+    }
+  },
+  "127": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "ltx-2.3-22b-distilled-fp8.safetensors"
+    }
+  },
+  "126": {
+    "class_type": "LTXVAudioVAELoader",
+    "inputs": {
+      "ckpt_name": "ltx-2.3-22b-distilled-fp8.safetensors"
+    }
+  },
+  "103": {
+    "class_type": "LTXAVTextEncoderLoader",
+    "inputs": {
+      "text_encoder": "gemma_3_12B_it_fp4_mixed.safetensors",
+      "ckpt_name": "ltx-2.3-22b-distilled-fp8.safetensors"
+    }
+  },
+  "195": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "127",
+        0
+      ],
+      "lora_name": "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors",
+      "strength_model": 1.0
+    }
+  },
+  "196": {
+    "class_type": "GetICLoRAParameters",
+    "inputs": {
+      "iclora_model": [
+        "195",
+        0
+      ]
+    }
+  },
+  "198": {
+    "class_type": "LTXVImgToVideoInplace",
+    "inputs": {
+      "vae": [
+        "127",
+        2
+      ],
+      "latent": [
+        "108",
+        0
+      ],
+      "bypass": true,
+      "image": [
+        "9006",
+        0
+      ]
+    }
+  },
+  "212": {
+    "class_type": "PrimitiveBoolean",
+    "inputs": {
+      "value": false
+    }
+  },
+  "704": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "195",
+        0
+      ],
+      "positive": [
+        "115",
+        0
+      ],
+      "negative": [
+        "115",
+        1
+      ],
+      "latent_image": [
+        "119",
+        0
+      ],
+      "seed": 42,
+      "steps": 30,
+      "cfg": 4.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0
+    }
+  },
+  "710": {
+    "class_type": "GetImageSize",
+    "inputs": {}
+  },
+  "711": {
+    "class_type": "PrimitiveBoolean",
+    "inputs": {
+      "value": true
+    }
+  },
+  "9001": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "german_shepherd_news_anchor_ref.png"
+    }
+  },
+  "9002": {
+    "class_type": "ResizeAndPadImage",
+    "inputs": {
+      "image": [
+        "9001",
+        0
+      ],
+      "target_width": [
+        "9010",
+        0
+      ],
+      "target_height": [
+        "9011",
+        0
+      ],
+      "padding_color": "black",
+      "interpolation": "lanczos"
+    }
+  },
+  "9003": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 121
+    }
+  },
+  "9004": {
+    "class_type": "RepeatImageBatch",
+    "inputs": {
+      "image": [
+        "9002",
+        0
+      ],
+      "amount": [
+        "9003",
+        0
+      ]
+    }
+  },
+  "9005": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "german_shepherd_news_anchor_ref.png"
+    }
+  },
+  "9006": {
+    "class_type": "ResizeAndPadImage",
+    "inputs": {
+      "image": [
+        "9005",
+        0
+      ],
+      "target_width": [
+        "9010",
+        0
+      ],
+      "target_height": [
+        "9011",
+        0
+      ],
+      "padding_color": "black",
+      "interpolation": "lanczos"
+    }
+  },
+  "9007": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": [
+        "122",
+        0
+      ],
+      "filename_prefix": "local_video/ltx_ic_lora",
+      "format": "auto",
+      "codec": "auto"
+    }
+  },
+  "9010": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 768
+    }
+  },
+  "9011": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 448
+    }
+  }
+}

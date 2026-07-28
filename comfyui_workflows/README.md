@@ -18,6 +18,7 @@ See also [docs/video-backends.md](../docs/video-backends.md) for Wan vs LTX sele
 |---------|------|-------------------------|
 | **wan** (default) | Proven Wan 2.2 path; FLF is two-pass high→low | `wan22_t2v`, `wan22_i2v`, `wan22_flf2v` |
 | **ltx** | LTX 2.3 T2V / I2V / FLF packaged (distilled FP8) | `ltx_t2v`, `ltx_i2v`, `ltx_flf2v` |
+| **ltx ic-lora** | Ingredients reference-sheet path (identity lock) | `ltx_ic_lora` |
 
 ### LTX (ready)
 
@@ -28,6 +29,7 @@ API graphs under `api/ltx_{t2v,i2v,flf2v}.json` use the working distilled single
 | `ltx_flf2v` | First + last frame (keyframe bridges) |
 | `ltx_i2v` | Start image only (same graph; start fed as both guides) |
 | `ltx_t2v` | Text only (guides stripped; size from width/height) |
+| `ltx_ic_lora` | **IC-LoRA Ingredients** — reference sheet + two-part prompt |
 
 Models (map `model_files`):
 
@@ -35,9 +37,21 @@ Models (map `model_files`):
 ComfyUI/models/
   checkpoints/ltx-2.3-22b-distilled-fp8.safetensors
   text_encoders/gemma_3_12B_it_fp4_mixed.safetensors
+  loras/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors   # IC-LoRA only
 ```
 
-Frame counts for LTX must be **`8n+1`** (default **33**). On ROCm, avoid `--fp16-vae` with FP8 LTX (can yield black frames).
+Frame counts for plain LTX T2V/I2V/FLF must be **`8n+1`** (default **33**). On ROCm, avoid `--fp16-vae` with FP8 LTX (can yield black frames).
+
+### LTX IC-LoRA Ingredients (`ltx_ic_lora`)
+
+Comfy-Org template packaged as `import/ltx_ic_lora.json` + `api/ltx_ic_lora.json`. This is **not** a drop-in for FLF bridges — it expects:
+
+1. A **reference sheet** image (character close-ups + turnaround, props, location; black background, no text)
+2. Prompt labeled `### Reference Sheet Description` / `### Target Description` (or `Reference sheet:` / `Generated video:`)
+3. Trained bucket: **768×448**, **121 frames**, **24 fps** (sheet is `RepeatImageBatch`’d to `num_frames`)
+4. LoRA `ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors` via `GetICLoRAParameters` → `LTXVAddGuide`
+
+`bypass_first_frame` defaults **on** in the API graph (matches the subgraph UI). Studio movie/agent does not auto-route here yet — use the workflow map / Comfy import for sheet-conditioned clips; cast-sheet builder integration is next.
 
 Official Comfy-Org UI blueprints (optional inspect / customize) live in `import/ltx_*.json`.
 
@@ -50,6 +64,7 @@ Official Comfy-Org UI blueprints (optional inspect / customize) live in `import/
    - `import/wan22_t2v_5b.json` / `wan22_i2v_5b.json` — flat **5B TI2V** graphs tuned to **33 frames** (recommended for the agent)
    - `import/wan22_flf2v.json` — official **14B FLF2V** template (first + last frame)
    - `import/ltx_flf2v.json` / `ltx_i2v.json` / `ltx_t2v.json` — LTX 2.3 UI blueprints (optional inspect)
+   - `import/ltx_ic_lora.json` — LTX 2.3 **IC-LoRA Ingredients** reference-sheet template
    - `import/still_hero.json` — simple SD1.5-style still (change checkpoint to yours)
 3. Confirm model filenames match your `ComfyUI/models/` tree.
 4. Run a test prompt once.
@@ -99,6 +114,7 @@ UNET loaders use `weight_dtype: default` (explicit `fp8_e4m3fn` was less stable 
 | `ltx_t2v` | Chunk 0 / `new_shot` when backend is `ltx` |
 | `ltx_i2v` | `continue` when backend is `ltx` (start image → both guides) |
 | `ltx_flf2v` | **Keyframe / beat bridges** when backend is `ltx` |
+| `ltx_ic_lora` | Reference-sheet Ingredients clips (not auto-routed by movie agent yet) |
 | `still_hero` | Storyboard stills (text → image) |
 | `still_edit` | Prompt-edit an existing still (ReferenceLatent) |
 
