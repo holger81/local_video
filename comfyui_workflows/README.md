@@ -1,6 +1,8 @@
 # ComfyUI workflows for Local Video Studio
 
-This folder ships **simple atomic** Wan 2.2 graphs. Continuity (chunking, overlap, stitch) is handled by Local Video Studio — not by extender custom nodes.
+This folder ships **simple atomic** video graphs (Wan 2.2 working; LTX slots ready). Continuity (chunking, overlap, stitch) is handled by Local Video Studio — not by extender custom nodes.
+
+See also [docs/video-backends.md](../docs/video-backends.md) for Wan vs LTX selection hierarchy.
 
 ## Layout
 
@@ -9,6 +11,22 @@ This folder ships **simple atomic** Wan 2.2 graphs. Continuity (chunking, overla
 | `import/` | **UI-format JSON** — drag onto ComfyUI canvas or *Workflow → Open* |
 | `api/` | **API-format JSON** — what the app POSTs to ComfyUI `/prompt` |
 | `maps/` | Logical fields → `node_id.input` for parameterization |
+
+## Video backends
+
+| Backend | Role | T2V / I2V / FLF map IDs |
+|---------|------|-------------------------|
+| **wan** (default) | Proven Wan 2.2 path; FLF is two-pass high→low | `wan22_t2v`, `wan22_i2v`, `wan22_flf2v` |
+| **ltx** | LTX adapter; fails clearly until API graphs exist | `ltx_t2v`, `ltx_i2v`, `ltx_flf2v` |
+
+LTX maps declare `expected_fields` but **do not invent node IDs**. After you import an LTX FLF (or I2V/T2V) graph in ComfyUI:
+
+1. *Workflow → Export (API)*
+2. Save as `api/ltx_flf2v.json` (or `ltx_i2v` / `ltx_t2v`)
+3. Fill `maps/ltx_*.yaml` `fields:` with real `node` / `input` bindings
+4. Confirm `GET /api/video-backends` shows `flf2v_ready: true` for `ltx`
+
+Model paths for LTX are TBD (document them in the map `model_files` once known).
 
 ## Import into ComfyUI
 
@@ -61,9 +79,10 @@ UNET loaders use `weight_dtype: default` (explicit `fp8_e4m3fn` was less stable 
 
 | Profile | When used |
 |---------|-----------|
-| `wan22_t2v` | Chunk 0 / `new_shot` |
+| `wan22_t2v` | Chunk 0 / `new_shot` (Wan) |
 | `wan22_i2v` | `continue` — uploads previous `last_frame.png` into LoadImage |
 | `wan22_flf2v` | **Keyframe / beat bridges** — two-pass 14B FLF2V (`start_image` + `end_image`); unloads between high/low UNETs |
+| `ltx_t2v` / `ltx_i2v` / `ltx_flf2v` | Same roles when job/shot backend is `ltx` (requires API JSON) |
 | `still_hero` | Storyboard stills (text → image) |
 | `still_edit` | Prompt-edit an existing still (ReferenceLatent) |
 

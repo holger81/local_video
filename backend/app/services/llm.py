@@ -93,7 +93,8 @@ def _extract_json(text: str) -> Any:
 async def generate_story(title: str, genre: str, premise: str) -> str:
     system = (
         "You are a screenwriter for short cinematic videos. "
-        "Write a concise story with clear scenes and visual beats. Plain text only."
+        "Write a concise story with clear scenes and visual beats. Plain text only. "
+        "Give recurring characters stable proper names and consistent visual identity."
     )
     user = f"Title: {title}\nGenre: {genre}\nPremise: {premise}\n\nWrite the story."
     return await chat(system, user)
@@ -105,16 +106,82 @@ async def extend_story(story: str, instruction: str) -> str:
     return await chat(system, user)
 
 
-async def propose_storyboard(story: str, max_frames: int = 8) -> list[dict[str, Any]]:
+def format_cast_sheet(characters: list[dict[str, Any]]) -> str:
+    """Compact ground-truth cast block for image/storyboard prompts."""
+    lines: list[str] = []
+    for c in characters:
+        name = (c.get("name") or "").strip()
+        if not name:
+            continue
+        look = (c.get("appearance_prompt") or c.get("description") or "").strip()
+        if look:
+            lines.append(f"- {name}: {look}")
+        else:
+            lines.append(f"- {name}")
+    if not lines:
+        return ""
+    return "Cast lock (use these exact names and looks):\n" + "\n".join(lines)
+
+
+async def extract_cast(story: str) -> list[dict[str, Any]]:
+    """Pull distinct characters from a story for the cast sheet."""
+    system = (
+        "You extract the cast for a short film. Return ONLY valid JSON array. "
+        "Each item: "
+        '{"name": str, "aliases": [str], "description": str, "appearance_prompt": str}. '
+        "Include only named or clearly recurring characters (not crowds). "
+        "appearance_prompt must be a concrete visual look: age range, face, hair, wardrobe, "
+        "distinctive details — suitable for image generation. Keep each field concise."
+    )
+    user = f"Story:\n{story}\n\nExtract the cast."
+    raw = await chat(system, user, temperature=0.2)
+    data = _extract_json(raw)
+    if not isinstance(data, list):
+        raise ValueError("cast response was not a list")
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        aliases = item.get("aliases") or []
+        if not isinstance(aliases, list):
+            aliases = []
+        out.append(
+            {
+                "name": name,
+                "aliases": [str(a).strip() for a in aliases if str(a).strip()],
+                "description": str(item.get("description") or "").strip(),
+                "appearance_prompt": str(
+                    item.get("appearance_prompt") or item.get("look") or ""
+                ).strip(),
+            }
+        )
+    return out
+
+
+async def propose_storyboard(
+    story: str, max_frames: int = 8, cast_sheet: str = ""
+) -> list[dict[str, Any]]:
     system = (
         "You break stories into storyboard frames for video generation. "
         "Return ONLY valid JSON array. Each item: "
         '{"description": str, "visual_prompt": str, "duration_hint_sec": number, "is_new_shot": bool}. '
         "is_new_shot true when camera/scene changes; false for continuous action. "
         "Keep characters, wardrobe, setting, era, and visual style consistent across all frames. "
-        "Each visual_prompt should name recurring subjects the same way every time."
+        "Each visual_prompt should name recurring subjects with their canonical cast names. "
+        "When is_new_shot is false, the beat continues the previous shot's motion and camera."
     )
-    user = f"Story:\n{story}\n\nCreate up to {max_frames} frames that form one coherent film."
+    user = f"Story:\n{story}\n\n"
+    if cast_sheet:
+        user += f"{cast_sheet}\n\n"
+    user += f"Create up to {max_frames} frames that form one coherent film."
     raw = await chat(system, user, temperature=0.3)
     data = _extract_json(raw)
     if not isinstance(data, list):
@@ -175,6 +242,7 @@ async def plan_keyframe_image_prompt(
     prev_prompt: str | None = None,
     first_prompt: str | None = None,
     last_goal: str | None = None,
+    cast_sheet: str = "",
 ) -> str:
     """One self-contained image prompt for a keyframe slot (Comfy sees only this)."""
     system = (
@@ -182,6 +250,7 @@ async def plan_keyframe_image_prompt(
         'Return ONLY valid JSON: {"image_prompt": "..."}. '
         "Rules: one moment; concrete subject/pose/camera/light; no collage or panels; "
         "no whole-film dump; never invent subjects not in the beat; do not say the word keyframe. "
+        "If a cast lock is provided, use those exact names and visual looks. "
         "If CONTINUATION: do not say new shot; keep identity from context. "
         "If NEW SHOT and role is first: establish a fresh camera/composition."
     )
@@ -196,6 +265,8 @@ async def plan_keyframe_image_prompt(
         f"Beat visual note: {visual}\n"
         f"This frame role={role} at t={t_sec}s.\n"
     )
+    if cast_sheet:
+        user += f"{cast_sheet}\n"
     if prev_prompt:
         user += f"Previous frame prompt (edit starts from that image):\n{prev_prompt}\n"
     if first_prompt and role != "first":
@@ -225,8 +296,14 @@ async def plan_keyframe_series(
     duration_sec: float,
     is_new_shot: bool,
     prev_last_prompt: str | None = None,
+    cast_sheet: str = "",
+    share_first_from_prev: bool = False,
 ) -> dict[str, Any]:
-    """Plan first + optional ≤2s middles + last via per-slot LLM calls."""
+    """Plan first + optional ≤2s middles + last via per-slot LLM calls.
+
+    When share_first_from_prev is True, the first slot reuses prev_last_prompt
+    exactly so the opening keyframe matches the prior ending.
+    """
     times = keyframe_plan_times(duration_sec)
     roles = []
     for i, _t in enumerate(times):
@@ -237,23 +314,43 @@ async def plan_keyframe_series(
         else:
             roles.append("middle")
 
-    last_goal = await plan_keyframe_image_prompt(
-        description=description,
-        visual=visual,
-        t_sec=times[-1],
-        role="last",
-        is_new_shot=is_new_shot,
-        prev_prompt=prev_last_prompt if not is_new_shot else None,
-    )
-    first_prompt = await plan_keyframe_image_prompt(
-        description=description,
-        visual=visual,
-        t_sec=times[0],
-        role="first",
-        is_new_shot=is_new_shot,
-        prev_prompt=prev_last_prompt if not is_new_shot else None,
-        last_goal=last_goal,
-    )
+    shared = bool(share_first_from_prev and (prev_last_prompt or "").strip())
+    if shared:
+        first_prompt = (prev_last_prompt or "").strip()
+    else:
+        # Plan last first for arc, then first (original order).
+        last_goal = await plan_keyframe_image_prompt(
+            description=description,
+            visual=visual,
+            t_sec=times[-1],
+            role="last",
+            is_new_shot=is_new_shot,
+            prev_prompt=prev_last_prompt if not is_new_shot else None,
+            cast_sheet=cast_sheet,
+        )
+        first_prompt = await plan_keyframe_image_prompt(
+            description=description,
+            visual=visual,
+            t_sec=times[0],
+            role="first",
+            is_new_shot=is_new_shot,
+            prev_prompt=prev_last_prompt if not is_new_shot else None,
+            last_goal=last_goal,
+            cast_sheet=cast_sheet,
+        )
+
+    if shared:
+        last_goal = await plan_keyframe_image_prompt(
+            description=description,
+            visual=visual,
+            t_sec=times[-1],
+            role="last",
+            is_new_shot=is_new_shot,
+            prev_prompt=first_prompt,
+            first_prompt=first_prompt,
+            cast_sheet=cast_sheet,
+        )
+
     keyframes: list[dict[str, Any]] = [
         {
             "index": 0,
@@ -274,6 +371,7 @@ async def plan_keyframe_series(
             prev_prompt=prev,
             first_prompt=first_prompt,
             last_goal=last_goal,
+            cast_sheet=cast_sheet,
         )
         keyframes.append(
             {
@@ -298,4 +396,5 @@ async def plan_keyframe_series(
         "duration_sec": times[-1],
         "is_new_shot": is_new_shot,
         "keyframes": keyframes,
+        "shared_first": shared,
     }

@@ -1,0 +1,19 @@
+workflow: ltx_t2v.json
+description: >
+  LTX text-to-video fallback. Node IDs empty until api/ltx_t2v.json is
+  exported from ComfyUI — do not invent bindings.
+model_files: []
+fields: {}
+expected_fields:
+  - positive_prompt
+  - negative_prompt
+  - seed
+  - steps
+  - cfg
+  - sampler_name
+  - scheduler
+  - num_frames
+  - width
+  - height
+  - fps
+  - filename_prefix

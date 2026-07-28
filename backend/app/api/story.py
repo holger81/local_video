@@ -40,8 +40,8 @@ def set_story(project_id: int, body: StoryIn):
 
 
 @router.post("/approve")
-def approve_story(project_id: int):
+async def approve_story(project_id: int):
     try:
-        return story_svc.approve_story(project_id)
+        return await story_svc.approve_story(project_id)
     except KeyError as e:
         raise HTTPException(404, str(e)) from e

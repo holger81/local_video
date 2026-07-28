@@ -172,11 +172,13 @@ def _flf_handoff(
     start_image_path: str,
     end_image_path: str,
     frame_id: Any,
+    video_backend: str = "wan",
 ) -> dict[str, Any]:
     return {
         "shot_id": shot_id,
         "mode": "flf2v",
-        "model": "wan2.2",
+        "model": "wan2.2" if video_backend == "wan" else "ltx",
+        "video_backend": video_backend,
         "chunk_index": chunk_index,
         "frame_count": frame_count,
         "overlap_frames": overlap_frames,
@@ -214,6 +216,7 @@ def _plan_flf_chunks_for_group(
     sampler: str,
     scheduler: str,
     max_frames: int,
+    video_backend: str = "wan",
 ) -> list[dict[str, Any]] | None:
     """
     One FLF2V chunk per consecutive keyframe pair (and between continuous beats).
@@ -277,6 +280,7 @@ def _plan_flf_chunks_for_group(
             start_image_path=start_path,
             end_image_path=end_path,
             frame_id=frame_id,
+            video_backend=video_backend,
         )
         chunks.append({"chunk_index": ci, "mode": "flf2v", "handoff": handoff})
         ci += 1
@@ -298,6 +302,12 @@ def _plan_flf_chunks_for_group(
                 else None
             )
             if cur_end and nxt_start:
+                # Shared boundary keyframe (continuous beat): do not insert a
+                # zero-motion FLF bridge — next beat's internal pairs carry motion.
+                if (cur_end.get("path") or "").strip() == (
+                    nxt_start.get("path") or ""
+                ).strip():
+                    continue
                 # Treat inter-beat bridges as ~2s when timestamps are independent.
                 bridge_start = {
                     **cur_end,
@@ -338,6 +348,8 @@ def plan_shots_from_frames(
     cfg: float | None = None,
     sampler: str | None = None,
     scheduler: str | None = None,
+    video_backend: str = "wan",
+    shot_backends: dict[Any, str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Build shot → chunk plan.
@@ -345,11 +357,18 @@ def plan_shots_from_frames(
     When a shot has a ready keyframe series, emit FLF2V segments between consecutive
     keyframes (and between continuous beats). Otherwise fall back to duration-based
     T2V / rolling last-frame I2V chunks.
+
+    shot_backends maps frame_id or group position → backend id for per-shot overrides.
     """
+    from app.services.video_backends import normalize_backend_id
+
     settings = get_settings()
     assert_chunk_frames(chunk_frames)
     if overlap_frames < 0 or overlap_frames >= chunk_frames:
         raise ValueError("overlap_frames must be in [0, chunk_frames)")
+
+    job_backend = normalize_backend_id(video_backend)
+    shot_backends = shot_backends or {}
 
     steps = steps if steps is not None else settings.default_steps
     cfg = cfg if cfg is not None else settings.default_cfg
@@ -377,6 +396,17 @@ def plan_shots_from_frames(
             ]
         ]
 
+    def _backend_for_group(si: int, group: list[dict[str, Any]]) -> str:
+        fid = group[0].get("id")
+        for key in (fid, si, str(fid) if fid is not None else None, str(si)):
+            if key is None:
+                continue
+            if key in shot_backends:
+                return normalize_backend_id(shot_backends[key])
+            if str(key) in shot_backends:
+                return normalize_backend_id(shot_backends[str(key)])
+        return job_backend
+
     # Allocate duration across shots from hints, scaled to target (fallback path only)
     hints = [sum(float(f.get("duration_hint_sec") or 4.0) for f in g) for g in groups]
     hint_total = sum(hints) or 1.0
@@ -385,6 +415,7 @@ def plan_shots_from_frames(
     shots: list[dict[str, Any]] = []
     for si, group in enumerate(groups):
         prompt_for_shot = _shot_prompt(group, prompt_base)
+        shot_backend = _backend_for_group(si, group)
         flf_chunks = _plan_flf_chunks_for_group(
             group,
             si=si,
@@ -400,6 +431,7 @@ def plan_shots_from_frames(
             sampler=sampler,
             scheduler=scheduler,
             max_frames=max_frames,
+            video_backend=shot_backend,
         )
         if flf_chunks is not None:
             shots.append(
@@ -408,6 +440,7 @@ def plan_shots_from_frames(
                     "title": f"Shot {si + 1}",
                     "prompt_base": prompt_for_shot,
                     "frame_id": group[0].get("id"),
+                    "video_backend": shot_backend,
                     "chunks": flf_chunks,
                 }
             )
@@ -441,7 +474,8 @@ def plan_shots_from_frames(
             handoff = {
                 "shot_id": f"shot_{si:02d}",
                 "mode": mode,
-                "model": "wan2.2",
+                "model": "wan2.2" if shot_backend == "wan" else "ltx",
+                "video_backend": shot_backend,
                 "chunk_index": ci,
                 "frame_count": chunk_frames,
                 "overlap_frames": overlap_frames if mode == "continue" else 0,
@@ -467,6 +501,7 @@ def plan_shots_from_frames(
                 "title": f"Shot {si + 1}",
                 "prompt_base": prompt_for_shot,
                 "frame_id": group[0].get("id"),
+                "video_backend": shot_backend,
                 "chunks": shot_chunks,
             }
         )

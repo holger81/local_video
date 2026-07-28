@@ -31,8 +31,10 @@ def job_dict(job: RenderJob) -> dict[str, Any]:
         "width": job.width,
         "height": job.height,
         "fps": job.fps,
+        "video_backend": getattr(job, "video_backend", None) or "wan",
         "t2v_workflow": job.t2v_workflow,
         "i2v_workflow": job.i2v_workflow,
+        "flf2v_workflow": getattr(job, "flf2v_workflow", None) or "wan22_flf2v",
         "movie_path": job.movie_path,
         "error": job.error,
         "progress": job.progress or {},
@@ -42,6 +44,8 @@ def job_dict(job: RenderJob) -> dict[str, Any]:
                 "position": s.position,
                 "title": s.title,
                 "status": s.status,
+                "frame_id": s.frame_id,
+                "video_backend": getattr(s, "video_backend", None),
                 "chunks": [
                     {
                         "id": c.id,
@@ -72,12 +76,17 @@ async def start_movie(
     width: int | None = None,
     height: int | None = None,
     fps: int | None = None,
-    t2v_workflow: str = "wan22_t2v",
-    i2v_workflow: str = "wan22_i2v",
+    video_backend: str | None = None,
+    shot_backends: dict[str, str] | None = None,
+    t2v_workflow: str | None = None,
+    i2v_workflow: str | None = None,
+    flf2v_workflow: str | None = None,
     prompt_base: str = "",
     negative_prompt: str = "",
     seed: int = 42,
 ) -> dict[str, Any]:
+    from app.services.video_backends import get_video_backend, normalize_backend_id
+
     settings = get_settings()
     chunk_frames = chunk_frames or settings.chunk_frames
     overlap_frames = (
@@ -92,6 +101,16 @@ async def start_movie(
         p = db.get(Project, project_id)
         if not p:
             raise KeyError(f"project {project_id} not found")
+        project_backend = getattr(p, "video_backend", None) or settings.default_video_backend
+        job_backend = normalize_backend_id(
+            video_backend or project_backend or settings.default_video_backend
+        )
+        backend = get_video_backend(job_backend)
+        wfs = backend.workflows()
+        t2v_workflow = t2v_workflow or wfs["t2v"]
+        i2v_workflow = i2v_workflow or wfs["i2v"]
+        flf2v_workflow = flf2v_workflow or wfs["flf2v"]
+
         frames = [
             {
                 "id": f.id,
@@ -112,9 +131,27 @@ async def start_movie(
         ]
         # Prefer premise as light world lock; full story scripts make Wan ignore the beat.
         base = prompt_base or p.premise or ""
+        try:
+            from app.services.characters import cast_sheet_for_project
+
+            cast = cast_sheet_for_project(project_id)
+            if cast:
+                base = f"{base}\n{cast}".strip() if base else cast
+        except Exception:
+            pass
         neg = negative_prompt or (
             "blurry, watermark, text, static, morphing face, flickering"
         )
+
+        # Normalize shot_backends keys to strings for planner lookup
+        sb: dict[Any, str] = {}
+        for k, v in (shot_backends or {}).items():
+            sb[k] = v
+            sb[str(k)] = v
+            try:
+                sb[int(k)] = v
+            except (TypeError, ValueError):
+                pass
 
         job = RenderJob(
             project_id=project_id,
@@ -127,8 +164,10 @@ async def start_movie(
             width=width,
             height=height,
             fps=fps,
+            video_backend=job_backend,
             t2v_workflow=t2v_workflow,
             i2v_workflow=i2v_workflow,
+            flf2v_workflow=flf2v_workflow,
             prompt_base=base,
             negative_prompt=neg,
             seed=seed,
@@ -148,14 +187,18 @@ async def start_movie(
             seed=seed,
             width=width,
             height=height,
+            video_backend=job_backend,
+            shot_backends=sb,
         )
         for shot_spec in plan:
+            shot_be = shot_spec.get("video_backend") or job_backend
             shot = Shot(
                 job_id=job.id,
                 position=shot_spec["position"],
                 title=shot_spec["title"],
                 prompt_base=shot_spec["prompt_base"],
                 frame_id=shot_spec.get("frame_id"),
+                video_backend=shot_be if shot_be != job_backend else None,
                 status="pending",
             )
             db.add(shot)

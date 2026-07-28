@@ -151,26 +151,38 @@ async def rebuild_frame_keyframe_prompts(
         duration = float(f.duration_hint_sec or 4.0)
         is_new = bool(f.is_new_shot)
         prev_last_prompt = None
+        prev_last_path = None
         if not is_new and idx > 0:
             prev_kfs = _keyframes_list(frames[idx - 1])
             if prev_kfs:
                 prev_last_prompt = prev_kfs[-1].get("image_prompt") or None
+                prev_last_path = prev_kfs[-1].get("path") or None
         existing_paths = {
             i: (kf.get("path") or None) for i, kf in enumerate(_keyframes_list(f))
         }
 
+    from app.services.characters import cast_sheet_for_project
+
+    cast_sheet = cast_sheet_for_project(project_id)
+    share_first = bool(not is_new and prev_last_prompt)
     planned = await llm.plan_keyframe_series(
         description=description,
         visual=visual,
         duration_sec=duration,
         is_new_shot=is_new,
         prev_last_prompt=prev_last_prompt,
+        cast_sheet=cast_sheet,
+        share_first_from_prev=share_first,
     )
     keyframes = planned["keyframes"]
     for kf in keyframes:
         # Preserve rendered path if slot index still exists (best-effort)
         if kf["index"] in existing_paths and existing_paths[kf["index"]]:
             kf["path"] = existing_paths[kf["index"]]
+    # Continuous beats: first keyframe is exactly the previous beat's last.
+    if share_first and prev_last_path:
+        keyframes[0]["path"] = prev_last_path
+        keyframes[0]["image_prompt"] = prev_last_prompt
 
     with SessionLocal() as db:
         fr = db.get(StoryboardFrame, frame_id)
@@ -204,7 +216,22 @@ async def propose_storyboard(
             db.delete(f)
         db.commit()
 
-    proposed = await llm.propose_storyboard(story, max_frames=max_frames)
+    from app.services import characters as char_svc
+
+    # Ensure cast exists before proposing beats that name them.
+    try:
+        await char_svc.detect_characters(project_id, replace_auto=False)
+    except Exception:
+        pass
+    cast_sheet = ""
+    try:
+        cast_sheet = char_svc.cast_sheet_for_project(project_id)
+    except Exception:
+        cast_sheet = ""
+
+    proposed = await llm.propose_storyboard(
+        story, max_frames=max_frames, cast_sheet=cast_sheet
+    )
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         assert p is not None
@@ -222,6 +249,10 @@ async def propose_storyboard(
                 )
             )
         db.commit()
+    try:
+        await char_svc.sync_intro_frames(project_id)
+    except Exception:
+        pass
     # Plan prompts per frame (LLM). Failures leave empty keyframes for later rebuild.
     with SessionLocal() as db:
         p = db.get(Project, project_id)
@@ -290,6 +321,7 @@ def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any
 def delete_frame_media(project_id: int, frame_id: int, kind: str) -> dict[str, Any]:
     """Clear still, preview, keyframe:N, or legacy keyframe_* kind."""
     settings = get_settings()
+    shared = False
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
@@ -341,7 +373,20 @@ def delete_frame_media(project_id: int, frame_id: int, kind: str) -> dict[str, A
         payload = _frame_dict(f)
         payload["deleted"] = kind
 
-    if old:
+        # Don't unlink files still referenced as another beat's shared keyframe.
+        if old:
+            proj = db.get(Project, project_id)
+            for fr in proj.frames if proj else []:
+                if fr.id == frame_id:
+                    continue
+                for kf in _keyframes_list(fr):
+                    if (kf.get("path") or "") == old:
+                        shared = True
+                        break
+                if shared:
+                    break
+
+    if old and not shared:
         try:
             p = Path(old)
             media_root = settings.media_dir.resolve()
@@ -379,15 +424,20 @@ def _is_scene_list(text: str) -> bool:
     return len(_SCENE_LIST_RE.findall(text or "")) >= 2
 
 
-def _world_lock(*, premise: str, story: str) -> str:
+def _world_lock(*, premise: str, story: str, cast_sheet: str = "") -> str:
     """Short cast/setting lock for image models — never a multi-scene script."""
+    parts: list[str] = []
+    cast = (cast_sheet or "").strip()
+    if cast:
+        parts.append(cast)
     premise_bit = _truncate(premise or "", 320)
     if premise_bit:
-        return premise_bit
-    story_bit = (story or "").strip()
-    if not story_bit or _is_scene_list(story_bit):
-        return ""
-    return _truncate(story_bit, 320)
+        parts.append(premise_bit)
+    elif not cast:
+        story_bit = (story or "").strip()
+        if story_bit and not _is_scene_list(story_bit):
+            parts.append(_truncate(story_bit, 320))
+    return " ".join(parts)
 
 
 def _frame_wants_on_screen_text(frame_prompt: str) -> bool:
@@ -419,6 +469,7 @@ def build_visual_prompt(
     genre: str,
     frame_prompt: str,
     premise: str = "",
+    cast_sheet: str = "",
     prev_prompt: str | None = None,
     next_prompt: str | None = None,
 ) -> str:
@@ -426,12 +477,11 @@ def build_visual_prompt(
 
     Do not dump multi-scene story scripts or neighbor beats into the prompt —
     Flux/Klein often renders those as a literal storyboard collage. Prefer the
-    short premise as world lock; ignore prev/next scene text (kept in signature
-    for callers / future soft continuity).
+    short premise + cast sheet as world lock; ignore prev/next scene text.
     """
     _ = title, prev_prompt, next_prompt  # title/neighbors unused for image models
     frame_bit = _truncate(frame_prompt or "", 400)
-    world = _world_lock(premise=premise, story=story)
+    world = _world_lock(premise=premise, story=story, cast_sheet=cast_sheet)
     parts: list[str] = [
         "Photorealistic cinematic still photograph, one continuous camera shot, "
         "one moment only, full frame."
@@ -455,8 +505,13 @@ async def generate_frame_visual(
     kind: str = "still",
     workflow_id: str | None = None,
     num_frames: int = 33,
+    video_backend: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
+    from app.services.characters import cast_sheet_for_project
+    from app.services.video_backends import get_video_backend, normalize_backend_id
+
+    cast_sheet = cast_sheet_for_project(project_id)
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
@@ -470,7 +525,9 @@ async def generate_frame_visual(
             title=p.title or "",
             genre=p.genre or "",
             frame_prompt=frame_prompt,
+            cast_sheet=cast_sheet,
         )
+        project_backend = getattr(p, "video_backend", None)
 
     if kind == "still":
         workflow_id = workflow_id or "still_hero"
@@ -480,30 +537,62 @@ async def generate_frame_visual(
             "seed": frame_id * 17,
             "filename_prefix": f"local_video/p{project_id}_f{frame_id}_still",
         }
+        graph = apply_params(workflow_id, params)
+        comfy = ComfyUIClient()
+        prompt_id = await comfy.queue_prompt(graph)
+        history = await comfy.wait_for_prompt(prompt_id)
+        outputs = comfy.collect_outputs(history)
     else:
-        workflow_id = workflow_id or "wan22_t2v"
+        backend = get_video_backend(
+            normalize_backend_id(
+                video_backend
+                or project_backend
+                or settings.default_video_backend
+                or "wan"
+            )
+        )
         validate_frame_count(num_frames)
-        params = {
-            "positive_prompt": prompt,
-            "negative_prompt": (
+        media = (
+            settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+        )
+        media.mkdir(parents=True, exist_ok=True)
+        dest = await backend.render_t2v(
+            project_id=project_id,
+            frame_id=frame_id,
+            prompt=prompt,
+            label="preview",
+            num_frames=num_frames,
+            seed=frame_id * 17,
+            dest_dir=media,
+            filename_prefix=f"local_video/p{project_id}_f{frame_id}_preview",
+            negative_prompt=(
                 "blurry, watermark, text, static, inconsistent characters, style change, "
                 "collage, comic, storyboard, panels, grid, split screen, montage, "
                 "multi-panel, contact sheet"
             ),
-            "seed": frame_id * 17,
-            "num_frames": num_frames,
-            "width": settings.default_width,
-            "height": settings.default_height,
-            "fps": settings.default_fps,
-            "cfg": settings.default_cfg,
-            "filename_prefix": f"local_video/p{project_id}_f{frame_id}_preview",
+        )
+        with SessionLocal() as db:
+            fr = db.get(StoryboardFrame, frame_id)
+            assert fr
+            had_still = bool(fr.still_path)
+            fr.preview_path = str(dest)
+            still_out = fr.still_path
+            if not had_still:
+                frames_dir = media / "extracted"
+                frames = extract_frames_from_video(dest, frames_dir)
+                if frames:
+                    still = media / "still_from_preview.png"
+                    still.write_bytes(frames[0].read_bytes())
+                    fr.still_path = str(still)
+                    still_out = str(still)
+            db.commit()
+        return {
+            "frame_id": frame_id,
+            "kind": kind,
+            "preview_path": str(dest),
+            "still_path": still_out,
+            "video_backend": backend.id,
         }
-
-    graph = apply_params(workflow_id, params)
-    comfy = ComfyUIClient()
-    prompt_id = await comfy.queue_prompt(graph)
-    history = await comfy.wait_for_prompt(prompt_id)
-    outputs = comfy.collect_outputs(history)
 
     media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
     media.mkdir(parents=True, exist_ok=True)
@@ -770,8 +859,9 @@ async def generate_between_stills(
     *,
     workflow_id: str | None = None,
     num_frames: int = 33,
+    video_backend: str | None = None,
 ) -> dict[str, Any]:
-    """Bridge this beat's end image into the next beat's start via Wan FLF2V."""
+    """Bridge this beat's end image into the next beat's start via FLF2V."""
     validate_frame_count(num_frames)
     with SessionLocal() as db:
         p = db.get(Project, project_id)
@@ -806,6 +896,17 @@ async def generate_between_stills(
             raise ValueError(
                 "next frame has no first keyframe or still — create keyframes/stills first"
             )
+        # Continuous beats share the exact same boundary keyframe — no FLF bridge.
+        if (not bool(nxt.is_new_shot)) and start_stored == end_ref:
+            return {
+                "frame_id": frame_id,
+                "kind": "between",
+                "skipped": True,
+                "reason": "shared_boundary_keyframe",
+                "start_path": start_stored,
+                "end_path": end_ref,
+                "next_frame_id": nxt.id,
+            }
         start_beat = (
             (cur_kfs[-1].get("image_prompt") if cur_kfs else None)
             or cur.visual_prompt
@@ -821,7 +922,6 @@ async def generate_between_stills(
         premise = p.premise or ""
         next_frame_id = nxt.id
 
-    workflow_id = workflow_id or "wan22_flf2v"
     dest = await _bridge_clip_between_images(
         project_id=project_id,
         frame_id=frame_id,
@@ -834,6 +934,7 @@ async def generate_between_stills(
         num_frames=num_frames,
         seed=frame_id * 17 + 3,
         workflow_id=workflow_id,
+        video_backend=video_backend,
     )
 
     with SessionLocal() as db:
@@ -849,6 +950,7 @@ async def generate_between_stills(
         "kind": "between_stills",
         "preview_path": str(dest),
         "workflow_id": workflow_id,
+        "video_backend": video_backend,
     }
 
 
@@ -858,6 +960,7 @@ async def generate_all_between_stills(
     workflow_id: str | None = None,
     skip_existing: bool = True,
     num_frames: int = 33,
+    video_backend: str | None = None,
 ) -> dict[str, Any]:
     """Generate between-stills clips for every consecutive still pair."""
     with SessionLocal() as db:
@@ -905,6 +1008,7 @@ async def generate_all_between_stills(
                 fr["id"],
                 workflow_id=workflow_id,
                 num_frames=num_frames,
+                video_backend=video_backend,
             )
             results.append(out)
         except Exception as e:
@@ -1029,6 +1133,21 @@ async def generate_frame_keyframes(
     last_path: str | None = None
 
     for i, kf in enumerate(keyframes):
+        # Continuous beat: first keyframe IS the previous beat's last image (shared path).
+        if i == 0 and not is_new and prev_last_path:
+            keyframes[0]["path"] = prev_last_path
+            if not (keyframes[0].get("image_prompt") or "").strip():
+                # Prefer prior last prompt when available from the shared image.
+                pass
+            skipped.append(0)
+            last_path = prev_last_path
+            with SessionLocal() as db:
+                fr = db.get(StoryboardFrame, frame_id)
+                assert fr
+                _sync_legacy_keyframe_columns(fr, keyframes)
+                db.commit()
+            continue
+
         if skip_existing and (kf.get("path") or "").strip():
             skipped.append(i)
             last_path = kf.get("path")
@@ -1039,14 +1158,7 @@ async def generate_frame_keyframes(
             raise ValueError(f"frame {frame_id} keyframe {i} has no image_prompt")
 
         if i == 0:
-            if is_new or not prev_last_path:
-                source = None  # new shot / no prior → T2I (own series)
-            else:
-                source = prev_last_path
-                prompt = (
-                    f"{prompt} Continuation of the same shot — "
-                    "preserve identity, wardrobe, and setting."
-                )
+            source = None  # new shot → T2I
         else:
             if not last_path:
                 raise ValueError(
@@ -1141,13 +1253,19 @@ async def generate_one_keyframe(
     if not prompt:
         raise ValueError(f"frame {frame_id} keyframe {ki} has no image_prompt")
 
+    # Continuous beat start: share previous beat's last keyframe exactly (no re-render).
+    if ki == 0 and not is_new and prev_shot_last:
+        keyframes[0]["path"] = prev_shot_last
+        with SessionLocal() as db:
+            fr = db.get(StoryboardFrame, frame_id)
+            assert fr
+            _sync_legacy_keyframe_columns(fr, keyframes)
+            db.commit()
+            db.refresh(fr)
+            return _frame_dict(fr)
+
     if ki == 0:
-        source = None if (is_new or not prev_shot_last) else prev_shot_last
-        if source:
-            prompt = (
-                f"{prompt} Continuation of the same shot — "
-                "preserve identity, wardrobe, and setting."
-            )
+        source = None
     else:
         source = prev_path
         if not source:
@@ -1162,7 +1280,7 @@ async def generate_one_keyframe(
         source_path=source,
         seed=seed if seed is not None else (frame_id * 31 + ki * 97),
     )
-    if old_path:
+    if old_path and old_path != prev_shot_last:
         try:
             old = _resolve_media_file(old_path)
             if old.resolve() != dest.resolve() and old.is_file():
@@ -1284,13 +1402,76 @@ async def _bridge_clip_between_images(
     label: str,
     num_frames: int,
     seed: int,
-    workflow_id: str = "wan22_flf2v",
+    workflow_id: str | None = None,
+    video_backend: str | None = None,
 ) -> Path:
     """Generate a clip locked to start (and optionally end) image via FLF2V or I2V."""
-    if workflow_id == "wan22_flf2v":
-        if end_image is None:
-            raise ValueError("wan22_flf2v requires both start_image and end_image")
-        return await _run_flf2v_two_pass(
+    from app.db.models import Project
+    from app.services.video_backends import get_video_backend, normalize_backend_id
+
+    settings = get_settings()
+    if video_backend is None:
+        with SessionLocal() as db:
+            p = db.get(Project, project_id)
+            video_backend = (
+                (getattr(p, "video_backend", None) if p else None)
+                or settings.default_video_backend
+                or "wan"
+            )
+    backend = get_video_backend(normalize_backend_id(video_backend))
+    wfs = backend.workflows()
+
+    # Explicit legacy / override workflow id (non-FLF maps).
+    if workflow_id and workflow_id not in (
+        None,
+        "",
+        "wan22_flf2v",
+        "ltx_flf2v",
+        wfs["flf2v"],
+        wfs["i2v"],
+        "wan22_i2v",
+        "ltx_i2v",
+    ):
+        validate_frame_count(num_frames)
+        comfy = ComfyUIClient()
+        start_name = await comfy.upload_image(start_image)
+        uploads: dict[str, str] = {"start_image": start_name}
+        if end_image is not None:
+            uploads["end_image"] = await comfy.upload_image(end_image)
+        params = {
+            "positive_prompt": prompt,
+            "negative_prompt": (
+                "blurry, watermark, text, static, jump cut, morphing face, flickering, "
+                "collage, comic, storyboard, panels, grid, split screen, montage"
+            ),
+            "seed": seed,
+            "num_frames": num_frames,
+            "width": settings.default_width,
+            "height": settings.default_height,
+            "fps": settings.default_fps,
+            "cfg": settings.default_cfg,
+            "filename_prefix": f"local_video/p{project_id}_f{frame_id}_{label}",
+        }
+        graph = apply_params(workflow_id, params, uploaded_images=uploads)
+        prompt_id = await comfy.queue_prompt(graph)
+        history = await comfy.wait_for_prompt(prompt_id)
+        outputs = comfy.collect_outputs(history)
+        if not outputs:
+            raise RuntimeError("ComfyUI produced no outputs")
+        media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+        media.mkdir(parents=True, exist_ok=True)
+        out = outputs[0]
+        dest = media / out["filename"]
+        await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+        return dest
+
+    # Default FLF when both endpoints exist; otherwise I2V from start.
+    use_flf = end_image is not None and (
+        not workflow_id
+        or workflow_id in ("wan22_flf2v", "ltx_flf2v", wfs["flf2v"])
+    )
+    if use_flf:
+        return await backend.render_flf2v(
             project_id=project_id,
             frame_id=frame_id,
             start_image=start_image,
@@ -1301,39 +1482,15 @@ async def _bridge_clip_between_images(
             seed=seed,
         )
 
-    settings = get_settings()
-    validate_frame_count(num_frames)
-    comfy = ComfyUIClient()
-    start_name = await comfy.upload_image(start_image)
-    uploads: dict[str, str] = {"start_image": start_name}
-    if end_image is not None:
-        uploads["end_image"] = await comfy.upload_image(end_image)
-    params = {
-        "positive_prompt": prompt,
-        "negative_prompt": (
-            "blurry, watermark, text, static, jump cut, morphing face, flickering, "
-            "collage, comic, storyboard, panels, grid, split screen, montage"
-        ),
-        "seed": seed,
-        "num_frames": num_frames,
-        "width": settings.default_width,
-        "height": settings.default_height,
-        "fps": settings.default_fps,
-        "cfg": settings.default_cfg,
-        "filename_prefix": f"local_video/p{project_id}_f{frame_id}_{label}",
-    }
-    graph = apply_params(workflow_id, params, uploaded_images=uploads)
-    prompt_id = await comfy.queue_prompt(graph)
-    history = await comfy.wait_for_prompt(prompt_id)
-    outputs = comfy.collect_outputs(history)
-    if not outputs:
-        raise RuntimeError("ComfyUI produced no outputs")
-    media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
-    media.mkdir(parents=True, exist_ok=True)
-    out = outputs[0]
-    dest = media / out["filename"]
-    await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
-    return dest
+    return await backend.render_i2v(
+        project_id=project_id,
+        frame_id=frame_id,
+        start_image=start_image,
+        prompt=prompt,
+        label=label,
+        num_frames=num_frames,
+        seed=seed,
+    )
 
 
 async def _run_flf2v_two_pass(
@@ -1466,9 +1623,9 @@ async def generate_step_clips(
     *,
     num_frames: int = 33,
     workflow_id: str | None = None,
+    video_backend: str | None = None,
 ) -> dict[str, Any]:
     """FLF2V between consecutive keyframes in the series; concat into preview_path."""
-    workflow_id = workflow_id or "wan22_flf2v"
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
@@ -1508,6 +1665,7 @@ async def generate_step_clips(
             num_frames=num_frames,
             seed=frame_id * 17 + 11 + i,
             workflow_id=workflow_id,
+            video_backend=video_backend,
         )
         clip_paths.append(clip)
         raw = media / f"_clip_{i:02d}_frames"
@@ -1516,8 +1674,19 @@ async def generate_step_clips(
 
     preview = media / f"step_preview_f{frame_id}.mp4"
     if frame_dirs and all(any(d.glob("*.png")) for d in frame_dirs):
+        from app.services.frames import discard_overlap, write_kept_frames
+
+        # Drop the shared boundary frame between consecutive FLF clips.
+        kept_dirs: list[Path] = []
+        for i, raw in enumerate(frame_dirs):
+            frames_list = sorted(raw.glob("*.png"))
+            if i > 0:
+                frames_list = discard_overlap(frames_list, 1)
+            kept = media / f"_clip_{i:02d}_kept"
+            write_kept_frames(frames_list, kept)
+            kept_dirs.append(kept)
         seq = media / "_step_seq"
-        concat_frame_dirs(frame_dirs, seq)
+        concat_frame_dirs(kept_dirs, seq)
         encode_frames_to_mp4(seq, preview, fps=settings.default_fps)
     else:
         concat_videos(clip_paths, preview)
@@ -1535,6 +1704,7 @@ async def generate_step_clips(
         "clips": [str(c) for c in clip_paths],
         "keyframes": keyframes,
         "keyframe_last_path": keyframes[-1].get("path"),
+        "video_backend": video_backend,
     }
 
 
@@ -1543,6 +1713,8 @@ async def generate_all_step_clips(
     *,
     skip_existing: bool = True,
     num_frames: int = 33,
+    video_backend: str | None = None,
+    workflow_id: str | None = None,
 ) -> dict[str, Any]:
     with SessionLocal() as db:
         p = db.get(Project, project_id)
@@ -1569,7 +1741,13 @@ async def generate_all_step_clips(
             continue
         try:
             results.append(
-                await generate_step_clips(project_id, fr["id"], num_frames=num_frames)
+                await generate_step_clips(
+                    project_id,
+                    fr["id"],
+                    num_frames=num_frames,
+                    video_backend=video_backend,
+                    workflow_id=workflow_id,
+                )
             )
         except Exception as e:
             errors.append({"frame_id": fr["id"], "error": str(e)})

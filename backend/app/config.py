@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     # Effective context budget for prompt truncation / max_tokens (0 = auto from model).
     llama_n_ctx: int = 0
     llama_max_tokens: int = 2048
+    default_video_backend: str = "wan"
 
     chunk_frames: int = 33
     overlap_frames: int = 12

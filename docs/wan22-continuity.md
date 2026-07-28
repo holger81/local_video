@@ -1,5 +1,7 @@
 # Wan 2.2 continuity (Local Video Studio)
 
+For choosing Wan vs LTX (and mixing backends in one movie), see [video-backends.md](video-backends.md).
+
 Condensed from the chunked video station brief. **This app owns control**; ComfyUI stays atomic.
 
 ## Rules
@@ -20,19 +22,23 @@ series. Overlap default **12**. Chunk 0 may I2V-lock the first keyframe/still.
 
 When a shot’s storyboard beat has a complete keyframe series (paths set, ≥2 frames),
 the movie agent plans **one FLF2V chunk per consecutive keyframe pair** (same method as
-storyboard step clips), plus FLF bridges between continuous beats in that shot.
+storyboard step clips). Continuous beats (`is_new_shot=false`) **share** the previous
+beat’s last keyframe as this beat’s first (exact same path/prompt) — no re-render, and
+**no** inter-beat FLF bridge when the boundary is shared. Motion continues through the
+next beat’s internal keyframe pairs.
 
 - `mode=flf2v` with `start_image_path` + `end_image_path`
 - Frame count from keyframe `t_sec` Δ (snapped to `4n+1`)
 - Transition prompts from per-keyframe `image_prompt`s
-- Adjacent FLF segments drop 1 shared boundary frame when stitching
+- Adjacent FLF segments (and storyboard step-clip concats) drop 1 shared boundary frame
 
 Storyboard pipeline:
-1. Hero stills per beat
-2. **Keyframes** — variable series per beat (≤2s spacing)
-3. **Step clips** — FLF2V between consecutive keyframes (concat to preview)
-4. **Between steps** — FLF2V bridge from last keyframe of N to first of N+1
-5. **Movie agent** — re-renders along the same keyframe pairs (not open-ended I2V)
+1. **Characters** — cast ground truth (auto-detected from story; appearance prompts + refs)
+2. Hero stills per beat (cast sheet injected)
+3. **Keyframes** — variable series per beat; continues share prior end as first
+4. **Step clips** — FLF2V between consecutive keyframes (concat with boundary subtract)
+5. **Between steps** — FLF2V only across true discontinuities (new shots)
+6. **Movie agent** — same keyframe pairs / shared-boundary rules
 
 True dual-frame FLF uses the `wan22_flf2v` workflow (Wan 2.2 14B first+last frame),
 run as **two ComfyUI prompts** (high-noise → unload → low-noise) so both 14B UNETs are

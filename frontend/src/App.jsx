@@ -118,6 +118,8 @@ function SettingsPage() {
   const [apiKey, setApiKey] = useState("");
   const [nCtx, setNCtx] = useState("");
   const [maxTokens, setMaxTokens] = useState("2048");
+  const [videoBackend, setVideoBackend] = useState("wan");
+  const [videoBackends, setVideoBackends] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
@@ -131,6 +133,13 @@ function SettingsPage() {
     setApiKey("");
     setNCtx(s.llama_n_ctx ? String(s.llama_n_ctx) : "");
     setMaxTokens(String(s.llama_max_tokens || 2048));
+    setVideoBackend(s.default_video_backend || "wan");
+    try {
+      const vb = await api("/video-backends");
+      setVideoBackends(vb.backends || []);
+    } catch {
+      setVideoBackends([]);
+    }
     try {
       const m = await api("/llm/models");
       setModels(m.models || []);
@@ -160,6 +169,7 @@ function SettingsPage() {
         llama_base_url: baseUrl.trim(),
         llama_model: model.trim(),
         llama_max_tokens: Number(maxTokens) || 2048,
+        default_video_backend: videoBackend,
       };
       if (apiKey.trim()) body.llama_api_key = apiKey.trim();
       if (nCtx.trim()) body.llama_n_ctx = Number(nCtx);
@@ -297,6 +307,20 @@ function SettingsPage() {
               autoComplete="off"
             />
           </label>
+          <label>
+            Default video backend
+            <select value={videoBackend} onChange={(e) => setVideoBackend(e.target.value)}>
+              <option value="wan">Wan 2.2</option>
+              <option value="ltx">LTX</option>
+            </select>
+          </label>
+          {videoBackend === "ltx" &&
+            videoBackends.some((b) => b.id === "ltx" && !b.flf2v_ready) && (
+              <p className="error">
+                LTX FLF workflows are not installed yet — export API graphs into
+                comfyui_workflows/api/ before rendering with LTX.
+              </p>
+            )}
           <div className="row">
             <button type="submit" disabled={busy}>
               {busy ? "Saving…" : "Save"}
@@ -422,9 +446,13 @@ function ProjectPage() {
   const [keyframeEditorId, setKeyframeEditorId] = useState(null);
   const [editorDraft, setEditorDraft] = useState(null);
   const [kfEditDrafts, setKfEditDrafts] = useState({});
+  const [characterEditorId, setCharacterEditorId] = useState(null);
+  const [charDraft, setCharDraft] = useState(null);
+  const [charEditInstr, setCharEditInstr] = useState("");
   const [err, setErr] = useState("");
   const [job, setJob] = useState(null);
   const [movies, setMovies] = useState([]);
+  const [videoBackends, setVideoBackends] = useState([]);
   const [movieForm, setMovieForm] = useState({
     target_length_sec: 20,
     chunk_frames: 33,
@@ -432,7 +460,9 @@ function ProjectPage() {
     format: "mp4",
     aspect: "16:9",
     seed: 42,
+    video_backend: "wan",
   });
+  const [shotBackends, setShotBackends] = useState({});
 
   const loadAssets = useCallback(async () => {
     const a = await api(`/projects/${id}/assets`);
@@ -444,6 +474,16 @@ function ProjectPage() {
     const p = await api(`/projects/${id}`);
     setProject(p);
     setStoryEdit(p.story || "");
+    setMovieForm((prev) => ({
+      ...prev,
+      video_backend: p.video_backend || prev.video_backend || "wan",
+    }));
+    try {
+      const vb = await api("/video-backends");
+      setVideoBackends(vb.backends || []);
+    } catch {
+      setVideoBackends([]);
+    }
     try {
       await loadAssets();
     } catch {
@@ -540,6 +580,40 @@ function ProjectPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [keyframeEditorId, lightbox]);
+
+  useEffect(() => {
+    if (!characterEditorId || !project) return;
+    const c = (project.characters || []).find((x) => x.id === characterEditorId);
+    if (!c) {
+      setCharacterEditorId(null);
+      setCharDraft(null);
+      return;
+    }
+    setCharDraft({
+      name: c.name || "",
+      description: c.description || "",
+      appearance_prompt: c.appearance_prompt || "",
+      aliases: Array.isArray(c.aliases) ? c.aliases.join(", ") : "",
+      approved: !!c.approved,
+      reference_image_path: c.reference_image_path || null,
+      auto_detected: !!c.auto_detected,
+      intro_frame_id: c.intro_frame_id ?? null,
+    });
+    setCharEditInstr("");
+  }, [characterEditorId, project]);
+
+  useEffect(() => {
+    if (!characterEditorId) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape" && !lightbox) {
+        setCharacterEditorId(null);
+        setCharDraft(null);
+        setCharEditInstr("");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [characterEditorId, lightbox]);
 
   if (!project) {
     return (
@@ -851,6 +925,35 @@ function ProjectPage() {
           {project.genre} · story {project.story_approved ? "approved" : "draft"} · board{" "}
           {project.storyboard_approved ? "approved" : "open"}
         </p>
+        <label className="project-backend">
+          Project video backend
+          <select
+            value={project.video_backend || "wan"}
+            disabled={!!busy}
+            onChange={(e) =>
+              run("update project backend", async () => {
+                const p = await api(`/projects/${id}`, {
+                  method: "PATCH",
+                  body: JSON.stringify({ video_backend: e.target.value }),
+                });
+                setProject(p);
+                setMovieForm((prev) => ({
+                  ...prev,
+                  video_backend: p.video_backend || "wan",
+                }));
+              })
+            }
+          >
+            <option value="wan">Wan 2.2</option>
+            <option value="ltx">LTX</option>
+          </select>
+        </label>
+        {(project.video_backend || "wan") === "ltx" &&
+          videoBackends.some((b) => b.id === "ltx" && !b.flf2v_ready) && (
+            <p className="error">
+              LTX FLF workflows are not installed — import API graphs before rendering.
+            </p>
+          )}
       </div>
       {err && <p className="error">{err}</p>}
       {busy && <p className="muted">Working: {busy}…</p>}
@@ -910,7 +1013,83 @@ function ProjectPage() {
       </section>
 
       <section className="card-like">
-        <h2>2. Storyboard</h2>
+        <h2>2. Characters</h2>
+        <p className="muted">
+          Cast ground truth for stills and keyframes. Auto-detected when the story
+          introduces someone; edit appearance and generate a reference portrait.
+        </p>
+        <div className="row">
+          <button
+            type="button"
+            disabled={!!busy}
+            onClick={() =>
+              run("detect characters", () =>
+                api(`/projects/${id}/characters/detect`, {
+                  method: "POST",
+                  body: JSON.stringify({ replace_auto: false }),
+                })
+              )
+            }
+          >
+            Detect from story
+          </button>
+          <button
+            type="button"
+            disabled={!!busy}
+            onClick={async () => {
+              setErr("");
+              try {
+                const c = await api(`/projects/${id}/characters`, {
+                  method: "POST",
+                  body: JSON.stringify({
+                    name: "New character",
+                    description: "",
+                    appearance_prompt: "",
+                  }),
+                });
+                await load();
+                setCharacterEditorId(c.id);
+              } catch (ex) {
+                setErr(String(ex.message || ex));
+              }
+            }}
+          >
+            Add character
+          </button>
+        </div>
+        <div className="characters-grid">
+          {(project.characters || []).map((c) => {
+            const src = mediaUrl(c.reference_image_path);
+            return (
+              <button
+                key={c.id}
+                type="button"
+                className="character-card"
+                onClick={() => setCharacterEditorId(c.id)}
+              >
+                {src ? (
+                  <img src={`${src}?t=${encodeURIComponent(c.reference_image_path)}`} alt="" />
+                ) : (
+                  <div className="character-card-placeholder">No ref</div>
+                )}
+                <div className="character-card-meta">
+                  <strong>{c.name || "Unnamed"}</strong>
+                  <span className="tiny muted">
+                    {c.approved ? "approved" : c.auto_detected ? "auto" : "draft"}
+                    {c.intro_frame_id ? ` · intro #${c.intro_frame_id}` : ""}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+          {!(project.characters || []).length && (
+            <p className="muted tiny">No characters yet — generate/approve a story or detect.</p>
+          )}
+        </div>
+      </section>
+
+      <section className="card-like">
+        <h2>3. Storyboard</h2>
         <p className="muted">
           One thumbnail per beat (first keyframe). Click a card to open the step editor for
           prompts, stills, the full keyframe series, and motion.
@@ -997,7 +1176,7 @@ function ProjectPage() {
       </section>
 
       <section className="card-like">
-        <h2>3. Batch keyframes &amp; motion</h2>
+        <h2>4. Batch keyframes &amp; motion</h2>
         <p className="muted">
           Run across the board: LLM image prompts → edit-chain keyframes (new shot =
           own series; continue = from prior end) → FLF2V animate consecutive pairs → bridge beats.
@@ -1049,7 +1228,7 @@ function ProjectPage() {
       </section>
 
       <section className="card-like">
-        <h2>4. Movie wizard</h2>
+        <h2>5. Movie wizard</h2>
         <div className="grid three">
           <label>
             Length (sec)
@@ -1101,16 +1280,75 @@ function ProjectPage() {
               onChange={(e) => setMovieForm({ ...movieForm, seed: Number(e.target.value) })}
             />
           </label>
+          <label>
+            Movie video backend
+            <select
+              value={movieForm.video_backend || "wan"}
+              onChange={(e) =>
+                setMovieForm({ ...movieForm, video_backend: e.target.value })
+              }
+            >
+              <option value="wan">Wan 2.2</option>
+              <option value="ltx">LTX</option>
+            </select>
+          </label>
         </div>
+        {(movieForm.video_backend || "wan") === "ltx" &&
+          videoBackends.some((b) => b.id === "ltx" && !b.flf2v_ready) && (
+            <p className="error">
+              LTX is selected but FLF workflows are missing — movie render will fail until
+              you export ltx_flf2v into comfyui_workflows/api/.
+            </p>
+          )}
+        {(project.frames || []).length > 0 && (
+          <div className="shot-backends">
+            <h3>Per-shot backend</h3>
+            <p className="muted tiny">
+              Default uses the movie backend. Prefer a new shot when switching Wan ↔ LTX.
+            </p>
+            <ul className="list">
+              {(project.frames || [])
+                .filter((f) => f.is_new_shot || f.position === 0)
+                .map((f) => (
+                  <li key={f.id} className="row">
+                    <span>
+                      Shot from step #{f.position + 1}
+                      {f.is_new_shot ? "" : " (first)"}
+                    </span>
+                    <select
+                      value={shotBackends[String(f.id)] || ""}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setShotBackends((prev) => {
+                          const next = { ...prev };
+                          if (!v) delete next[String(f.id)];
+                          else next[String(f.id)] = v;
+                          return next;
+                        });
+                      }}
+                    >
+                      <option value="">Default ({movieForm.video_backend || "wan"})</option>
+                      <option value="wan">Wan</option>
+                      <option value="ltx">LTX</option>
+                    </select>
+                  </li>
+                ))}
+            </ul>
+          </div>
+        )}
         <div className="row">
           <button
             type="button"
             disabled={!!busy}
             onClick={() =>
               run("start movie", async () => {
+                const body = { ...movieForm };
+                if (Object.keys(shotBackends).length) {
+                  body.shot_backends = shotBackends;
+                }
                 const j = await api(`/projects/${id}/movies`, {
                   method: "POST",
-                  body: JSON.stringify(movieForm),
+                  body: JSON.stringify(body),
                 });
                 setJob(j);
               })
@@ -1150,6 +1388,7 @@ function ProjectPage() {
                 <div key={s.id} className="shot">
                   <strong>
                     {s.title} ({s.status})
+                    {s.video_backend ? ` · ${s.video_backend}` : job.video_backend ? ` · ${job.video_backend}` : ""}
                   </strong>
                   <ul>
                     {(s.chunks || []).map((c) => (
@@ -1271,6 +1510,245 @@ function ProjectPage() {
           </div>
         )}
       </section>
+      {characterEditorId && charDraft && (() => {
+        const c = (project.characters || []).find((x) => x.id === characterEditorId);
+        if (!c) return null;
+        const refSrc = mediaUrl(charDraft.reference_image_path);
+        const saveChar = async () => {
+          setErr("");
+          try {
+            await api(`/projects/${id}/characters/${c.id}`, {
+              method: "PATCH",
+              body: JSON.stringify({
+                name: charDraft.name,
+                description: charDraft.description,
+                appearance_prompt: charDraft.appearance_prompt,
+                aliases: charDraft.aliases
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+                approved: !!charDraft.approved,
+              }),
+            });
+            await load();
+          } catch (ex) {
+            setErr(String(ex.message || ex));
+          }
+        };
+        return (
+          <div
+            className="kf-editor"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Character editor ${charDraft.name || c.id}`}
+            onClick={() => {
+              if (!busy) {
+                setCharacterEditorId(null);
+                setCharDraft(null);
+                setCharEditInstr("");
+              }
+            }}
+          >
+            <div className="kf-editor-inner" onClick={(e) => e.stopPropagation()}>
+              <header className="kf-editor-head">
+                <div>
+                  <h2>{charDraft.name || "Character"}</h2>
+                  <p className="muted tiny">
+                    Ground-truth look for storyboard stills and keyframes.
+                    {charDraft.auto_detected ? " Auto-detected from story." : ""}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={!!busy}
+                  onClick={() => {
+                    setCharacterEditorId(null);
+                    setCharDraft(null);
+                    setCharEditInstr("");
+                  }}
+                >
+                  Close
+                </button>
+              </header>
+              <div className="kf-editor-fields">
+                <label>
+                  Name
+                  <input
+                    value={charDraft.name}
+                    onChange={(e) =>
+                      setCharDraft((d) => ({ ...d, name: e.target.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  Aliases (comma-separated)
+                  <input
+                    value={charDraft.aliases}
+                    onChange={(e) =>
+                      setCharDraft((d) => ({ ...d, aliases: e.target.value }))
+                    }
+                    placeholder="nicknames used in the story…"
+                  />
+                </label>
+                <label>
+                  Role / description
+                  <textarea
+                    rows={3}
+                    value={charDraft.description}
+                    onChange={(e) =>
+                      setCharDraft((d) => ({ ...d, description: e.target.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  Appearance prompt (ground truth)
+                  <textarea
+                    rows={4}
+                    value={charDraft.appearance_prompt}
+                    onChange={(e) =>
+                      setCharDraft((d) => ({
+                        ...d,
+                        appearance_prompt: e.target.value,
+                      }))
+                    }
+                    placeholder="Age, face, hair, wardrobe, distinctive details…"
+                  />
+                </label>
+                <label className="row" style={{ alignItems: "center", gap: "0.5rem" }}>
+                  <input
+                    type="checkbox"
+                    checked={!!charDraft.approved}
+                    onChange={(e) =>
+                      setCharDraft((d) => ({ ...d, approved: e.target.checked }))
+                    }
+                  />
+                  Approved look
+                </label>
+                <div className="row">
+                  <button type="button" disabled={!!busy} onClick={saveChar}>
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost danger"
+                    disabled={!!busy}
+                    onClick={async () => {
+                      if (!window.confirm(`Delete character “${charDraft.name}”?`)) return;
+                      try {
+                        await api(`/projects/${id}/characters/${c.id}`, {
+                          method: "DELETE",
+                        });
+                        setCharacterEditorId(null);
+                        setCharDraft(null);
+                        await load();
+                      } catch (ex) {
+                        setErr(String(ex.message || ex));
+                      }
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+              <div className="character-ref-block">
+                <h3>Reference still</h3>
+                {refSrc ? (
+                  <div className="media-item">
+                    <img
+                      src={`${refSrc}?t=${encodeURIComponent(charDraft.reference_image_path)}`}
+                      alt=""
+                      onClick={() =>
+                        setLightbox({
+                          frameId: null,
+                          kind: "character",
+                          src: `${refSrc}?t=${encodeURIComponent(charDraft.reference_image_path)}`,
+                          label: charDraft.name,
+                        })
+                      }
+                    />
+                  </div>
+                ) : (
+                  <p className="muted tiny">No reference image yet.</p>
+                )}
+                <div className="row">
+                  <button
+                    type="button"
+                    disabled={!!busy || visualBusy === `char-${c.id}`}
+                    onClick={async () => {
+                      setVisualBusy(`char-${c.id}`);
+                      setErr("");
+                      try {
+                        await saveChar();
+                        await api(`/projects/${id}/characters/${c.id}/reference`, {
+                          method: "POST",
+                          body: JSON.stringify({}),
+                        });
+                        await load();
+                      } catch (ex) {
+                        setErr(String(ex.message || ex));
+                      } finally {
+                        setVisualBusy(null);
+                      }
+                    }}
+                  >
+                    {refSrc ? "Regenerate reference" : "Generate reference"}
+                  </button>
+                  {refSrc && (
+                    <button
+                      type="button"
+                      className="ghost danger"
+                      disabled={!!busy}
+                      onClick={async () => {
+                        try {
+                          await api(`/projects/${id}/characters/${c.id}/reference`, {
+                            method: "DELETE",
+                          });
+                          await load();
+                        } catch (ex) {
+                          setErr(String(ex.message || ex));
+                        }
+                      }}
+                    >
+                      Clear reference
+                    </button>
+                  )}
+                </div>
+                <label>
+                  Edit instruction
+                  <input
+                    value={charEditInstr}
+                    onChange={(e) => setCharEditInstr(e.target.value)}
+                    placeholder="e.g. shorter hair, green jacket…"
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={!!busy || !charEditInstr.trim() || !refSrc}
+                  onClick={async () => {
+                    setVisualBusy(`char-${c.id}`);
+                    setErr("");
+                    try {
+                      await api(`/projects/${id}/characters/${c.id}/reference`, {
+                        method: "POST",
+                        body: JSON.stringify({ instruction: charEditInstr.trim() }),
+                      });
+                      setCharEditInstr("");
+                      await load();
+                    } catch (ex) {
+                      setErr(String(ex.message || ex));
+                    } finally {
+                      setVisualBusy(null);
+                    }
+                  }}
+                >
+                  Apply edit to reference
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {keyframeEditorId && editorDraft && (() => {
         const f = (project.frames || []).find((x) => x.id === keyframeEditorId);
         if (!f) return null;
@@ -1295,7 +1773,7 @@ function ProjectPage() {
                   <h2>Step #{f.position + 1} editor</h2>
                   <p className="muted tiny">
                     LLM image prompts only (Comfy never sees the full story). Middles fill
-                    ≤2s gaps. {f.is_new_shot ? "New shot = own series." : "Continue = edit from prior end."}
+                    ≤2s gaps. {f.is_new_shot ? "New shot = own series." : "Continue = shares prior end as this start (exact image)."}
                   </p>
                 </div>
                 <button

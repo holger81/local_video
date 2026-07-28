@@ -14,6 +14,7 @@ OVERLAY_KEYS = (
     "llama_n_ctx",
     "llama_max_tokens",
     "comfyui_base_url",
+    "default_video_backend",
 )
 
 
@@ -84,6 +85,7 @@ def settings_public(s: Settings) -> dict[str, Any]:
         "llama_n_ctx": s.llama_n_ctx,
         "llama_max_tokens": s.llama_max_tokens,
         "comfyui_base_url": s.comfyui_base_url,
+        "default_video_backend": s.default_video_backend or "wan",
         "overlay_path": str(overlay_path(s.data_dir)),
     }
 

@@ -12,6 +12,13 @@ class CreateProjectIn(BaseModel):
     premise: str = ""
 
 
+class ProjectPatch(BaseModel):
+    title: str | None = None
+    genre: str | None = None
+    premise: str | None = None
+    video_backend: str | None = None
+
+
 @router.get("")
 def list_projects():
     return projects_svc.list_projects()
@@ -28,3 +35,15 @@ def get_project(project_id: int):
         return projects_svc.get_project(project_id)
     except KeyError as e:
         raise HTTPException(404, str(e)) from e
+
+
+@router.patch("/{project_id}")
+def patch_project(project_id: int, body: ProjectPatch):
+    try:
+        return projects_svc.update_project(
+            project_id, **body.model_dump(exclude_unset=True)
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e

@@ -17,6 +17,15 @@ def set_story(project_id: int, story: str, approved: bool = False) -> dict[str, 
         return {"id": p.id, "story": p.story, "story_approved": p.story_approved}
 
 
+async def _maybe_detect_cast(project_id: int) -> None:
+    try:
+        from app.services import characters as char_svc
+
+        await char_svc.detect_characters(project_id, replace_auto=False)
+    except Exception:
+        pass
+
+
 async def generate_story(project_id: int) -> dict[str, Any]:
     with SessionLocal() as db:
         p = db.get(Project, project_id)
@@ -24,7 +33,9 @@ async def generate_story(project_id: int) -> dict[str, Any]:
             raise KeyError(f"project {project_id} not found")
         title, genre, premise = p.title, p.genre, p.premise
     story = await llm.generate_story(title, genre, premise)
-    return set_story(project_id, story, approved=False)
+    result = set_story(project_id, story, approved=False)
+    await _maybe_detect_cast(project_id)
+    return result
 
 
 async def extend_story(project_id: int, instruction: str) -> dict[str, Any]:
@@ -34,14 +45,18 @@ async def extend_story(project_id: int, instruction: str) -> dict[str, Any]:
             raise KeyError(f"project {project_id} not found")
         current = p.story or p.premise
     story = await llm.extend_story(current, instruction)
-    return set_story(project_id, story, approved=False)
+    result = set_story(project_id, story, approved=False)
+    await _maybe_detect_cast(project_id)
+    return result
 
 
-def approve_story(project_id: int) -> dict[str, Any]:
+async def approve_story(project_id: int) -> dict[str, Any]:
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         if not p:
             raise KeyError(f"project {project_id} not found")
         p.story_approved = True
         db.commit()
-        return {"id": p.id, "story_approved": True}
+        payload = {"id": p.id, "story_approved": True}
+    await _maybe_detect_cast(project_id)
+    return payload

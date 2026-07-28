@@ -1,0 +1,20 @@
+workflow: ltx_flf2v.json
+description: >
+  LTX first+last frame → video (primary path for keyframes / movie FLF).
+  Map fields are declared for the registry; node IDs are intentionally empty
+  until a real ComfyUI API export is dropped into api/ltx_flf2v.json.
+  Rendering fails with WorkflowError until that graph exists.
+model_files: []
+# Fill node/input after: Workflow → Export (API) → api/ltx_flf2v.json
+fields: {}
+expected_fields:
+  - positive_prompt
+  - negative_prompt
+  - seed
+  - num_frames
+  - width
+  - height
+  - fps
+  - filename_prefix
+  - start_image
+  - end_image

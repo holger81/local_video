@@ -9,7 +9,7 @@ from arq.connections import RedisSettings
 
 from app.config import get_settings
 from app.db.models import Chunk, RenderJob, SessionLocal, Shot, init_db
-from app.services.comfyui import ComfyUIClient, ComfyUIError
+from app.services.comfyui import ComfyUIError
 from app.services.continuity import compose_prompt
 from app.services.ffmpeg import (
     concat_frame_dirs,
@@ -23,7 +23,6 @@ from app.services.frames import (
     write_kept_frames,
 )
 from app.services.llm import prompt_delta_for_continue
-from app.services.workflows import apply_params
 
 logger = logging.getLogger("movie_agent")
 
@@ -94,10 +93,45 @@ async def _run_chunk(
         shutil.rmtree(raw_dir)
     raw_dir.mkdir(parents=True)
 
+    from app.services.storyboard import _resolve_media_file
+    from app.services.video_backends import get_video_backend, resolve_video_backend
+
+    backend_id = resolve_video_backend(
+        handoff=handoff,
+        shot_backend=getattr(shot, "video_backend", None),
+        job_backend=getattr(job, "video_backend", None),
+    )
+    backend = get_video_backend(backend_id)
+    frame_count = backend.validate_num_frames(frame_count)
+    handoff["video_backend"] = backend_id
+    label = f"movie_s{shot.position}_c{chunk.chunk_index}"
+    filename_prefix = (
+        f"local_video/job{job.id}/shot{shot.position}/chunk{chunk.chunk_index}"
+    )
+    neg = handoff.get("negative_prompt") or job.negative_prompt
+    seed = int(handoff.get("seed") or job.seed)
+    frame_id = int(handoff.get("frame_id") or 0)
+    render_kw = dict(
+        project_id=job.project_id,
+        frame_id=frame_id,
+        prompt=prompt,
+        label=label,
+        num_frames=frame_count,
+        seed=seed,
+        width=job.width,
+        height=job.height,
+        fps=job.fps,
+        dest_dir=chunk_dir,
+        filename_prefix=filename_prefix,
+        negative_prompt=neg,
+        steps=int(handoff.get("steps") or settings.default_steps),
+        cfg=float(handoff.get("cfg") or settings.default_cfg),
+        sampler_name=handoff.get("sampler") or settings.default_sampler,
+        scheduler=handoff.get("scheduler") or settings.default_scheduler,
+    )
+
     # Keyframe-locked FLF2V: start + end images, no rolling I2V freewheel.
     if mode == "flf2v" or handoff.get("end_image_path"):
-        from app.services.storyboard import _resolve_media_file, _run_flf2v_two_pass
-
         start_ref = handoff.get("start_image_path")
         end_ref = handoff.get("end_image_path")
         if not start_ref or not end_ref:
@@ -107,102 +141,54 @@ async def _run_chunk(
         start_path = _resolve_media_file(str(start_ref))
         end_path = _resolve_media_file(str(end_ref))
         _set_chunk(chunk.id, status="running")
-        video_path = await _run_flf2v_two_pass(
-            project_id=job.project_id,
-            frame_id=int(handoff.get("frame_id") or 0),
+        video_path = await backend.render_flf2v(
             start_image=start_path,
             end_image=end_path,
+            project_id=job.project_id,
+            frame_id=frame_id,
             prompt=prompt,
-            label=f"movie_s{shot.position}_c{chunk.chunk_index}",
+            label=label,
             num_frames=frame_count,
-            seed=int(handoff.get("seed") or job.seed),
+            seed=seed,
             width=job.width,
             height=job.height,
             fps=job.fps,
             dest_dir=chunk_dir,
-            filename_prefix=(
-                f"local_video/job{job.id}/shot{shot.position}/chunk{chunk.chunk_index}"
-            ),
-            negative_prompt=handoff.get("negative_prompt") or job.negative_prompt,
+            filename_prefix=filename_prefix,
+            negative_prompt=neg,
         )
         frames = extract_frames_from_video(video_path, raw_dir)
     else:
-        workflow_id = job.t2v_workflow if mode == "new_shot" else job.i2v_workflow
         start_still = handoff.get("start_image_path")
-        # Storyboard still keyframe → animate with I2V even on chunk 0 / new_shot.
-        if mode == "new_shot" and start_still:
-            workflow_id = job.i2v_workflow
-        params = {
-            "positive_prompt": prompt,
-            "negative_prompt": handoff.get("negative_prompt") or job.negative_prompt,
-            "seed": int(handoff.get("seed") or job.seed),
-            "steps": int(handoff.get("steps") or settings.default_steps),
-            "cfg": float(handoff.get("cfg") or settings.default_cfg),
-            "sampler_name": handoff.get("sampler") or settings.default_sampler,
-            "scheduler": handoff.get("scheduler") or settings.default_scheduler,
-            "num_frames": frame_count,
-            "width": job.width,
-            "height": job.height,
-            "fps": job.fps,
-            "filename_prefix": f"local_video/job{job.id}/shot{shot.position}/chunk{chunk.chunk_index}",
-        }
-
-        comfy = ComfyUIClient()
-        uploaded = None
-        if mode == "continue":
-            last = prev_last_frame or (
-                Path(chunk.last_frame_path) if chunk.last_frame_path else None
-            )
-            if last is None or not Path(last).exists():
-                # try previous chunk last frame from handoff
-                lf = handoff.get("last_frame")
-                last = Path(lf) if lf else None
-            if last is None or not last.exists():
-                raise ComfyUIError("continue mode requires last_frame")
-            uploaded = await comfy.upload_image(Path(last))
-        elif mode == "new_shot" and start_still:
-            still_path = Path(start_still)
-            if not still_path.exists():
-                # Resolve container /media paths when worker uses the same MEDIA_DIR.
-                media_root = settings.media_dir.resolve()
-                raw = str(start_still)
-                for marker in ("/media/", "media/"):
-                    idx = raw.find(marker)
-                    if idx >= 0:
-                        still_path = media_root / raw[idx + len(marker) :]
-                        break
-            if not still_path.exists():
-                raise ComfyUIError(f"storyboard still not found: {start_still}")
-            uploaded = await comfy.upload_image(still_path)
-
-        graph = apply_params(workflow_id, params, uploaded_image_name=uploaded)
+        use_i2v = mode == "continue" or (mode == "new_shot" and start_still)
         _set_chunk(chunk.id, status="running")
-        prompt_id = await comfy.queue_prompt(graph)
-        _set_chunk(chunk.id, comfy_prompt_id=prompt_id)
-        history = await comfy.wait_for_prompt(prompt_id)
-        outputs = comfy.collect_outputs(history)
-        if not outputs:
-            raise ComfyUIError("no outputs from ComfyUI")
-
-        video_path = None
-        image_paths: list[Path] = []
-        for out in outputs:
-            dest = chunk_dir / out["filename"]
-            await comfy.download_view(
-                out["filename"], dest, out["subfolder"], out["type"]
-            )
-            if dest.suffix.lower() in {".mp4", ".webm", ".gif", ".mkv", ".mov"}:
-                video_path = dest
-            elif dest.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
-                image_paths.append(dest)
-
-        if video_path:
-            frames = extract_frames_from_video(video_path, raw_dir)
-        elif image_paths:
-            # single image treated as 1-frame (still); copy
-            frames = write_kept_frames(image_paths, raw_dir)
+        if use_i2v:
+            if mode == "continue":
+                last = prev_last_frame or (
+                    Path(chunk.last_frame_path) if chunk.last_frame_path else None
+                )
+                if last is None or not Path(last).exists():
+                    lf = handoff.get("last_frame")
+                    last = Path(lf) if lf else None
+                if last is None or not last.exists():
+                    raise ComfyUIError("continue mode requires last_frame")
+                start_path = Path(last)
+            else:
+                start_path = Path(start_still)
+                if not start_path.exists():
+                    media_root = settings.media_dir.resolve()
+                    raw = str(start_still)
+                    for marker in ("/media/", "media/"):
+                        idx = raw.find(marker)
+                        if idx >= 0:
+                            start_path = media_root / raw[idx + len(marker) :]
+                            break
+                if not start_path.exists():
+                    raise ComfyUIError(f"storyboard still not found: {start_still}")
+            video_path = await backend.render_i2v(start_image=start_path, **render_kw)
         else:
-            raise ComfyUIError("unsupported output types")
+            video_path = await backend.render_t2v(**render_kw)
+        frames = extract_frames_from_video(video_path, raw_dir)
 
     # Save overlap tail from full raw frames (new_shot/flf2v: keep a small tail for QA only)
     if mode == "continue":
@@ -279,8 +265,10 @@ async def run_movie_job(ctx: dict, job_id: int) -> str:
             "width": job.width,
             "height": job.height,
             "fps": job.fps,
+            "video_backend": getattr(job, "video_backend", None) or "wan",
             "t2v_workflow": job.t2v_workflow,
             "i2v_workflow": job.i2v_workflow,
+            "flf2v_workflow": getattr(job, "flf2v_workflow", None),
             "negative_prompt": job.negative_prompt,
             "seed": job.seed,
             "format": job.format,
@@ -304,9 +292,18 @@ async def run_movie_job(ctx: dict, job_id: int) -> str:
                 if not shot:
                     continue
                 shot_pos = shot.position
+                shot_backend = getattr(shot, "video_backend", None)
                 # detach chunk ids
                 chunk_ids = [c.id for c in shot.chunks]
-            shot = type("ShotView", (), {"id": shot_id, "position": shot_pos})()
+            shot = type(
+                "ShotView",
+                (),
+                {
+                    "id": shot_id,
+                    "position": shot_pos,
+                    "video_backend": shot_backend,
+                },
+            )()
             flag = _job_cancelled_or_paused(job_id)
             if flag:
                 return flag

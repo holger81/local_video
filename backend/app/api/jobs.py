@@ -16,8 +16,12 @@ class StartMovieIn(BaseModel):
     width: int | None = None
     height: int | None = None
     fps: int | None = None
-    t2v_workflow: str = "wan22_t2v"
-    i2v_workflow: str = "wan22_i2v"
+    video_backend: str | None = None
+    # frame_id or shot position → wan|ltx
+    shot_backends: dict[str, str] | None = None
+    t2v_workflow: str | None = None
+    i2v_workflow: str | None = None
+    flf2v_workflow: str | None = None
     prompt_base: str = ""
     negative_prompt: str = ""
     seed: int = 42

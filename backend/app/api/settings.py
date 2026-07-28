@@ -17,6 +17,7 @@ class SettingsUpdate(BaseModel):
     llama_n_ctx: int | None = Field(default=None, ge=0)
     llama_max_tokens: int | None = Field(default=None, ge=64, le=128000)
     comfyui_base_url: str | None = None
+    default_video_backend: str | None = None
 
 
 @router.get("/settings")
@@ -43,8 +44,29 @@ async def update_app_settings(body: SettingsUpdate):
         except HTTPException:
             pass
 
+    if "default_video_backend" in updates:
+        from app.services.video_backends import normalize_backend_id
+
+        try:
+            updates["default_video_backend"] = normalize_backend_id(
+                updates["default_video_backend"]
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
     rs.save_overlay(updates)
     return rs.settings_public(get_settings())
+
+
+@router.get("/video-backends")
+def list_video_backends():
+    from app.services.video_backends import list_video_backends as list_backends
+
+    settings = get_settings()
+    return {
+        "default": settings.default_video_backend or "wan",
+        "backends": list_backends(),
+    }
 
 
 @router.get("/llm/models")

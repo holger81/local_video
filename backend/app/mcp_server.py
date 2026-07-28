@@ -172,6 +172,7 @@ async def generate_between_stills(
     frame_id: int,
     workflow_id: str | None = None,
     num_frames: int = 33,
+    video_backend: str | None = None,
 ) -> dict:
     """Generate a clip from this frame's end into the next frame's start (FLF2V)."""
     return await sb_svc.generate_between_stills(
@@ -179,6 +180,7 @@ async def generate_between_stills(
         frame_id,
         workflow_id=workflow_id,
         num_frames=num_frames,
+        video_backend=video_backend,
     )
 
 
@@ -188,6 +190,7 @@ async def create_all_between_stills(
     workflow_id: str | None = None,
     skip_existing: bool = True,
     num_frames: int = 33,
+    video_backend: str | None = None,
 ) -> dict:
     """Generate between-stills clips for consecutive still pairs (sequential)."""
     return await sb_svc.generate_all_between_stills(
@@ -195,6 +198,7 @@ async def create_all_between_stills(
         workflow_id=workflow_id,
         skip_existing=skip_existing,
         num_frames=num_frames,
+        video_backend=video_backend,
     )
 
 
@@ -222,10 +226,15 @@ async def generate_step_clips(
     frame_id: int,
     num_frames: int = 33,
     workflow_id: str | None = None,
+    video_backend: str | None = None,
 ) -> dict:
     """FLF2V between consecutive keyframes; saves concatenated preview."""
     return await sb_svc.generate_step_clips(
-        project_id, frame_id, num_frames=num_frames, workflow_id=workflow_id
+        project_id,
+        frame_id,
+        num_frames=num_frames,
+        workflow_id=workflow_id,
+        video_backend=video_backend,
     )
 
 
@@ -234,10 +243,16 @@ async def create_all_step_clips(
     project_id: int,
     skip_existing: bool = True,
     num_frames: int = 33,
+    video_backend: str | None = None,
+    workflow_id: str | None = None,
 ) -> dict:
     """Create within-step clips for every frame that has keyframes."""
     return await sb_svc.generate_all_step_clips(
-        project_id, skip_existing=skip_existing, num_frames=num_frames
+        project_id,
+        skip_existing=skip_existing,
+        num_frames=num_frames,
+        video_backend=video_backend,
+        workflow_id=workflow_id,
     )
 
 

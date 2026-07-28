@@ -26,6 +26,7 @@ class VisualIn(BaseModel):
     kind: str = "still"
     workflow_id: str | None = None
     num_frames: int = 33
+    video_backend: str | None = None
 
 
 class EditStillIn(BaseModel):
@@ -51,12 +52,14 @@ class AllStillsIn(BaseModel):
 class BetweenStillsIn(BaseModel):
     workflow_id: str | None = None
     num_frames: int = 33
+    video_backend: str | None = None
 
 
 class AllBetweenStillsIn(BaseModel):
     workflow_id: str | None = None
     skip_existing: bool = True
     num_frames: int = 33
+    video_backend: str | None = None
 
 
 class KeyframesIn(BaseModel):
@@ -67,6 +70,7 @@ class StepClipsIn(BaseModel):
     workflow_id: str | None = None
     num_frames: int = 33
     skip_existing: bool = True
+    video_backend: str | None = None
 
 
 @router.post("/propose")
@@ -130,7 +134,8 @@ async def create_all_step_clips(project_id: int, body: StepClipsIn | None = None
             project_id,
             skip_existing=body.skip_existing,
             num_frames=body.num_frames,
-            # workflow passed via generate_step_clips default
+            workflow_id=body.workflow_id,
+            video_backend=body.video_backend,
         )
     except (KeyError, ValueError) as e:
         raise HTTPException(400, str(e)) from e
@@ -147,6 +152,7 @@ async def create_all_between_stills(project_id: int, body: AllBetweenStillsIn | 
             workflow_id=body.workflow_id,
             skip_existing=body.skip_existing,
             num_frames=body.num_frames,
+            video_backend=body.video_backend,
         )
     except (KeyError, ValueError) as e:
         raise HTTPException(400, str(e)) from e
@@ -164,6 +170,7 @@ async def generate_visual(project_id: int, frame_id: int, body: VisualIn | None 
             kind=body.kind,
             workflow_id=body.workflow_id,
             num_frames=body.num_frames,
+            video_backend=body.video_backend,
         )
     except Exception as e:
         raise HTTPException(500, str(e)) from e
@@ -240,6 +247,7 @@ async def frame_step_clips(project_id: int, frame_id: int, body: StepClipsIn | N
             frame_id,
             workflow_id=body.workflow_id,
             num_frames=body.num_frames,
+            video_backend=body.video_backend,
         )
     except KeyError as e:
         raise HTTPException(404, str(e)) from e
@@ -258,6 +266,7 @@ async def between_stills(project_id: int, frame_id: int, body: BetweenStillsIn |
             frame_id,
             workflow_id=body.workflow_id,
             num_frames=body.num_frames,
+            video_backend=body.video_backend,
         )
     except KeyError as e:
         raise HTTPException(404, str(e)) from e

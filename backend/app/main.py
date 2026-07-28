@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import jobs, projects, story, storyboard
+from app.api import characters, jobs, projects, story, storyboard
 from app.api import settings as settings_api
 from app.config import get_settings
 from app.db.models import init_db
@@ -24,6 +24,7 @@ app.add_middleware(
 app.include_router(projects.router, prefix="/api")
 app.include_router(story.router, prefix="/api")
 app.include_router(storyboard.router, prefix="/api")
+app.include_router(characters.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
 app.include_router(settings_api.router, prefix="/api")
 
