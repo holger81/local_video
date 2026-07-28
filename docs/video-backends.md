@@ -39,16 +39,17 @@ Prefer a hard cut (`is_new_shot`) when switching Wan ↔ LTX. Continuous FLF acr
 
 For strong character/prop/location identity, use workflow id **`ltx_ic_lora`** ([model card](https://huggingface.co/Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients)):
 
-- Control: composite **reference sheet** → repeated to ≥121 frames → `LTXVAddGuide` + Ingredients LoRA
+- Control: composite **reference sheet** → repeated to `num_frames` → `LTXVAddGuide` + Ingredients LoRA
 - Prompt: `### Reference Sheet Description` … / `### Target Description` …
-- Bucket: **768×448**, **121** frames, **24** fps (best results)
-- Not yet the default movie renderer — packaged for Comfy import / direct workflow runs; studio sheet-builder + agent routing TBD
+- Size/duration: **`width` / `height` / `fps` / `num_frames`** are flexible. `LtxBackend.render_ic_lora` also accepts `duration_sec` and snaps frames to `8n+1` (max 121).
+- Quality bucket: **768×448**, **121** frames, **24** fps. Preview example: **512×288**, `duration_sec=2` @ 24fps → 49 frames.
+- Not yet the default movie renderer — use `render_ic_lora` / Comfy import for sheet-conditioned clips; studio sheet-builder + agent routing TBD
 
 ## Workflow IDs
 
 | Backend | T2V | I2V | FLF2V | Extra |
 |---------|-----|-----|-------|-------|
 | wan | `wan22_t2v` | `wan22_i2v` | `wan22_flf2v` (two-pass) | |
-| ltx | `ltx_t2v` | `ltx_i2v` | `ltx_flf2v` | `ltx_ic_lora` (sheet) |
+| ltx | `ltx_t2v` | `ltx_i2v` | `ltx_flf2v` | `ltx_ic_lora` (sheet; flexible W/H/duration) |
 
-See `GET /api/video-backends` for readiness (`flf2v_ready`) and `comfyui_workflows/README.md` for packaging.
+See `GET /api/video-backends` for readiness (`flf2v_ready`, `ic_lora_ready`) and `comfyui_workflows/README.md` for packaging.

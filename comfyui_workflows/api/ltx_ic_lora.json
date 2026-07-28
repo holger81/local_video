@@ -10,7 +10,10 @@
         "9003",
         0
       ],
-      "frame_rate": 24
+      "frame_rate": [
+        "9012",
+        0
+      ]
     }
   },
   "106": {
@@ -58,13 +61,10 @@
         "112",
         0
       ],
-      "frame_rate": 24.0
-    }
-  },
-  "114": {
-    "class_type": "PrimitiveInt",
-    "inputs": {
-      "value": 25
+      "frame_rate": [
+        "9012",
+        0
+      ]
     }
   },
   "115": {
@@ -111,28 +111,6 @@
       ]
     }
   },
-  "123": {
-    "class_type": "ComfyMathExpression",
-    "inputs": {
-      "values.a": [
-        "114",
-        0
-      ],
-      "expression": "a"
-    }
-  },
-  "113": {
-    "class_type": "PrimitiveInt",
-    "inputs": {
-      "value": 1280
-    }
-  },
-  "98": {
-    "class_type": "PrimitiveInt",
-    "inputs": {
-      "value": 704
-    }
-  },
   "112": {
     "class_type": "CLIPTextEncode",
     "inputs": {
@@ -154,7 +132,10 @@
         "107",
         0
       ],
-      "fps": 24.0
+      "fps": [
+        "9012",
+        0
+      ]
     }
   },
   "105": {
@@ -263,12 +244,6 @@
       ]
     }
   },
-  "212": {
-    "class_type": "PrimitiveBoolean",
-    "inputs": {
-      "value": false
-    }
-  },
   "704": {
     "class_type": "KSampler",
     "inputs": {
@@ -299,12 +274,6 @@
   "710": {
     "class_type": "GetImageSize",
     "inputs": {}
-  },
-  "711": {
-    "class_type": "PrimitiveBoolean",
-    "inputs": {
-      "value": true
-    }
   },
   "9001": {
     "class_type": "LoadImage",
@@ -397,6 +366,12 @@
     "class_type": "PrimitiveInt",
     "inputs": {
       "value": 448
+    }
+  },
+  "9012": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 24
     }
   }
 }

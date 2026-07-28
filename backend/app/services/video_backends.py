@@ -337,6 +337,7 @@ class LtxBackend:
             "t2v": "ltx_t2v",
             "i2v": "ltx_i2v",
             "flf2v": "ltx_flf2v",
+            "ic_lora": "ltx_ic_lora",
         }
 
     def validate_num_frames(self, n: int) -> int:
@@ -346,6 +347,87 @@ class LtxBackend:
 
     def flf2v_ready(self) -> bool:
         return _workflow_exists(self.workflows()["flf2v"])
+
+    def ic_lora_ready(self) -> bool:
+        return _workflow_exists(self.workflows()["ic_lora"])
+
+    async def render_ic_lora(
+        self,
+        *,
+        project_id: int,
+        frame_id: int,
+        reference_sheet: Path,
+        prompt: str,
+        label: str = "ic_lora",
+        num_frames: int | None = None,
+        duration_sec: float | None = None,
+        seed: int = 42,
+        width: int | None = None,
+        height: int | None = None,
+        fps: int | None = None,
+        start_image: Path | None = None,
+        negative_prompt: str | None = None,
+        dest_dir: Path | None = None,
+        filename_prefix: str | None = None,
+    ) -> Path:
+        """Reference-sheet Ingredients clip; width/height/duration are caller-flexible.
+
+        Prefer the trained bucket (768×448, 121 frames, 24fps) for quality. For quick
+        previews pass smaller size and shorter duration_sec (snapped to 8n+1 frames).
+        """
+        from app.services.continuity import snap_frame_count
+
+        settings = get_settings()
+        if not self.ic_lora_ready():
+            raise WorkflowError(
+                "LTX IC-LoRA workflow is not installed. Add api/ltx_ic_lora.json "
+                "(see docs/video-backends.md)."
+            )
+        fps_v = int(fps if fps is not None else settings.default_fps or 24)
+        if num_frames is None:
+            if duration_sec is not None and float(duration_sec) > 0:
+                # (duration * fps) + 1 matches EmptyLTXVLatentVideo length convention.
+                raw = int(round(float(duration_sec) * fps_v)) + 1
+                num_frames = snap_frame_count(
+                    raw, minimum=9, maximum=121, step=8
+                )
+            else:
+                num_frames = 121
+        num_frames = self.validate_num_frames(num_frames)
+        width_v = int(width if width is not None else 768)
+        height_v = int(height if height is not None else 448)
+        comfy = ComfyUIClient()
+        uploads: dict[str, str] = {
+            "reference_sheet": await comfy.upload_image(reference_sheet),
+        }
+        if start_image is not None:
+            uploads["start_image"] = await comfy.upload_image(start_image)
+        else:
+            # Graph still has a LoadImage for start; reuse sheet when bypassing first frame.
+            uploads["start_image"] = uploads["reference_sheet"]
+        params = {
+            "positive_prompt": prompt,
+            "negative_prompt": negative_prompt
+            or (
+                "worst quality, inconsistent motion, blurry, jittery, distorted"
+            ),
+            "seed": seed,
+            "num_frames": num_frames,
+            "width": width_v,
+            "height": height_v,
+            "fps": fps_v,
+            "filename_prefix": filename_prefix
+            or f"local_video/p{project_id}_f{frame_id}_{label}",
+        }
+        media = dest_dir or (
+            settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+        )
+        return await _run_single_graph(
+            workflow_id=self.workflows()["ic_lora"],
+            params=params,
+            uploaded_images=uploads,
+            dest_dir=media,
+        )
 
     async def render_flf2v(
         self,
@@ -512,13 +594,14 @@ def list_video_backends() -> list[dict[str, Any]]:
     out = []
     for bid, backend in _BACKENDS.items():
         wfs = backend.workflows()
-        out.append(
-            {
-                "id": bid,
-                "workflows": wfs,
-                "flf2v_ready": backend.flf2v_ready(),
-                "t2v_ready": _workflow_exists(wfs["t2v"]),
-                "i2v_ready": _workflow_exists(wfs["i2v"]),
-            }
-        )
+        entry: dict[str, Any] = {
+            "id": bid,
+            "workflows": wfs,
+            "flf2v_ready": backend.flf2v_ready(),
+            "t2v_ready": _workflow_exists(wfs["t2v"]),
+            "i2v_ready": _workflow_exists(wfs["i2v"]),
+        }
+        if "ic_lora" in wfs:
+            entry["ic_lora_ready"] = _workflow_exists(wfs["ic_lora"])
+        out.append(entry)
     return out

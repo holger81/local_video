@@ -1,9 +1,12 @@
 workflow: ltx_ic_lora.json
 description: >
-  LTX 2.3 IC-LoRA Ingredients — reference-sheet conditioned video (Comfy-Org template).
-  Prompt must use ### Reference Sheet Description / ### Target Description.
-  Sheet image is resized/padded and repeated to num_frames (use 121 @ 24fps).
-  bypass_first_frame defaults on; optional start_image when bypass is disabled in graph.
+  LTX 2.3 IC-LoRA Ingredients — reference-sheet conditioned video.
+  Prompt: ### Reference Sheet Description / ### Target Description.
+  Width, height, fps, and num_frames are fully parameterized (preview-friendly:
+  e.g. 512x288, 49 frames @ 24fps ≈ 2s). Trained bucket is 768x448 / 121 / 24 —
+  other sizes work but are out-of-distribution. Frames should be 8n+1.
+  Sheet is resized/padded and RepeatImageBatch'd to num_frames.
+  bypass_first_frame defaults on.
 model_files:
   - models/checkpoints/ltx-2.3-22b-distilled-fp8.safetensors
   - models/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors
@@ -15,6 +18,7 @@ fields:
   num_frames: {node: "9003", input: value}
   width: {node: "9010", input: value}
   height: {node: "9011", input: value}
+  fps: {node: "9012", input: value}
   filename_prefix: {node: "9007", input: filename_prefix}
   reference_sheet: {node: "9001", input: image, upload: true}
   start_image: {node: "9005", input: image, upload: true}

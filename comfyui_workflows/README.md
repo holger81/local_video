@@ -48,10 +48,12 @@ Comfy-Org template packaged as `import/ltx_ic_lora.json` + `api/ltx_ic_lora.json
 
 1. A **reference sheet** image (character close-ups + turnaround, props, location; black background, no text)
 2. Prompt labeled `### Reference Sheet Description` / `### Target Description` (or `Reference sheet:` / `Generated video:`)
-3. Trained bucket: **768×448**, **121 frames**, **24 fps** (sheet is `RepeatImageBatch`’d to `num_frames`)
+3. Parameterized **`width` / `height` / `fps` / `num_frames`** (or `duration_sec` via `LtxBackend.render_ic_lora`, snapped to `8n+1`)
 4. LoRA `ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors` via `GetICLoRAParameters` → `LTXVAddGuide`
 
-`bypass_first_frame` defaults **on** in the API graph (matches the subgraph UI). Studio movie/agent does not auto-route here yet — use the workflow map / Comfy import for sheet-conditioned clips; cast-sheet builder integration is next.
+Trained bucket (best quality): **768×448**, **121** frames, **24** fps. For quick previews use e.g. **512×288**, **~2s** (`duration_sec=2` → 49 frames @ 24fps). Other sizes are out-of-distribution but supported.
+
+`bypass_first_frame` defaults **on** in the API graph. Studio movie/agent does not auto-route here yet — call `LtxBackend.render_ic_lora(...)` or the workflow map directly; cast-sheet builder integration is next.
 
 Official Comfy-Org UI blueprints (optional inspect / customize) live in `import/ltx_*.json`.
 
