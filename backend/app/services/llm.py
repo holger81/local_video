@@ -106,6 +106,62 @@ async def extend_story(story: str, instruction: str) -> str:
     return await chat(system, user)
 
 
+_CLOTHING_LINE_RE = re.compile(
+    r"(?i)\b("
+    r"space\s*suit|spacesuit|astronaut|eva\s*suit|helmet|wardrobe|outfit|"
+    r"dress|shirt|shorts|pants|jacket|coat|gloves|boots|sneakers|shoes|"
+    r"clothing|clothes|garment|suit\b"
+    r")\b"
+)
+
+
+def face_body_lock(appearance: str, *, has_wardrobe: bool) -> str:
+    """Keep face/body identity; drop clothing notes when an outfit is selected.
+
+    Character appearance often accumulates outfit edit history (e.g. spacesuit)
+    that must not override a beat-specific wardrobe.
+    """
+    text = (appearance or "").strip()
+    if not text:
+        return ""
+    if not has_wardrobe:
+        return text
+    if "Applied edits:" in text:
+        text = text.split("Applied edits:", 1)[0].strip()
+    kept: list[str] = []
+    for raw in text.replace(";", "\n").splitlines():
+        line = raw.strip(" -•\t")
+        if not line:
+            continue
+        if _CLOTHING_LINE_RE.search(line):
+            # Keep mixed lines only when they clearly describe face/hair/age.
+            if not re.search(r"(?i)\b(face|hair|eye|smile|skin|age|years?\s*old)\b", line):
+                continue
+            line = _CLOTHING_LINE_RE.sub("", line)
+            line = re.sub(r"\s{2,}", " ", line).strip(" ,.;-")
+            if not line:
+                continue
+        kept.append(line)
+    return " ".join(kept).strip()
+
+
+def wardrobe_conflict_negatives(appearance: str, wardrobe: str) -> str:
+    """Negative tokens for clothing mentioned in appearance but not in wardrobe."""
+    app = (appearance or "").lower()
+    ward = (wardrobe or "").lower()
+    if not ward:
+        return ""
+    bits: list[str] = []
+    if re.search(r"(?i)space\s*suit|spacesuit|astronaut|eva\s*suit", app) and not re.search(
+        r"(?i)space\s*suit|spacesuit|astronaut|eva\s*suit", ward
+    ):
+        bits.append(
+            "astronaut suit, spacesuit, space suit, EVA suit, helmet, NASA suit, "
+            "pressure suit, white space suit"
+        )
+    return ", ".join(bits)
+
+
 def format_cast_sheet(characters: list[dict[str, Any]]) -> str:
     """Compact ground-truth cast block for image/storyboard prompts."""
     lines: list[str] = []
@@ -113,17 +169,21 @@ def format_cast_sheet(characters: list[dict[str, Any]]) -> str:
         name = (c.get("name") or "").strip()
         if not name:
             continue
-        look = (c.get("appearance_prompt") or c.get("description") or "").strip()
+        look_raw = (c.get("appearance_prompt") or c.get("description") or "").strip()
         wardrobe = (c.get("wardrobe_prompt") or "").strip()
         outfit_name = (c.get("outfit_name") or "").strip()
+        look = face_body_lock(look_raw, has_wardrobe=bool(wardrobe))
         bits: list[str] = []
         if wardrobe:
             label = f"Wardrobe ({outfit_name})" if outfit_name else "Wardrobe"
-            bits.append(f"{label}: {wardrobe} (this clothing overrides any other outfit)")
+            bits.append(
+                f"{label}: {wardrobe} "
+                "(MUST wear exactly this clothing; ignore any other outfit notes)"
+            )
             if look:
-                bits.append(f"Face/body: {look}")
-        elif look:
-            bits.append(look)
+                bits.append(f"Face/body only: {look}")
+        elif look_raw:
+            bits.append(look_raw)
         if bits:
             lines.append(f"- {name}: " + ". ".join(bits))
         else:

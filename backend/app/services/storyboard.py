@@ -123,6 +123,35 @@ def _cast_ref_sheet_path(project_id: int, frame_id: int) -> str | None:
     return str(path) if path.is_file() else None
 
 
+def generate_cast_ref_sheet(project_id: int, frame_id: int) -> dict[str, Any]:
+    """Build (or refresh) the labeled cast/outfit contact sheet for a beat."""
+    from app.services.characters import cast_reference_for_frame
+
+    settings = get_settings()
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+
+    media = (
+        settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+    )
+    media.mkdir(parents=True, exist_ok=True)
+    dest = media / "cast_ref_sheet.png"
+    sheet = cast_reference_for_frame(project_id, frame_id, dest=dest)
+    if sheet is None:
+        raise ValueError(
+            "no character/outfit reference images for this beat's cast — "
+            "generate outfit or character refs first"
+        )
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        assert f
+        payload = _frame_dict(f)
+    payload["cast_ref_sheet_path"] = str(sheet)
+    return payload
+
+
 def _frame_dict(f: StoryboardFrame) -> dict[str, Any]:
     keyframes = _keyframes_list(f)
     return {
@@ -581,7 +610,10 @@ async def generate_frame_visual(
             settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
         )
         media.mkdir(parents=True, exist_ok=True)
-        # Composite all cast/outfit refs into one sheet when 2+ people are locked.
+        # Composite all cast/outfit refs into one sheet when refs exist.
+        from app.services.characters import cast_entries_for_sheet
+        from app.services.llm import wardrobe_conflict_negatives
+
         try:
             ref = cast_reference_for_frame(
                 project_id,
@@ -590,15 +622,54 @@ async def generate_frame_visual(
             )
         except KeyError:
             ref = None
+        wardrobe_neg = ""
+        panel_lines: list[str] = []
+        try:
+            with SessionLocal() as db:
+                fr = db.get(StoryboardFrame, frame_id)
+                selection = list(getattr(fr, "cast", None) or []) if fr else []
+            entries = cast_entries_for_sheet(
+                project_id, cast_selection=selection if selection else None
+            )
+            for e in entries:
+                name = (e.get("name") or "").strip() or "Character"
+                oname = (e.get("outfit_name") or "").strip()
+                ward = (e.get("wardrobe_prompt") or "").strip()
+                if ward:
+                    label = f"{name} / {oname}" if oname else name
+                    panel_lines.append(f"{label}: {ward}")
+                wardrobe_neg = ", ".join(
+                    x
+                    for x in (
+                        wardrobe_neg,
+                        wardrobe_conflict_negatives(
+                            e.get("appearance_prompt") or "",
+                            ward,
+                        ),
+                    )
+                    if x
+                )
+        except KeyError:
+            pass
+        if wardrobe_neg:
+            neg = f"{neg}, {wardrobe_neg}"
         if ref is not None:
             uploaded = await comfy.upload_image(ref)
+            wardrobe_block = (
+                " Required clothing from each labeled panel — match exactly, "
+                "do not substitute spacesuits or other outfits: "
+                + "; ".join(panel_lines)
+                + "."
+                if panel_lines
+                else ""
+            )
             edit_prompt = build_edit_prompt(
                 instruction=(
                     "The reference is a cast contact sheet: each labeled panel is one "
-                    "person in their wardrobe for this beat. Compose ONE continuous "
-                    "cinematic still of the beat using these exact people and outfits — "
-                    "not a collage, grid, or multi-panel layout. "
-                    f"Beat: {prompt}"
+                    "person already dressed for this beat. Compose ONE continuous "
+                    "cinematic still of the beat using these exact people and the "
+                    "clothing shown in their panels — not a collage or multi-panel "
+                    f"layout.{wardrobe_block} Scene beat: {_truncate(frame_prompt, 280)}"
                 ),
                 frame_prompt=frame_prompt,
                 cast_sheet=cast_sheet,
@@ -766,21 +837,24 @@ def _resolve_media_file(stored: str) -> Path:
 def build_edit_prompt(
     *, instruction: str, frame_prompt: str = "", cast_sheet: str = ""
 ) -> str:
-    instr = _truncate((instruction or "").strip(), 500)
+    instr = _truncate((instruction or "").strip(), 900)
     if not instr:
         raise ValueError("edit instruction is required")
     beat = _truncate(frame_prompt or "", 220)
     parts = [
         "Edit this cinematic still photograph.",
         f"Instruction: {instr}.",
-        "Preserve composition, camera angle, character identity, wardrobe style, "
-        "and setting unless the instruction explicitly changes them.",
+        "Preserve faces and character identity. Match wardrobe to the cast lock / "
+        "contact-sheet panels when provided — do not keep a different outfit from "
+        "story titles, premises, or old appearance notes.",
         "Output one continuous camera shot only — no collage, panels, or grid.",
     ]
     cast = (cast_sheet or "").strip()
     if cast:
         parts.append(f"{cast}")
-        parts.append("Keep faces, hair, and wardrobe locked to the cast look.")
+        parts.append(
+            "Wardrobe in the cast lock is mandatory; ignore contradictory clothing."
+        )
     if beat:
         parts.append(f"Original beat context: {beat}.")
     return " ".join(parts)
@@ -1223,13 +1297,53 @@ async def _render_keyframe_image(
         )
         if cast_ref is not None:
             uploaded = await comfy.upload_image(cast_ref)
+            from app.services.characters import cast_entries_for_sheet
+            from app.services.llm import wardrobe_conflict_negatives
+
+            wardrobe_neg = ""
+            panel_lines: list[str] = []
+            try:
+                with SessionLocal() as db:
+                    fr = db.get(StoryboardFrame, frame_id)
+                    selection = list(getattr(fr, "cast", None) or []) if fr else []
+                for e in cast_entries_for_sheet(
+                    project_id, cast_selection=selection if selection else None
+                ):
+                    name = (e.get("name") or "").strip() or "Character"
+                    oname = (e.get("outfit_name") or "").strip()
+                    ward = (e.get("wardrobe_prompt") or "").strip()
+                    if ward:
+                        label = f"{name} / {oname}" if oname else name
+                        panel_lines.append(f"{label}: {ward}")
+                    wardrobe_neg = ", ".join(
+                        x
+                        for x in (
+                            wardrobe_neg,
+                            wardrobe_conflict_negatives(
+                                e.get("appearance_prompt") or "",
+                                ward,
+                            ),
+                        )
+                        if x
+                    )
+            except KeyError:
+                pass
+            if wardrobe_neg:
+                neg = f"{neg}, {wardrobe_neg}"
+            wardrobe_block = (
+                " Required clothing from each labeled panel — match exactly: "
+                + "; ".join(panel_lines)
+                + "."
+                if panel_lines
+                else ""
+            )
             edit_prompt = build_edit_prompt(
                 instruction=(
                     "The reference is a cast contact sheet: each labeled panel is one "
                     "person in their wardrobe for this beat. Compose ONE continuous "
                     "cinematic still matching the instruction using these exact people "
-                    "and outfits — not a collage, grid, or multi-panel layout. "
-                    f"Instruction: {prompt}"
+                    "and outfits — not a collage, grid, or multi-panel layout."
+                    f"{wardrobe_block} Instruction: {prompt}"
                 ),
                 frame_prompt=prompt,
                 cast_sheet=cast_sheet,

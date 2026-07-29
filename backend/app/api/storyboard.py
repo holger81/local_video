@@ -279,6 +279,16 @@ async def between_stills(project_id: int, frame_id: int, body: BetweenStillsIn |
         raise HTTPException(500, str(e)) from e
 
 
+@router.post("/frames/{frame_id}/cast-sheet")
+def generate_cast_sheet(project_id: int, frame_id: int):
+    try:
+        return sb_svc.generate_cast_ref_sheet(project_id, frame_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
 @router.post("/frames/{frame_id}/still/edit")
 async def edit_still(project_id: int, frame_id: int, body: EditStillIn):
     try:

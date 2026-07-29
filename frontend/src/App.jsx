@@ -2152,33 +2152,66 @@ function ProjectPage() {
                   )}
                   {(() => {
                     const sheetSrc = mediaUrl(f.cast_ref_sheet_path);
-                    if (!sheetSrc) {
-                      return (
-                        <p className="muted tiny">
-                          Cast contact sheet appears here after you generate a hero still
-                          (when 1+ character/outfit refs exist).
-                        </p>
-                      );
-                    }
                     return (
                       <div className="cast-ref-sheet">
-                        <p className="muted tiny">
-                          Cast contact sheet used for the last hero still:
-                        </p>
-                        <div className="media-item">
-                          <img
-                            src={`${sheetSrc}?t=${encodeURIComponent(f.cast_ref_sheet_path)}`}
-                            alt="Cast contact sheet"
-                            onClick={() =>
-                              setLightbox({
-                                frameId: f.id,
-                                kind: "cast_sheet",
-                                src: `${sheetSrc}?t=${encodeURIComponent(f.cast_ref_sheet_path)}`,
-                                label: `Step ${f.position + 1} cast sheet`,
-                              })
+                        <div className="row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+                          <button
+                            type="button"
+                            className="ghost"
+                            disabled={
+                              !!busy ||
+                              (visualBusy?.frameId === f.id &&
+                                visualBusy.kind === "cast_sheet")
                             }
-                          />
+                            onClick={async () => {
+                              setErr("");
+                              setBusy(`cast sheet ${f.id}`);
+                              setVisualBusy({ frameId: f.id, kind: "cast_sheet" });
+                              try {
+                                await patchEditorFields();
+                                await api(
+                                  `/projects/${id}/storyboard/frames/${f.id}/cast-sheet`,
+                                  { method: "POST", body: "{}" }
+                                );
+                                await load();
+                              } catch (ex) {
+                                setErr(String(ex.message || ex));
+                              } finally {
+                                setVisualBusy(null);
+                                setBusy("");
+                              }
+                            }}
+                          >
+                            {sheetSrc ? "Refresh cast sheet" : "Generate cast sheet"}
+                          </button>
                         </div>
+                        {sheetSrc ? (
+                          <>
+                            <p className="muted tiny">
+                              Labeled contact sheet from this beat&apos;s cast/outfit
+                              refs (used when generating the hero still).
+                            </p>
+                            <div className="media-item">
+                              <img
+                                src={`${sheetSrc}?t=${encodeURIComponent(f.cast_ref_sheet_path)}`}
+                                alt="Cast contact sheet"
+                                onClick={() =>
+                                  setLightbox({
+                                    frameId: f.id,
+                                    kind: "cast_sheet",
+                                    src: `${sheetSrc}?t=${encodeURIComponent(f.cast_ref_sheet_path)}`,
+                                    label: `Step ${f.position + 1} cast sheet`,
+                                  })
+                                }
+                              />
+                            </div>
+                          </>
+                        ) : (
+                          <p className="muted tiny">
+                            Builds a labeled contact sheet from character/outfit
+                            reference images for the selected cast.
+                          </p>
+                        )}
                       </div>
                     );
                   })()}
