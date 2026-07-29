@@ -117,11 +117,13 @@ def format_cast_sheet(characters: list[dict[str, Any]]) -> str:
         wardrobe = (c.get("wardrobe_prompt") or "").strip()
         outfit_name = (c.get("outfit_name") or "").strip()
         bits: list[str] = []
-        if look:
-            bits.append(look)
         if wardrobe:
             label = f"Wardrobe ({outfit_name})" if outfit_name else "Wardrobe"
-            bits.append(f"{label}: {wardrobe}")
+            bits.append(f"{label}: {wardrobe} (this clothing overrides any other outfit)")
+            if look:
+                bits.append(f"Face/body: {look}")
+        elif look:
+            bits.append(look)
         if bits:
             lines.append(f"- {name}: " + ". ".join(bits))
         else:

@@ -530,9 +530,9 @@ async def generate_frame_visual(
 ) -> dict[str, Any]:
     settings = get_settings()
     from app.services.characters import (
+        cast_reference_for_frame,
         cast_sheet_for_frame,
         cast_sheet_for_project,
-        pick_cast_reference_path,
     )
     from app.services.video_backends import get_video_backend, normalize_backend_id
 
@@ -562,10 +562,16 @@ async def generate_frame_visual(
         seed = frame_id * 17
         prefix = f"local_video/p{project_id}_f{frame_id}_still"
         neg = still_negative_prompt(frame_prompt)
-        # Prefer img2img from cast/outfit reference when available (same as keyframes).
+        media = (
+            settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+        )
+        media.mkdir(parents=True, exist_ok=True)
+        # Composite all cast/outfit refs into one sheet when 2+ people are locked.
         try:
-            ref = pick_cast_reference_path(
-                project_id, frame_id=frame_id, prompt=frame_prompt or prompt
+            ref = cast_reference_for_frame(
+                project_id,
+                frame_id,
+                dest=media / "cast_ref_sheet.png",
             )
         except KeyError:
             ref = None
@@ -573,10 +579,11 @@ async def generate_frame_visual(
             uploaded = await comfy.upload_image(ref)
             edit_prompt = build_edit_prompt(
                 instruction=(
-                    "Restage this same person into a new cinematic shot matching the "
-                    "beat. Keep face and identity locked. Dress them per the cast-lock "
-                    f"wardrobe for this beat even if the reference clothing differs: "
-                    f"{prompt}"
+                    "The reference is a cast contact sheet: each labeled panel is one "
+                    "person in their wardrobe for this beat. Compose ONE continuous "
+                    "cinematic still of the beat using these exact people and outfits — "
+                    "not a collage, grid, or multi-panel layout. "
+                    f"Beat: {prompt}"
                 ),
                 frame_prompt=frame_prompt,
                 cast_sheet=cast_sheet,
@@ -585,7 +592,8 @@ async def generate_frame_visual(
                 "still_edit",
                 {
                     "positive_prompt": edit_prompt,
-                    "negative_prompt": neg,
+                    "negative_prompt": neg
+                    + ", collage, contact sheet, multi-panel, split screen, grid layout",
                     "seed": seed,
                     "filename_prefix": prefix,
                     "width": 1024,
@@ -1147,8 +1155,8 @@ async def _render_keyframe_image(
     editing from a matching character reference still if one exists.
     """
     from app.services.characters import (
+        cast_reference_for_frame,
         cast_sheet_for_frame,
-        pick_cast_reference_path,
     )
 
     settings = get_settings()
@@ -1193,17 +1201,20 @@ async def _render_keyframe_image(
     else:
         if force_edit:
             raise ValueError("edit source required")
-        char_ref = pick_cast_reference_path(
-            project_id, frame_id=frame_id, prompt=prompt
+        cast_ref = cast_reference_for_frame(
+            project_id,
+            frame_id,
+            dest=media / f"cast_ref_sheet_kf_{label}.png",
         )
-        if char_ref is not None:
-            uploaded = await comfy.upload_image(char_ref)
+        if cast_ref is not None:
+            uploaded = await comfy.upload_image(cast_ref)
             edit_prompt = build_edit_prompt(
                 instruction=(
-                    "Restage this same person into a new cinematic shot matching the "
-                    "instruction. Keep face and identity locked. Dress them per the "
-                    "cast-lock wardrobe for this beat even if the reference clothing "
-                    f"differs: {prompt}"
+                    "The reference is a cast contact sheet: each labeled panel is one "
+                    "person in their wardrobe for this beat. Compose ONE continuous "
+                    "cinematic still matching the instruction using these exact people "
+                    "and outfits — not a collage, grid, or multi-panel layout. "
+                    f"Instruction: {prompt}"
                 ),
                 frame_prompt=prompt,
                 cast_sheet=cast_sheet,
@@ -1212,7 +1223,8 @@ async def _render_keyframe_image(
                 "still_edit",
                 {
                     "positive_prompt": edit_prompt,
-                    "negative_prompt": neg,
+                    "negative_prompt": neg
+                    + ", collage, contact sheet, multi-panel, split screen, grid layout",
                     "seed": seed,
                     "filename_prefix": f"local_video/p{project_id}_f{frame_id}_kf_{label}",
                     "width": 1024,

@@ -166,18 +166,27 @@ def cast_sheet_for_frame(project_id: int, frame_id: int) -> str:
     )
 
 
-def pick_cast_reference_path(
+def _resolve_ref_file(stored: str | None) -> Path | None:
+    stored = str(stored or "").strip()
+    if not stored:
+        return None
+    try:
+        from app.services.storyboard import _resolve_media_file
+
+        path = _resolve_media_file(stored)
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    return path if path.is_file() else None
+
+
+def list_cast_reference_panels(
     project_id: int,
     *,
     frame_id: int | None = None,
-    prompt: str = "",
-) -> Path | None:
-    """Best reference still for locking identity (and wardrobe when available).
+) -> list[tuple[str, Path, bool]]:
+    """Ordered (label, image_path, approved) panels for the beat cast.
 
-    Prefers the frame's cast selection when ``frame_id`` is set. For each candidate,
-    uses the outfit reference image when present, else the character portrait.
-    Among candidates, prefers a name/alias mentioned in the prompt; otherwise a
-    sole cast member with a reference, or a single approved reference.
+    Prefers each character's selected outfit reference, else their portrait.
     """
     with SessionLocal() as db:
         p = db.get(Project, project_id)
@@ -209,52 +218,142 @@ def pick_cast_reference_path(
         else:
             selected = [(c, None) for c in chars]
 
-        candidates: list[tuple[Character, Path]] = []
+        panels: list[tuple[str, Path, bool]] = []
         for c, outfit_id in selected:
             outfits = _normalize_outfits(getattr(c, "outfits", None) or [])
             outfit = _outfit_by_id(outfits, outfit_id)
             stored = ""
+            name = (c.name or "Character").strip() or "Character"
+            label = name
             if outfit:
                 stored = str(outfit.get("reference_image_path") or "").strip()
+                oname = str(outfit.get("name") or "").strip()
+                if oname:
+                    label = f"{name} / {oname}"
             if not stored:
                 stored = str(c.reference_image_path or "").strip()
-            if not stored:
-                continue
-            try:
-                from app.services.storyboard import _resolve_media_file
+            path = _resolve_ref_file(stored)
+            if path is not None:
+                panels.append((label, path, bool(c.approved)))
+        return panels
 
-                path = _resolve_media_file(stored)
-            except (FileNotFoundError, ValueError, OSError):
-                continue
-            if path.is_file():
-                candidates.append((c, path))
 
-    if not candidates:
+def build_cast_reference_sheet(
+    panels: list[tuple[str, Path]] | list[tuple[str, Path, bool]],
+    dest: Path,
+    *,
+    cell_w: int = 512,
+    cell_h: int = 576,
+    label_h: int = 36,
+    gap: int = 12,
+    max_cols: int = 3,
+) -> Path:
+    """Composite cast/outfit refs into one contact sheet for Flux still_edit."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    normalized: list[tuple[str, Path]] = []
+    for item in panels:
+        if len(item) >= 2:
+            normalized.append((str(item[0]), item[1]))
+    if not normalized:
+        raise ValueError("no cast reference panels to composite")
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if len(normalized) == 1:
+        img = Image.open(normalized[0][1]).convert("RGB")
+        img.save(dest)
+        return dest
+
+    n = len(normalized)
+    cols = min(max_cols, n)
+    rows = (n + cols - 1) // cols
+    sheet_w = cols * cell_w + (cols + 1) * gap
+    sheet_h = rows * (cell_h + label_h) + (rows + 1) * gap
+    sheet = Image.new("RGB", (sheet_w, sheet_h), (24, 24, 28))
+    draw = ImageDraw.Draw(sheet)
+    try:
+        font = ImageFont.load_default()
+    except OSError:
+        font = None
+
+    for i, (label, path) in enumerate(normalized):
+        r, c = divmod(i, cols)
+        x0 = gap + c * (cell_w + gap)
+        y0 = gap + r * (cell_h + label_h + gap)
+        src = Image.open(path).convert("RGB")
+        src.thumbnail((cell_w, cell_h), Image.Resampling.LANCZOS)
+        px = x0 + (cell_w - src.width) // 2
+        py = y0 + (cell_h - src.height) // 2
+        sheet.paste(src, (px, py))
+        text = (label or "")[:48]
+        if text:
+            ty = y0 + cell_h + 6
+            if font is not None:
+                draw.text((x0 + 4, ty), text, fill=(230, 230, 235), font=font)
+            else:
+                draw.text((x0 + 4, ty), text, fill=(230, 230, 235))
+
+    sheet.save(dest)
+    return dest
+
+
+def cast_reference_for_frame(
+    project_id: int,
+    frame_id: int,
+    *,
+    dest: Path,
+) -> Path | None:
+    """Build cast/outfit reference image for a beat (contact sheet when 2+).
+
+    Returns None when no character/outfit refs exist for the selected cast.
+    """
+    panels = list_cast_reference_panels(project_id, frame_id=frame_id)
+    if not panels:
         return None
+    return build_cast_reference_sheet(panels, dest)
+
+
+def pick_cast_reference_path(
+    project_id: int,
+    *,
+    frame_id: int | None = None,
+    prompt: str = "",
+) -> Path | None:
+    """Best single reference still when only one identity can be locked.
+
+    Prefer ``cast_reference_for_frame`` for multi-cast beats.
+    """
+    panels = list_cast_reference_panels(project_id, frame_id=frame_id)
+    if not panels:
+        return None
+    if len(panels) == 1:
+        return panels[0][1]
 
     prompt_l = (prompt or "").lower()
-    matched: list[tuple[Character, Path]] = []
-    for c, path in candidates:
-        names = [c.name or "", *(c.aliases or [])]
-        if any(n.strip() and n.strip().lower() in prompt_l for n in names):
-            matched.append((c, path))
+    matched = [
+        (label, path)
+        for label, path, _approved in panels
+        if any(
+            part and part in prompt_l
+            for part in label.lower().replace("/", " ").split()
+        )
+    ]
+    # Prefer exact character-name hits (first token before " / ")
+    name_hits = [
+        (label, path)
+        for label, path, _a in panels
+        if (label.split("/")[0].strip().lower() in prompt_l)
+    ]
+    pool = name_hits or matched
+    if len(pool) == 1:
+        return pool[0][1]
+    if len(pool) > 1:
+        return pool[0][1]
 
-    chosen: tuple[Character, Path] | None = None
-    if len(matched) == 1:
-        chosen = matched[0]
-    elif len(matched) > 1:
-        approved = [(c, p) for c, p in matched if c.approved]
-        chosen = approved[0] if approved else matched[0]
-    elif len(candidates) == 1:
-        chosen = candidates[0]
-    else:
-        approved = [(c, p) for c, p in candidates if c.approved]
-        if len(approved) == 1:
-            chosen = approved[0]
-        else:
-            return None
-
-    return chosen[1]
+    approved = [(label, path) for label, path, a in panels if a]
+    if len(approved) == 1:
+        return approved[0][1]
+    return None
 
 
 def pick_character_reference_path(
