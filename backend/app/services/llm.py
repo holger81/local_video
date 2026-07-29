@@ -113,35 +113,68 @@ _CLOTHING_LINE_RE = re.compile(
     r"clothing|clothes|garment|suit\b"
     r")\b"
 )
+_FACE_LINE_RE = re.compile(
+    r"(?i)\b(face|hair|eye|eyes|smile|skin|age|years?\s*old|blonde|brunette|"
+    r"rectangular|skinnier|thinner|teeth|expression|nose|cheek)\b"
+)
+_ANIMATED_GENRE_RE = re.compile(
+    r"(?i)(animated|animation|puppet|cgi|3\s*d|pixar|cartoon|stylized|"
+    r"illustration|render|stop[\s-]?motion)"
+)
 
 
 def face_body_lock(appearance: str, *, has_wardrobe: bool) -> str:
     """Keep face/body identity; drop clothing notes when an outfit is selected.
 
     Character appearance often accumulates outfit edit history (e.g. spacesuit)
-    that must not override a beat-specific wardrobe.
+    that must not override a beat-specific wardrobe. Face/hair Applied edits stay.
     """
     text = (appearance or "").strip()
     if not text:
         return ""
     if not has_wardrobe:
         return text
+
+    before = text
+    edit_lines: list[str] = []
     if "Applied edits:" in text:
-        text = text.split("Applied edits:", 1)[0].strip()
+        before, after = text.split("Applied edits:", 1)
+        before = before.strip()
+        for raw in after.splitlines():
+            line = raw.strip(" -•\t")
+            if not line:
+                continue
+            has_clothes = bool(_CLOTHING_LINE_RE.search(line))
+            has_face = bool(_FACE_LINE_RE.search(line))
+            if has_clothes and not has_face:
+                continue
+            if has_clothes and has_face:
+                line = _CLOTHING_LINE_RE.sub("", line)
+                line = re.sub(r"\s{2,}", " ", line).strip(" ,.;-")
+                # Drop leftover connective crumbs like "also, it should be a"
+                line = re.sub(
+                    r"(?i)\b(also,?\s*)?(it should be a|make (him|her|them)|put cool stuff on the)\b.*$",
+                    "",
+                    line,
+                ).strip(" ,.;-")
+            if line:
+                edit_lines.append(line)
+        text = before
+
     kept: list[str] = []
     for raw in text.replace(";", "\n").splitlines():
         line = raw.strip(" -•\t")
         if not line:
             continue
+        if _CLOTHING_LINE_RE.search(line) and not _FACE_LINE_RE.search(line):
+            continue
         if _CLOTHING_LINE_RE.search(line):
-            # Keep mixed lines only when they clearly describe face/hair/age.
-            if not re.search(r"(?i)\b(face|hair|eye|smile|skin|age|years?\s*old)\b", line):
-                continue
             line = _CLOTHING_LINE_RE.sub("", line)
             line = re.sub(r"\s{2,}", " ", line).strip(" ,.;-")
             if not line:
                 continue
         kept.append(line)
+    kept.extend(edit_lines)
     return " ".join(kept).strip()
 
 
@@ -162,6 +195,37 @@ def wardrobe_conflict_negatives(appearance: str, wardrobe: str) -> str:
     return ", ".join(bits)
 
 
+def is_stylized_genre(genre: str = "") -> bool:
+    return bool(_ANIMATED_GENRE_RE.search(genre or ""))
+
+
+def style_lock_phrase(genre: str = "") -> str:
+    """Opening style cue for stills — follow project genre, not always photoreal."""
+    g = (genre or "").strip()
+    if is_stylized_genre(g):
+        return (
+            f"{g} style: match the cast reference art style exactly "
+            "(stylized 3D / puppet look), one continuous camera shot, one moment only"
+        )
+    if g:
+        return (
+            f"{g} genre cinematic still, one continuous camera shot, one moment only, "
+            "full frame"
+        )
+    return (
+        "Cinematic still, one continuous camera shot, one moment only, full frame"
+    )
+
+
+def style_negatives(genre: str = "") -> str:
+    if is_stylized_genre(genre):
+        return (
+            "photorealistic human, live action, real photograph, documentary photo, "
+            "realistic skin pores, real child, stock photo"
+        )
+    return ""
+
+
 def format_cast_sheet(characters: list[dict[str, Any]]) -> str:
     """Compact ground-truth cast block for image/storyboard prompts."""
     lines: list[str] = []
@@ -174,15 +238,15 @@ def format_cast_sheet(characters: list[dict[str, Any]]) -> str:
         outfit_name = (c.get("outfit_name") or "").strip()
         look = face_body_lock(look_raw, has_wardrobe=bool(wardrobe))
         bits: list[str] = []
+        if look:
+            bits.append(f"Face/body: {look}")
         if wardrobe:
             label = f"Wardrobe ({outfit_name})" if outfit_name else "Wardrobe"
             bits.append(
                 f"{label}: {wardrobe} "
                 "(MUST wear exactly this clothing; ignore any other outfit notes)"
             )
-            if look:
-                bits.append(f"Face/body only: {look}")
-        elif look_raw:
+        elif look_raw and not look:
             bits.append(look_raw)
         if bits:
             lines.append(f"- {name}: " + ". ".join(bits))

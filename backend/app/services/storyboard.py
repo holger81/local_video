@@ -544,14 +544,14 @@ def build_visual_prompt(
     Flux/Klein often renders those as a literal storyboard collage. Prefer the
     short premise + cast sheet as world lock; ignore prev/next scene text.
     """
+    from app.services.llm import style_lock_phrase
+
     _ = title, prev_prompt, next_prompt  # title/neighbors unused for image models
     frame_bit = _truncate(frame_prompt or "", 400)
     world = _world_lock(premise=premise, story=story, cast_sheet=cast_sheet)
-    parts: list[str] = [
-        "Photorealistic cinematic still photograph, one continuous camera shot, "
-        "one moment only, full frame."
-    ]
-    if genre:
+    style = style_lock_phrase(genre)
+    parts: list[str] = [f"{style}."]
+    if genre and genre.lower() not in style.lower():
         parts.append(f"{genre} genre.")
     if world:
         parts.append(f"Film continuity for: {world}.")
@@ -591,11 +591,12 @@ async def generate_frame_visual(
         p = db.get(Project, project_id)
         assert p is not None
         frame_prompt = f.visual_prompt or f.description or ""
+        genre = p.genre or ""
         prompt = build_visual_prompt(
             story=p.story or "",
             premise=p.premise or "",
             title=p.title or "",
-            genre=p.genre or "",
+            genre=genre,
             frame_prompt=frame_prompt,
             cast_sheet=cast_sheet,
         )
@@ -612,7 +613,7 @@ async def generate_frame_visual(
         media.mkdir(parents=True, exist_ok=True)
         # Composite all cast/outfit refs into one sheet when refs exist.
         from app.services.characters import cast_entries_for_sheet
-        from app.services.llm import wardrobe_conflict_negatives
+        from app.services.llm import style_negatives, wardrobe_conflict_negatives
 
         try:
             ref = cast_reference_for_frame(
@@ -651,8 +652,10 @@ async def generate_frame_visual(
                 )
         except KeyError:
             pass
-        if wardrobe_neg:
-            neg = f"{neg}, {wardrobe_neg}"
+        style_neg = style_negatives(genre)
+        extra_neg = ", ".join(x for x in (wardrobe_neg, style_neg) if x)
+        if extra_neg:
+            neg = f"{neg}, {extra_neg}"
         if ref is not None:
             uploaded = await comfy.upload_image(ref)
             wardrobe_block = (
@@ -665,14 +668,18 @@ async def generate_frame_visual(
             )
             edit_prompt = build_edit_prompt(
                 instruction=(
-                    "The reference is a cast contact sheet: each labeled panel is one "
-                    "person already dressed for this beat. Compose ONE continuous "
-                    "cinematic still of the beat using these exact people and the "
-                    "clothing shown in their panels — not a collage or multi-panel "
-                    f"layout.{wardrobe_block} Scene beat: {_truncate(frame_prompt, 280)}"
+                    "The reference is a cast contact sheet: each labeled panel is the "
+                    "ground-truth look for one character (face, hair, body, art style, "
+                    "and this beat's wardrobe). Restage those SAME characters into ONE "
+                    "continuous shot of the beat — keep their faces and stylized look "
+                    "from the panels; only change pose/placement for the scene — not a "
+                    f"collage or multi-panel layout.{wardrobe_block} "
+                    f"Scene beat: {_truncate(frame_prompt, 280)}"
                 ),
                 frame_prompt=frame_prompt,
                 cast_sheet=cast_sheet,
+                genre=genre,
+                from_cast_sheet=True,
             )
             graph = apply_params(
                 "still_edit",
@@ -835,25 +842,42 @@ def _resolve_media_file(stored: str) -> Path:
 
 
 def build_edit_prompt(
-    *, instruction: str, frame_prompt: str = "", cast_sheet: str = ""
+    *,
+    instruction: str,
+    frame_prompt: str = "",
+    cast_sheet: str = "",
+    genre: str = "",
+    from_cast_sheet: bool = False,
 ) -> str:
+    from app.services.llm import style_lock_phrase
+
     instr = _truncate((instruction or "").strip(), 900)
     if not instr:
         raise ValueError("edit instruction is required")
     beat = _truncate(frame_prompt or "", 220)
     parts = [
-        "Edit this cinematic still photograph.",
+        f"Edit this image into {style_lock_phrase(genre)}.",
         f"Instruction: {instr}.",
-        "Preserve faces and character identity. Match wardrobe to the cast lock / "
-        "contact-sheet panels when provided — do not keep a different outfit from "
-        "story titles, premises, or old appearance notes.",
-        "Output one continuous camera shot only — no collage, panels, or grid.",
     ]
+    if from_cast_sheet:
+        parts.append(
+            "CRITICAL identity lock: each person must keep the same face, eye shape, "
+            "hair, age, body proportions, and art style as their labeled contact-sheet "
+            "panel. Do not turn stylized/puppet characters into live-action people."
+        )
+    parts.append(
+        "Preserve character identity. Match wardrobe to the cast lock / contact-sheet "
+        "panels when provided — do not keep a different outfit from story titles, "
+        "premises, or old appearance notes."
+    )
+    parts.append(
+        "Output one continuous camera shot only — no collage, panels, or grid."
+    )
     cast = (cast_sheet or "").strip()
     if cast:
         parts.append(f"{cast}")
         parts.append(
-            "Wardrobe in the cast lock is mandatory; ignore contradictory clothing."
+            "Faces follow the cast lock / panels; wardrobe in the cast lock is mandatory."
         )
     if beat:
         parts.append(f"Original beat context: {beat}.")
@@ -1339,20 +1363,29 @@ async def _render_keyframe_image(
             )
             edit_prompt = build_edit_prompt(
                 instruction=(
-                    "The reference is a cast contact sheet: each labeled panel is one "
-                    "person in their wardrobe for this beat. Compose ONE continuous "
-                    "cinematic still matching the instruction using these exact people "
-                    "and outfits — not a collage, grid, or multi-panel layout."
+                    "The reference is a cast contact sheet: each labeled panel is the "
+                    "ground-truth look for one character (face, hair, body, art style, "
+                    "and this beat's wardrobe). Restage those SAME characters into ONE "
+                    "continuous shot matching the instruction — keep faces and stylized "
+                    "look from the panels."
                     f"{wardrobe_block} Instruction: {prompt}"
                 ),
                 frame_prompt=prompt,
                 cast_sheet=cast_sheet,
+                genre=genre,
+                from_cast_sheet=True,
             )
+            from app.services.llm import style_negatives
+
+            style_neg = style_negatives(genre)
+            kf_neg = neg
+            if style_neg:
+                kf_neg = f"{kf_neg}, {style_neg}"
             graph = apply_params(
                 "still_edit",
                 {
                     "positive_prompt": edit_prompt,
-                    "negative_prompt": neg
+                    "negative_prompt": kf_neg
                     + ", collage, contact sheet, multi-panel, split screen, grid layout",
                     "seed": seed,
                     "filename_prefix": f"local_video/p{project_id}_f{frame_id}_kf_{label}",
