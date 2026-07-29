@@ -114,13 +114,24 @@ def format_cast_sheet(characters: list[dict[str, Any]]) -> str:
         if not name:
             continue
         look = (c.get("appearance_prompt") or c.get("description") or "").strip()
+        wardrobe = (c.get("wardrobe_prompt") or "").strip()
+        outfit_name = (c.get("outfit_name") or "").strip()
+        bits: list[str] = []
         if look:
-            lines.append(f"- {name}: {look}")
+            bits.append(look)
+        if wardrobe:
+            label = f"Wardrobe ({outfit_name})" if outfit_name else "Wardrobe"
+            bits.append(f"{label}: {wardrobe}")
+        if bits:
+            lines.append(f"- {name}: " + ". ".join(bits))
         else:
             lines.append(f"- {name}")
     if not lines:
         return ""
-    return "Cast lock (use these exact names and looks):\n" + "\n".join(lines)
+    return "Cast lock (use these exact names, looks, and wardrobes):\n" + "\n".join(
+        lines
+    )
+
 
 
 async def extract_cast(story: str) -> list[dict[str, Any]]:

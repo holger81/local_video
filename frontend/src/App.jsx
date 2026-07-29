@@ -558,6 +558,12 @@ function ProjectPage() {
       visual_prompt: f.visual_prompt || "",
       duration_hint_sec: f.duration_hint_sec ?? 4,
       is_new_shot: !!f.is_new_shot,
+      cast: Array.isArray(f.cast)
+        ? f.cast.map((x) => ({
+            character_id: x.character_id,
+            outfit_id: x.outfit_id || null,
+          }))
+        : [],
       keyframes: frameKeyframes(f).map((k, i) => ({
         index: i,
         t_sec: k.t_sec,
@@ -598,6 +604,15 @@ function ProjectPage() {
       reference_image_path: c.reference_image_path || null,
       auto_detected: !!c.auto_detected,
       intro_frame_id: c.intro_frame_id ?? null,
+      outfits: Array.isArray(c.outfits)
+        ? c.outfits.map((o) => ({
+            id: o.id,
+            name: o.name || "Outfit",
+            prompt: o.prompt || "",
+            reference_image_path: o.reference_image_path || null,
+            is_default: !!o.is_default,
+          }))
+        : [],
     });
     setCharEditInstr("");
   }, [characterEditorId, project]);
@@ -692,6 +707,10 @@ function ProjectPage() {
         visual_prompt: editorDraft.visual_prompt,
         duration_hint_sec: Number(editorDraft.duration_hint_sec) || 4,
         is_new_shot: !!editorDraft.is_new_shot,
+        cast: (editorDraft.cast || []).map((x) => ({
+          character_id: x.character_id,
+          outfit_id: x.outfit_id || null,
+        })),
         keyframes: (editorDraft.keyframes || []).map((k, i) => ({
           index: i,
           t_sec: k.t_sec,
@@ -1528,6 +1547,13 @@ function ProjectPage() {
                   .map((s) => s.trim())
                   .filter(Boolean),
                 approved: !!charDraft.approved,
+                outfits: (charDraft.outfits || []).map((o) => ({
+                  id: o.id,
+                  name: o.name,
+                  prompt: o.prompt,
+                  reference_image_path: o.reference_image_path || null,
+                  is_default: !!o.is_default,
+                })),
               }),
             });
             await load();
@@ -1612,9 +1638,142 @@ function ProjectPage() {
                         appearance_prompt: e.target.value,
                       }))
                     }
-                    placeholder="Age, face, hair, wardrobe, distinctive details…"
+                    placeholder="Age, face, hair, body — keep wardrobe in Outfits below"
                   />
                 </label>
+                <div className="character-outfits">
+                  <div className="row" style={{ justifyContent: "space-between" }}>
+                    <h3 style={{ margin: 0 }}>Outfits</h3>
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={!!busy}
+                      onClick={() =>
+                        setCharDraft((d) => ({
+                          ...d,
+                          outfits: [
+                            ...(d.outfits || []),
+                            {
+                              id: crypto.randomUUID().replace(/-/g, "").slice(0, 10),
+                              name: "New outfit",
+                              prompt: "",
+                              reference_image_path: null,
+                              is_default: !(d.outfits || []).length,
+                            },
+                          ],
+                        }))
+                      }
+                    >
+                      Add outfit
+                    </button>
+                  </div>
+                  <p className="muted tiny">
+                    Design wardrobe looks separately from face/body. Pick an outfit per
+                    storyboard beat.
+                  </p>
+                  {(charDraft.outfits || []).map((o, oi) => {
+                    const oRef = mediaUrl(o.reference_image_path);
+                    return (
+                      <div key={o.id || oi} className="outfit-card">
+                        <div className="row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+                          <input
+                            value={o.name}
+                            disabled={!!busy}
+                            onChange={(e) =>
+                              setCharDraft((d) => {
+                                const outfits = [...(d.outfits || [])];
+                                outfits[oi] = { ...outfits[oi], name: e.target.value };
+                                return { ...d, outfits };
+                              })
+                            }
+                            placeholder="Outfit name"
+                            style={{ flex: "1 1 8rem" }}
+                          />
+                          <label className="row" style={{ alignItems: "center", gap: "0.35rem" }}>
+                            <input
+                              type="radio"
+                              name={`default-outfit-${c.id}`}
+                              checked={!!o.is_default}
+                              disabled={!!busy}
+                              onChange={() =>
+                                setCharDraft((d) => ({
+                                  ...d,
+                                  outfits: (d.outfits || []).map((x, i) => ({
+                                    ...x,
+                                    is_default: i === oi,
+                                  })),
+                                }))
+                              }
+                            />
+                            Default
+                          </label>
+                          <button
+                            type="button"
+                            className="ghost danger"
+                            disabled={!!busy}
+                            onClick={() =>
+                              setCharDraft((d) => {
+                                const outfits = (d.outfits || []).filter((_, i) => i !== oi);
+                                if (outfits.length && !outfits.some((x) => x.is_default)) {
+                                  outfits[0] = { ...outfits[0], is_default: true };
+                                }
+                                return { ...d, outfits };
+                              })
+                            }
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <textarea
+                          rows={2}
+                          value={o.prompt}
+                          disabled={!!busy}
+                          onChange={(e) =>
+                            setCharDraft((d) => {
+                              const outfits = [...(d.outfits || [])];
+                              outfits[oi] = { ...outfits[oi], prompt: e.target.value };
+                              return { ...d, outfits };
+                            })
+                          }
+                          placeholder="Clothing description: colors, garments, accessories…"
+                        />
+                        {oRef && (
+                          <div className="media-item">
+                            <img
+                              src={`${oRef}?t=${encodeURIComponent(o.reference_image_path)}`}
+                              alt=""
+                            />
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          disabled={!!busy || !o.prompt.trim() || visualBusy === `outfit-${o.id}`}
+                          onClick={async () => {
+                            setVisualBusy(`outfit-${o.id}`);
+                            setErr("");
+                            try {
+                              await saveChar();
+                              await api(
+                                `/projects/${id}/characters/${c.id}/outfits/${o.id}/reference`,
+                                { method: "POST", body: "{}" }
+                              );
+                              await load();
+                            } catch (ex) {
+                              setErr(String(ex.message || ex));
+                            } finally {
+                              setVisualBusy(null);
+                            }
+                          }}
+                        >
+                          {oRef ? "Regenerate outfit look" : "Generate outfit look"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                  {!(charDraft.outfits || []).length && (
+                    <p className="muted tiny">No outfits yet — add one to design clothes.</p>
+                  )}
+                </div>
                 <label className="row" style={{ alignItems: "center", gap: "0.5rem" }}>
                   <input
                     type="checkbox"
@@ -1842,6 +2001,81 @@ function ProjectPage() {
                     />
                     New shot (own keyframe series)
                   </label>
+                </div>
+
+                <div className="scene-cast">
+                  <h3>Cast &amp; wardrobe</h3>
+                  <p className="muted tiny">
+                    Select who appears in this beat and which outfit. Empty = full cast
+                    defaults.
+                  </p>
+                  {(project.characters || []).length === 0 ? (
+                    <p className="muted tiny">No characters yet — add them in the cast board.</p>
+                  ) : (
+                    (project.characters || []).map((ch) => {
+                      const entry = (editorDraft.cast || []).find(
+                        (x) => x.character_id === ch.id
+                      );
+                      const on = !!entry;
+                      const outfits = Array.isArray(ch.outfits) ? ch.outfits : [];
+                      return (
+                        <div key={ch.id} className="scene-cast-row">
+                          <label className="row" style={{ alignItems: "center", gap: "0.4rem" }}>
+                            <input
+                              type="checkbox"
+                              checked={on}
+                              disabled={!!busy}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setEditorDraft((d) => {
+                                  const cast = [...(d.cast || [])].filter(
+                                    (x) => x.character_id !== ch.id
+                                  );
+                                  if (checked) {
+                                    const def =
+                                      outfits.find((o) => o.is_default) || outfits[0];
+                                    cast.push({
+                                      character_id: ch.id,
+                                      outfit_id: def?.id || null,
+                                    });
+                                  }
+                                  return { ...d, cast };
+                                });
+                              }}
+                            />
+                            <strong>{ch.name}</strong>
+                          </label>
+                          {on && (
+                            <select
+                              disabled={!!busy || !outfits.length}
+                              value={entry?.outfit_id || ""}
+                              onChange={(e) => {
+                                const oid = e.target.value || null;
+                                setEditorDraft((d) => ({
+                                  ...d,
+                                  cast: (d.cast || []).map((x) =>
+                                    x.character_id === ch.id
+                                      ? { ...x, outfit_id: oid }
+                                      : x
+                                  ),
+                                }));
+                              }}
+                            >
+                              {!outfits.length && (
+                                <option value="">Base appearance only</option>
+                              )}
+                              {outfits.map((o) => (
+                                <option key={o.id} value={o.id}>
+                                  {o.name}
+                                  {o.is_default ? " (default)" : ""}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
 

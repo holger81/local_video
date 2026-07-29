@@ -127,6 +127,7 @@ def _frame_dict(f: StoryboardFrame) -> dict[str, Any]:
         "preview_path": f.preview_path,
         "duration_hint_sec": f.duration_hint_sec,
         "is_new_shot": f.is_new_shot,
+        "cast": list(getattr(f, "cast", None) or []),
     }
 
 
@@ -161,9 +162,9 @@ async def rebuild_frame_keyframe_prompts(
             i: (kf.get("path") or None) for i, kf in enumerate(_keyframes_list(f))
         }
 
-    from app.services.characters import cast_sheet_for_project
+    from app.services.characters import cast_sheet_for_frame
 
-    cast_sheet = cast_sheet_for_project(project_id)
+    cast_sheet = cast_sheet_for_frame(project_id, frame_id)
     share_first = bool(not is_new and prev_last_prompt)
     planned = await llm.plan_keyframe_series(
         description=description,
@@ -279,6 +280,7 @@ def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any
         "keyframe_mid_prompt",
         "keyframe_last_prompt",
         "keyframes",
+        "cast",
     }
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
@@ -287,7 +289,26 @@ def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any
         for k, v in fields.items():
             if k not in allowed or v is None:
                 continue
-            if k == "keyframes":
+            if k == "cast":
+                if not isinstance(v, list):
+                    raise ValueError("cast must be a list")
+                normalized = []
+                for item in v:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        cid = int(item.get("character_id"))
+                    except (TypeError, ValueError):
+                        continue
+                    oid = item.get("outfit_id")
+                    normalized.append(
+                        {
+                            "character_id": cid,
+                            "outfit_id": str(oid) if oid else None,
+                        }
+                    )
+                f.cast = normalized
+            elif k == "keyframes":
                 if not isinstance(v, list):
                     raise ValueError("keyframes must be a list")
                 normalized = []
@@ -508,10 +529,13 @@ async def generate_frame_visual(
     video_backend: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
-    from app.services.characters import cast_sheet_for_project
+    from app.services.characters import cast_sheet_for_frame, cast_sheet_for_project
     from app.services.video_backends import get_video_backend, normalize_backend_id
 
-    cast_sheet = cast_sheet_for_project(project_id)
+    try:
+        cast_sheet = cast_sheet_for_frame(project_id, frame_id)
+    except KeyError:
+        cast_sheet = cast_sheet_for_project(project_id)
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
@@ -1070,7 +1094,7 @@ async def _render_keyframe_image(
     editing from a matching character reference still if one exists.
     """
     from app.services.characters import (
-        cast_sheet_for_project,
+        cast_sheet_for_frame,
         pick_character_reference_path,
     )
 
@@ -1078,7 +1102,12 @@ async def _render_keyframe_image(
     media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
     media.mkdir(parents=True, exist_ok=True)
     comfy = ComfyUIClient()
-    cast_sheet = cast_sheet_for_project(project_id)
+    try:
+        cast_sheet = cast_sheet_for_frame(project_id, frame_id)
+    except KeyError:
+        from app.services.characters import cast_sheet_for_project
+
+        cast_sheet = cast_sheet_for_project(project_id)
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         genre = (p.genre or "") if p else ""

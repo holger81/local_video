@@ -20,6 +20,7 @@ class FrameUpdate(BaseModel):
     keyframe_mid_prompt: str | None = None
     keyframe_last_prompt: str | None = None
     keyframes: list | None = None
+    cast: list | None = None
 
 
 class VisualIn(BaseModel):

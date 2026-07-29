@@ -70,6 +70,8 @@ class Character(Base):
     aliases: Mapped[list] = mapped_column(JSON, default=list)
     description: Mapped[str] = mapped_column(Text, default="")
     appearance_prompt: Mapped[str] = mapped_column(Text, default="")
+    # Wardrobe looks: [{id, name, prompt, reference_image_path, is_default}]
+    outfits: Mapped[list] = mapped_column(JSON, default=list)
     reference_image_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     intro_frame_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     auto_detected: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -101,6 +103,8 @@ class StoryboardFrame(Base):
     keyframe_last_prompt: Mapped[str] = mapped_column(Text, default="")
     # Variable series: [{index, t_sec, role, image_prompt, path}] — first/last + ≤2s middles
     keyframes: Mapped[list] = mapped_column(JSON, default=list)
+    # Characters in this beat: [{character_id, outfit_id|null}]
+    cast: Mapped[list] = mapped_column(JSON, default=list)
     preview_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     duration_hint_sec: Mapped[float] = mapped_column(Float, default=4.0)
     is_new_shot: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -222,10 +226,20 @@ def _migrate_sqlite(engine) -> None:
             "keyframe_mid_prompt": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_mid_prompt TEXT DEFAULT ''",
             "keyframe_last_prompt": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_last_prompt TEXT DEFAULT ''",
             "keyframes": "ALTER TABLE storyboard_frames ADD COLUMN keyframes JSON",
+            "cast": "ALTER TABLE storyboard_frames ADD COLUMN cast JSON",
         }
         for name, ddl in additions.items():
             if name not in cols:
                 conn.exec_driver_sql(ddl)
+
+        char_cols = {
+            row[1]
+            for row in conn.exec_driver_sql("PRAGMA table_info(characters)").fetchall()
+        }
+        if "outfits" not in char_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE characters ADD COLUMN outfits JSON"
+            )
 
         project_cols = {
             row[1]
@@ -269,6 +283,7 @@ def _migrate_sqlite(engine) -> None:
                 aliases JSON,
                 description TEXT DEFAULT '',
                 appearance_prompt TEXT DEFAULT '',
+                outfits JSON,
                 reference_image_path VARCHAR(512),
                 intro_frame_id INTEGER,
                 auto_detected BOOLEAN DEFAULT 0,

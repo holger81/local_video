@@ -10,6 +10,7 @@ class CharacterIn(BaseModel):
     name: str
     description: str = ""
     appearance_prompt: str = ""
+    outfits: list[dict] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)
     approved: bool = False
     intro_frame_id: int | None = None
@@ -19,6 +20,7 @@ class CharacterPatch(BaseModel):
     name: str | None = None
     description: str | None = None
     appearance_prompt: str | None = None
+    outfits: list[dict] | None = None
     aliases: list[str] | None = None
     position: int | None = None
     approved: bool | None = None
@@ -49,6 +51,7 @@ def create_character(project_id: int, body: CharacterIn):
             name=body.name,
             description=body.description,
             appearance_prompt=body.appearance_prompt,
+            outfits=body.outfits,
             aliases=body.aliases,
             approved=body.approved,
             intro_frame_id=body.intro_frame_id,
@@ -114,3 +117,17 @@ def delete_reference(project_id: int, character_id: int):
         return char_svc.delete_reference(project_id, character_id)
     except KeyError as e:
         raise HTTPException(404, str(e)) from e
+
+
+@router.post("/{character_id}/outfits/{outfit_id}/reference")
+async def generate_outfit_reference(
+    project_id: int, character_id: int, outfit_id: str
+):
+    try:
+        return await char_svc.generate_outfit_reference(
+            project_id, character_id, outfit_id
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e

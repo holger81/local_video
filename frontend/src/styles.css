@@ -885,6 +885,45 @@ button.ghost.danger:hover:not(:disabled) {
   margin: 0 0 0.65rem;
 }
 
+.character-outfits {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin: 0.75rem 0;
+}
+
+.outfit-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.65rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.scene-cast {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.scene-cast h3 {
+  font-family: var(--display);
+  font-weight: 400;
+  margin: 0;
+}
+
+.scene-cast-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+
+.scene-cast-row select {
+  min-width: 10rem;
+}
+
 .timeline .shot {
   margin-bottom: 0.75rem;
 }

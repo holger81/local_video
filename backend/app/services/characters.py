@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import secrets
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +11,57 @@ from app.db.models import Character, Project, SessionLocal, StoryboardFrame
 from app.services import llm
 from app.services.comfyui import ComfyUIClient
 from app.services.workflows import apply_params
+
+
+def _normalize_outfit(
+    item: dict[str, Any] | None, *, fallback_id: str | None = None
+) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    oid = str(item.get("id") or fallback_id or uuid.uuid4().hex[:10]).strip()
+    name = str(item.get("name") or "").strip() or "Outfit"
+    prompt = str(item.get("prompt") or item.get("appearance") or "").strip()
+    return {
+        "id": oid,
+        "name": name,
+        "prompt": prompt,
+        "reference_image_path": (item.get("reference_image_path") or None),
+        "is_default": bool(item.get("is_default")),
+    }
+
+
+def _normalize_outfits(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        norm = _normalize_outfit(item if isinstance(item, dict) else None)
+        if norm and (norm["name"] or norm["prompt"]):
+            out.append(norm)
+    if out:
+        defaults = [o for o in out if o.get("is_default")]
+        if not defaults:
+            out[0]["is_default"] = True
+        elif len(defaults) > 1:
+            keep = defaults[0]["id"]
+            for o in out:
+                o["is_default"] = o["id"] == keep
+    return out
+
+
+def _outfit_by_id(
+    outfits: list[dict[str, Any]], outfit_id: str | None
+) -> dict[str, Any] | None:
+    if not outfits:
+        return None
+    if outfit_id:
+        for o in outfits:
+            if o.get("id") == outfit_id:
+                return o
+    for o in outfits:
+        if o.get("is_default"):
+            return o
+    return outfits[0]
 
 
 def _character_dict(c: Character) -> dict[str, Any]:
@@ -19,6 +73,7 @@ def _character_dict(c: Character) -> dict[str, Any]:
         "aliases": list(c.aliases or []),
         "description": c.description or "",
         "appearance_prompt": c.appearance_prompt or "",
+        "outfits": _normalize_outfits(getattr(c, "outfits", None) or []),
         "reference_image_path": c.reference_image_path,
         "intro_frame_id": c.intro_frame_id,
         "auto_detected": bool(c.auto_detected),
@@ -38,22 +93,77 @@ def list_characters(project_id: int) -> list[dict[str, Any]]:
         ]
 
 
-def cast_sheet_for_project(project_id: int) -> str:
+def cast_entries_for_sheet(
+    project_id: int,
+    *,
+    cast_selection: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve characters (+ optional outfit) for cast-sheet formatting.
+
+    cast_selection: [{character_id, outfit_id|null}]. Empty/None → full project cast
+    with each character's default outfit (if any).
+    """
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         if not p:
             raise KeyError(f"project {project_id} not found")
         chars = sorted(p.characters, key=lambda x: x.position)
-        return llm.format_cast_sheet(
-            [
+        by_id = {c.id: c for c in chars}
+
+        selected: list[tuple[Character, str | None]] = []
+        if cast_selection:
+            for item in cast_selection:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    cid = int(item.get("character_id"))
+                except (TypeError, ValueError):
+                    continue
+                c = by_id.get(cid)
+                if not c:
+                    continue
+                oid = item.get("outfit_id")
+                selected.append((c, str(oid) if oid else None))
+        else:
+            selected = [(c, None) for c in chars]
+
+        entries: list[dict[str, Any]] = []
+        for c, outfit_id in selected:
+            outfits = _normalize_outfits(getattr(c, "outfits", None) or [])
+            outfit = _outfit_by_id(outfits, outfit_id)
+            entries.append(
                 {
                     "name": c.name,
                     "appearance_prompt": c.appearance_prompt,
                     "description": c.description,
+                    "wardrobe_prompt": (outfit or {}).get("prompt") or "",
+                    "outfit_name": (outfit or {}).get("name") or "",
+                    "outfit_id": (outfit or {}).get("id"),
+                    "character_id": c.id,
                 }
-                for c in chars
-            ]
-        )
+            )
+        return entries
+
+
+def cast_sheet_for_project(
+    project_id: int,
+    *,
+    cast_selection: list[dict[str, Any]] | None = None,
+) -> str:
+    return llm.format_cast_sheet(
+        cast_entries_for_sheet(project_id, cast_selection=cast_selection)
+    )
+
+
+def cast_sheet_for_frame(project_id: int, frame_id: int) -> str:
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+        selection = list(getattr(f, "cast", None) or [])
+    return cast_sheet_for_project(
+        project_id, cast_selection=selection if selection else None
+    )
 
 
 def pick_character_reference_path(
@@ -117,6 +227,7 @@ def create_character(
     description: str = "",
     appearance_prompt: str = "",
     aliases: list[str] | None = None,
+    outfits: list[dict[str, Any]] | None = None,
     auto_detected: bool = False,
     approved: bool = False,
     intro_frame_id: int | None = None,
@@ -136,6 +247,7 @@ def create_character(
             aliases=list(aliases or []),
             description=(description or "").strip(),
             appearance_prompt=(appearance_prompt or "").strip(),
+            outfits=_normalize_outfits(outfits or []),
             auto_detected=auto_detected,
             approved=approved,
             intro_frame_id=intro_frame_id,
@@ -153,6 +265,7 @@ def update_character(
         "name",
         "description",
         "appearance_prompt",
+        "outfits",
         "aliases",
         "position",
         "intro_frame_id",
@@ -171,6 +284,11 @@ def update_character(
                 if not isinstance(v, list):
                     raise ValueError("aliases must be a list")
                 c.aliases = [str(a).strip() for a in v if str(a).strip()]
+            elif k == "outfits":
+                if not isinstance(v, list):
+                    raise ValueError("outfits must be a list")
+                c.outfits = _normalize_outfits(v)
+                c.auto_detected = False
             elif k == "name":
                 name = str(v).strip()
                 if not name:
@@ -366,9 +484,6 @@ async def generate_reference(
     instruction: str | None = None,
 ) -> dict[str, Any]:
     """Generate or edit the character reference still used as look ground truth."""
-    import secrets
-    import time
-
     settings = get_settings()
     with SessionLocal() as db:
         c = db.get(Character, character_id)
@@ -500,3 +615,122 @@ def delete_reference(project_id: int, character_id: int) -> dict[str, Any]:
         except (FileNotFoundError, ValueError, OSError):
             pass
     return payload
+
+
+async def generate_outfit_reference(
+    project_id: int,
+    character_id: int,
+    outfit_id: str,
+) -> dict[str, Any]:
+    """Render a wardrobe look for one outfit (edit from character ref when possible)."""
+    settings = get_settings()
+    with SessionLocal() as db:
+        c = db.get(Character, character_id)
+        if not c or c.project_id != project_id:
+            raise KeyError(f"character {character_id} not found")
+        outfits = _normalize_outfits(c.outfits or [])
+        outfit = next((o for o in outfits if o.get("id") == outfit_id), None)
+        if not outfit:
+            raise KeyError(f"outfit {outfit_id} not found")
+        name = c.name
+        appearance = c.appearance_prompt or c.description or name
+        char_ref = c.reference_image_path
+        wardrobe = (outfit.get("prompt") or "").strip()
+        outfit_name = outfit.get("name") or "Outfit"
+        if not wardrobe:
+            raise ValueError("outfit prompt is empty — describe the clothing first")
+
+    from app.services.storyboard import still_negative_prompt
+
+    media = (
+        settings.media_dir
+        / "projects"
+        / str(project_id)
+        / "characters"
+        / str(character_id)
+        / "outfits"
+    )
+    media.mkdir(parents=True, exist_ok=True)
+    comfy = ComfyUIClient()
+    seed = secrets.randbelow(2**31 - 1) ^ (int(time.time()) & 0xFFFF)
+    instruction = (
+        f"Dress {name} in this outfit ({outfit_name}): {wardrobe}. "
+        "Full body or three-quarter view so clothing is clear; keep the same person."
+    )
+    if char_ref:
+        src = _resolve_media_file(char_ref)
+        uploaded = await comfy.upload_image(src)
+        edit_prompt = build_character_edit_prompt(
+            instruction=instruction,
+            name=name,
+            appearance=appearance,
+        )
+        graph = apply_params(
+            "still_edit",
+            {
+                "positive_prompt": edit_prompt,
+                "negative_prompt": still_negative_prompt(edit_prompt)
+                + ", naked, lingerie, wrong outfit, ignoring wardrobe instruction",
+                "seed": seed,
+                "filename_prefix": (
+                    f"local_video/p{project_id}_char{character_id}_outfit_{outfit_id}"
+                ),
+                "width": 1024,
+                "height": 576,
+                "steps": 28,
+                "cfg": 6.5,
+            },
+            uploaded_image_name=uploaded,
+        )
+    else:
+        prompt = (
+            f"Photorealistic character wardrobe reference. Subject: {name}. "
+            f"Look: {appearance}. Outfit ({outfit_name}): {wardrobe}. "
+            "Clear full-body or three-quarter pose, plain background, single person."
+        )
+        graph = apply_params(
+            "still_hero",
+            {
+                "positive_prompt": prompt,
+                "negative_prompt": still_negative_prompt(prompt),
+                "seed": seed,
+                "filename_prefix": (
+                    f"local_video/p{project_id}_char{character_id}_outfit_{outfit_id}"
+                ),
+            },
+        )
+
+    prompt_id = await comfy.queue_prompt(graph)
+    history = await comfy.wait_for_prompt(prompt_id)
+    outputs = comfy.collect_outputs(history)
+    if not outputs:
+        raise RuntimeError("ComfyUI produced no outfit reference output")
+    out = outputs[0]
+    dest = media / out["filename"]
+    await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+
+    with SessionLocal() as db:
+        ch = db.get(Character, character_id)
+        assert ch
+        outfits = _normalize_outfits(ch.outfits or [])
+        updated = False
+        for o in outfits:
+            if o.get("id") == outfit_id:
+                old = o.get("reference_image_path")
+                o["reference_image_path"] = str(dest)
+                updated = True
+                if old:
+                    try:
+                        prev = _resolve_media_file(str(old))
+                        if prev.resolve() != dest.resolve() and prev.is_file():
+                            prev.unlink()
+                    except (FileNotFoundError, ValueError, OSError):
+                        pass
+                break
+        if not updated:
+            raise KeyError(f"outfit {outfit_id} not found")
+        ch.outfits = outfits
+        ch.auto_detected = False
+        db.commit()
+        db.refresh(ch)
+        return _character_dict(ch)
