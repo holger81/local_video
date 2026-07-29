@@ -924,6 +924,19 @@ button.ghost.danger:hover:not(:disabled) {
   min-width: 10rem;
 }
 
+.cast-ref-sheet {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.cast-ref-sheet .media-item img {
+  max-height: 14rem;
+  width: auto;
+  cursor: zoom-in;
+}
+
 .timeline .shot {
   margin-bottom: 0.75rem;
 }

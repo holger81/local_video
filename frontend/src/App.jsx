@@ -2150,6 +2150,38 @@ function ProjectPage() {
                       );
                     })
                   )}
+                  {(() => {
+                    const sheetSrc = mediaUrl(f.cast_ref_sheet_path);
+                    if (!sheetSrc) {
+                      return (
+                        <p className="muted tiny">
+                          Cast contact sheet appears here after you generate a hero still
+                          (when 1+ character/outfit refs exist).
+                        </p>
+                      );
+                    }
+                    return (
+                      <div className="cast-ref-sheet">
+                        <p className="muted tiny">
+                          Cast contact sheet used for the last hero still:
+                        </p>
+                        <div className="media-item">
+                          <img
+                            src={`${sheetSrc}?t=${encodeURIComponent(f.cast_ref_sheet_path)}`}
+                            alt="Cast contact sheet"
+                            onClick={() =>
+                              setLightbox({
+                                frameId: f.id,
+                                kind: "cast_sheet",
+                                src: `${sheetSrc}?t=${encodeURIComponent(f.cast_ref_sheet_path)}`,
+                                label: `Step ${f.position + 1} cast sheet`,
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
 

@@ -109,6 +109,20 @@ def _sync_legacy_keyframe_columns(
     f.keyframe_mid_prompt = (mid or {}).get("image_prompt") or ""
 
 
+def _cast_ref_sheet_path(project_id: int, frame_id: int) -> str | None:
+    """Path to the last composite cast contact sheet for this beat, if present."""
+    settings = get_settings()
+    path = (
+        settings.media_dir
+        / "projects"
+        / str(project_id)
+        / "frames"
+        / str(frame_id)
+        / "cast_ref_sheet.png"
+    )
+    return str(path) if path.is_file() else None
+
+
 def _frame_dict(f: StoryboardFrame) -> dict[str, Any]:
     keyframes = _keyframes_list(f)
     return {
@@ -117,6 +131,7 @@ def _frame_dict(f: StoryboardFrame) -> dict[str, Any]:
         "description": f.description,
         "visual_prompt": f.visual_prompt,
         "still_path": f.still_path,
+        "cast_ref_sheet_path": _cast_ref_sheet_path(f.project_id, f.id),
         "keyframes": keyframes,
         "keyframe_first_path": f.keyframe_first_path,
         "keyframe_mid_path": f.keyframe_mid_path,
