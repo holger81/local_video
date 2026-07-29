@@ -669,14 +669,14 @@ function ProjectPage() {
     }
   };
 
-  const generateVisual = async (frameId, kind) => {
+  const generateVisual = async (frameId, kind, { fresh = false } = {}) => {
     setBusy(kind === "still" ? `still ${frameId}` : `preview ${frameId}`);
     setVisualBusy({ frameId, kind });
     setErr("");
     try {
       await api(`/projects/${id}/storyboard/frames/${frameId}/visual`, {
         method: "POST",
-        body: JSON.stringify({ kind, num_frames: 33 }),
+        body: JSON.stringify({ kind, num_frames: 33, fresh }),
       });
       await load();
     } catch (e) {
@@ -2262,10 +2262,25 @@ function ProjectPage() {
                     type="button"
                     disabled={!!busy}
                     onClick={() => generateVisual(f.id, "still")}
-                    title="Generate the main still for this storyboard step"
+                    title={
+                      f.still_path
+                        ? "Update this still while keeping existing character faces (continuity)"
+                        : "Generate the main still for this storyboard step"
+                    }
                   >
                     {f.still_path ? "Replace hero still" : "Create hero still"}
                   </button>
+                  {f.still_path && (
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={!!busy}
+                      onClick={() => generateVisual(f.id, "still", { fresh: true })}
+                      title="Ignore the current still and restage only from cast/outfit reference images"
+                    >
+                      Restage from cast
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="btn-secondary"

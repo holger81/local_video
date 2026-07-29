@@ -238,6 +238,23 @@ def list_cast_reference_panels(
         return panels
 
 
+def _fit_cover(img, tw: int, th: int, *, prefer_upper: bool = False):
+    """Scale-cover crop into tw×th. prefer_upper keeps faces for full-body refs."""
+    from PIL import Image
+
+    img = img.convert("RGB")
+    scale = max(tw / img.width, th / img.height)
+    nw = max(tw, int(img.width * scale + 0.5))
+    nh = max(th, int(img.height * scale + 0.5))
+    img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+    left = max(0, (nw - tw) // 2)
+    if prefer_upper:
+        top = max(0, min(nh - th, int((nh - th) * 0.12)))
+    else:
+        top = max(0, (nh - th) // 2)
+    return img.crop((left, top, left + tw, top + th))
+
+
 def build_cast_reference_sheet(
     panels: list[tuple[str, Path]] | list[tuple[str, Path, bool]],
     dest: Path,
@@ -247,8 +264,9 @@ def build_cast_reference_sheet(
     label_h: int = 36,
     gap: int = 12,
     max_cols: int = 3,
+    labels: bool = True,
 ) -> Path:
-    """Composite cast/outfit refs into one contact sheet for Flux still_edit."""
+    """Composite cast/outfit refs into one contact sheet (UI / debugging)."""
     from PIL import Image, ImageDraw, ImageFont
 
     normalized: list[tuple[str, Path]] = []
@@ -267,8 +285,9 @@ def build_cast_reference_sheet(
     n = len(normalized)
     cols = min(max_cols, n)
     rows = (n + cols - 1) // cols
+    lh = label_h if labels else 0
     sheet_w = cols * cell_w + (cols + 1) * gap
-    sheet_h = rows * (cell_h + label_h) + (rows + 1) * gap
+    sheet_h = rows * (cell_h + lh) + (rows + 1) * gap
     sheet = Image.new("RGB", (sheet_w, sheet_h), (24, 24, 28))
     draw = ImageDraw.Draw(sheet)
     try:
@@ -279,21 +298,57 @@ def build_cast_reference_sheet(
     for i, (label, path) in enumerate(normalized):
         r, c = divmod(i, cols)
         x0 = gap + c * (cell_w + gap)
-        y0 = gap + r * (cell_h + label_h + gap)
-        src = Image.open(path).convert("RGB")
-        src.thumbnail((cell_w, cell_h), Image.Resampling.LANCZOS)
-        px = x0 + (cell_w - src.width) // 2
-        py = y0 + (cell_h - src.height) // 2
-        sheet.paste(src, (px, py))
-        text = (label or "")[:48]
-        if text:
-            ty = y0 + cell_h + 6
-            if font is not None:
-                draw.text((x0 + 4, ty), text, fill=(230, 230, 235), font=font)
-            else:
-                draw.text((x0 + 4, ty), text, fill=(230, 230, 235))
+        y0 = gap + r * (cell_h + lh + gap)
+        src = _fit_cover(Image.open(path), cell_w, cell_h, prefer_upper=True)
+        sheet.paste(src, (x0, y0))
+        if labels:
+            text = (label or "")[:48]
+            if text:
+                ty = y0 + cell_h + 6
+                if font is not None:
+                    draw.text((x0 + 4, ty), text, fill=(230, 230, 235), font=font)
+                else:
+                    draw.text((x0 + 4, ty), text, fill=(230, 230, 235))
 
     sheet.save(dest)
+    return dest
+
+
+def build_identity_pair_sheet(
+    scene: Path,
+    character_ref: Path,
+    dest: Path,
+    *,
+    width: int = 1024,
+    height: int = 576,
+) -> Path:
+    """Left = current scene, right = character lock (iterative Flux ReferenceLatent)."""
+    from PIL import Image
+
+    half = width // 2
+    canvas = Image.new("RGB", (width, height), (20, 20, 24))
+    left = _fit_cover(Image.open(scene), half, height, prefer_upper=False)
+    right = _fit_cover(Image.open(character_ref), half, height, prefer_upper=True)
+    canvas.paste(left, (0, 0))
+    canvas.paste(right, (half, 0))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(dest)
+    return dest
+
+
+def prepare_single_ref_canvas(
+    src: Path,
+    dest: Path,
+    *,
+    width: int = 1024,
+    height: int = 576,
+) -> Path:
+    """Face-weighted 16:9 canvas so ImageScale center-crop does not chop heads."""
+    from PIL import Image
+
+    out = _fit_cover(Image.open(src), width, height, prefer_upper=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    out.save(dest)
     return dest
 
 

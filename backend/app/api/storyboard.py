@@ -28,6 +28,8 @@ class VisualIn(BaseModel):
     workflow_id: str | None = None
     num_frames: int = 33
     video_backend: str | None = None
+    # When true, ignore existing/previous still and restage from cast refs only.
+    fresh: bool = False
 
 
 class EditStillIn(BaseModel):
@@ -172,6 +174,7 @@ async def generate_visual(project_id: int, frame_id: int, body: VisualIn | None 
             workflow_id=body.workflow_id,
             num_frames=body.num_frames,
             video_backend=body.video_backend,
+            fresh=body.fresh,
         )
     except Exception as e:
         raise HTTPException(500, str(e)) from e
