@@ -621,9 +621,16 @@ async def generate_outfit_reference(
     project_id: int,
     character_id: int,
     outfit_id: str,
+    *,
+    instruction: str | None = None,
 ) -> dict[str, Any]:
-    """Render a wardrobe look for one outfit (edit from character ref when possible)."""
+    """Generate or prompt-edit a wardrobe reference for one outfit.
+
+    - With instruction + existing outfit still → edit that still (like character refs).
+    - Otherwise dress from the character reference when available, else still_hero.
+    """
     settings = get_settings()
+    edit_instr = (instruction or "").strip() or None
     with SessionLocal() as db:
         c = db.get(Character, character_id)
         if not c or c.project_id != project_id:
@@ -635,10 +642,13 @@ async def generate_outfit_reference(
         name = c.name
         appearance = c.appearance_prompt or c.description or name
         char_ref = c.reference_image_path
+        outfit_ref = outfit.get("reference_image_path")
         wardrobe = (outfit.get("prompt") or "").strip()
         outfit_name = outfit.get("name") or "Outfit"
-        if not wardrobe:
+        if not wardrobe and not edit_instr:
             raise ValueError("outfit prompt is empty — describe the clothing first")
+        if edit_instr and not outfit_ref:
+            raise ValueError("generate an outfit look before applying an edit")
 
     from app.services.storyboard import still_negative_prompt
 
@@ -653,28 +663,27 @@ async def generate_outfit_reference(
     media.mkdir(parents=True, exist_ok=True)
     comfy = ComfyUIClient()
     seed = secrets.randbelow(2**31 - 1) ^ (int(time.time()) & 0xFFFF)
-    instruction = (
-        f"Dress {name} in this outfit ({outfit_name}): {wardrobe}. "
-        "Full body or three-quarter view so clothing is clear; keep the same person."
-    )
-    if char_ref:
-        src = _resolve_media_file(char_ref)
+    prefix = f"local_video/p{project_id}_char{character_id}_outfit_{outfit_id}"
+
+    if edit_instr and outfit_ref:
+        src = _resolve_media_file(str(outfit_ref))
         uploaded = await comfy.upload_image(src)
         edit_prompt = build_character_edit_prompt(
-            instruction=instruction,
+            instruction=edit_instr,
             name=name,
-            appearance=appearance,
+            appearance=f"{appearance}. Current outfit ({outfit_name}): {wardrobe}"
+            if wardrobe
+            else appearance,
         )
         graph = apply_params(
             "still_edit",
             {
                 "positive_prompt": edit_prompt,
                 "negative_prompt": still_negative_prompt(edit_prompt)
-                + ", naked, lingerie, wrong outfit, ignoring wardrobe instruction",
+                + ", ignoring the edit instruction, identical copy of the reference, "
+                "naked, lingerie, wrong outfit",
                 "seed": seed,
-                "filename_prefix": (
-                    f"local_video/p{project_id}_char{character_id}_outfit_{outfit_id}"
-                ),
+                "filename_prefix": prefix,
                 "width": 1024,
                 "height": 576,
                 "steps": 28,
@@ -683,22 +692,52 @@ async def generate_outfit_reference(
             uploaded_image_name=uploaded,
         )
     else:
-        prompt = (
-            f"Photorealistic character wardrobe reference. Subject: {name}. "
-            f"Look: {appearance}. Outfit ({outfit_name}): {wardrobe}. "
-            "Clear full-body or three-quarter pose, plain background, single person."
+        dress = (
+            f"Dress {name} in this outfit ({outfit_name}): {wardrobe}. "
+            "Full body or three-quarter view so clothing is clear; keep the same person."
         )
-        graph = apply_params(
-            "still_hero",
-            {
-                "positive_prompt": prompt,
-                "negative_prompt": still_negative_prompt(prompt),
-                "seed": seed,
-                "filename_prefix": (
-                    f"local_video/p{project_id}_char{character_id}_outfit_{outfit_id}"
-                ),
-            },
-        )
+        if edit_instr:
+            dress = f"{dress} Additional direction: {edit_instr}"
+        if char_ref:
+            src = _resolve_media_file(char_ref)
+            uploaded = await comfy.upload_image(src)
+            edit_prompt = build_character_edit_prompt(
+                instruction=dress,
+                name=name,
+                appearance=appearance,
+            )
+            graph = apply_params(
+                "still_edit",
+                {
+                    "positive_prompt": edit_prompt,
+                    "negative_prompt": still_negative_prompt(edit_prompt)
+                    + ", naked, lingerie, wrong outfit, ignoring wardrobe instruction",
+                    "seed": seed,
+                    "filename_prefix": prefix,
+                    "width": 1024,
+                    "height": 576,
+                    "steps": 28,
+                    "cfg": 6.5,
+                },
+                uploaded_image_name=uploaded,
+            )
+        else:
+            prompt = (
+                f"Photorealistic character wardrobe reference. Subject: {name}. "
+                f"Look: {appearance}. Outfit ({outfit_name}): {wardrobe}. "
+                "Clear full-body or three-quarter pose, plain background, single person."
+            )
+            if edit_instr:
+                prompt = f"{prompt} Additional direction: {edit_instr}"
+            graph = apply_params(
+                "still_hero",
+                {
+                    "positive_prompt": prompt,
+                    "negative_prompt": still_negative_prompt(prompt),
+                    "seed": seed,
+                    "filename_prefix": prefix,
+                },
+            )
 
     prompt_id = await comfy.queue_prompt(graph)
     history = await comfy.wait_for_prompt(prompt_id)
@@ -718,6 +757,11 @@ async def generate_outfit_reference(
             if o.get("id") == outfit_id:
                 old = o.get("reference_image_path")
                 o["reference_image_path"] = str(dest)
+                if edit_instr:
+                    o["prompt"] = _merge_appearance_with_edit(
+                        o.get("prompt") or wardrobe or "",
+                        edit_instr,
+                    )
                 updated = True
                 if old:
                     try:
@@ -729,7 +773,7 @@ async def generate_outfit_reference(
                 break
         if not updated:
             raise KeyError(f"outfit {outfit_id} not found")
-        ch.outfits = outfits
+        ch.outfits = list(outfits)
         ch.auto_detected = False
         db.commit()
         db.refresh(ch)

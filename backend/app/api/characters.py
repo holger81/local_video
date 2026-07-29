@@ -121,11 +121,18 @@ def delete_reference(project_id: int, character_id: int):
 
 @router.post("/{character_id}/outfits/{outfit_id}/reference")
 async def generate_outfit_reference(
-    project_id: int, character_id: int, outfit_id: str
+    project_id: int,
+    character_id: int,
+    outfit_id: str,
+    body: ReferenceIn | None = None,
 ):
+    body = body or ReferenceIn()
     try:
         return await char_svc.generate_outfit_reference(
-            project_id, character_id, outfit_id
+            project_id,
+            character_id,
+            outfit_id,
+            instruction=body.instruction,
         )
     except KeyError as e:
         raise HTTPException(404, str(e)) from e

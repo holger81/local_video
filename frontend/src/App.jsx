@@ -461,6 +461,7 @@ function ProjectPage() {
   const [characterEditorId, setCharacterEditorId] = useState(null);
   const [charDraft, setCharDraft] = useState(null);
   const [charEditInstr, setCharEditInstr] = useState("");
+  const [outfitEditInstr, setOutfitEditInstr] = useState({});
   const [err, setErr] = useState("");
   const [job, setJob] = useState(null);
   const [movies, setMovies] = useState([]);
@@ -626,8 +627,12 @@ function ProjectPage() {
           }))
         : [],
     });
-    setCharEditInstr("");
   }, [characterEditorId, project]);
+
+  useEffect(() => {
+    setCharEditInstr("");
+    setOutfitEditInstr({});
+  }, [characterEditorId]);
 
   useEffect(() => {
     if (!characterEditorId) return undefined;
@@ -636,6 +641,7 @@ function ProjectPage() {
         setCharacterEditorId(null);
         setCharDraft(null);
         setCharEditInstr("");
+        setOutfitEditInstr({});
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1584,6 +1590,7 @@ function ProjectPage() {
                 setCharacterEditorId(null);
                 setCharDraft(null);
                 setCharEditInstr("");
+                setOutfitEditInstr({});
               }
             }}
           >
@@ -1604,6 +1611,7 @@ function ProjectPage() {
                     setCharacterEditorId(null);
                     setCharDraft(null);
                     setCharEditInstr("");
+                    setOutfitEditInstr({});
                   }}
                 >
                   Close
@@ -1779,6 +1787,60 @@ function ProjectPage() {
                         >
                           {oRef ? "Regenerate outfit look" : "Generate outfit look"}
                         </button>
+                        {oRef && (
+                          <>
+                            <label>
+                              Edit outfit instruction
+                              <input
+                                value={outfitEditInstr[o.id] || ""}
+                                disabled={!!busy}
+                                onChange={(e) =>
+                                  setOutfitEditInstr((prev) => ({
+                                    ...prev,
+                                    [o.id]: e.target.value,
+                                  }))
+                                }
+                                placeholder="e.g. add a scarf, darker jacket…"
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              disabled={
+                                !!busy ||
+                                !(outfitEditInstr[o.id] || "").trim() ||
+                                visualBusy === `outfit-${o.id}`
+                              }
+                              onClick={async () => {
+                                const instruction = (outfitEditInstr[o.id] || "").trim();
+                                if (!instruction) return;
+                                setVisualBusy(`outfit-${o.id}`);
+                                setErr("");
+                                try {
+                                  await saveChar();
+                                  await api(
+                                    `/projects/${id}/characters/${c.id}/outfits/${o.id}/reference`,
+                                    {
+                                      method: "POST",
+                                      body: JSON.stringify({ instruction }),
+                                    }
+                                  );
+                                  setOutfitEditInstr((prev) => {
+                                    const next = { ...prev };
+                                    delete next[o.id];
+                                    return next;
+                                  });
+                                  await load();
+                                } catch (ex) {
+                                  setErr(String(ex.message || ex));
+                                } finally {
+                                  setVisualBusy(null);
+                                }
+                              }}
+                            >
+                              Apply edit to outfit
+                            </button>
+                          </>
+                        )}
                       </div>
                     );
                   })}
