@@ -32,6 +32,18 @@ function mediaUrl(absPath) {
   return null;
 }
 
+/** Secure-context-safe short id (crypto.randomUUID is missing on plain HTTP LAN). */
+function newId(prefix = "") {
+  try {
+    if (globalThis.crypto?.randomUUID) {
+      return `${prefix}${crypto.randomUUID().replace(/-/g, "").slice(0, 10)}`;
+    }
+  } catch {
+    /* fall through */
+  }
+  return `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function frameKeyframes(f) {
   if (Array.isArray(f?.keyframes) && f.keyframes.length) return f.keyframes;
   const out = [];
@@ -1654,7 +1666,7 @@ function ProjectPage() {
                           outfits: [
                             ...(d.outfits || []),
                             {
-                              id: crypto.randomUUID().replace(/-/g, "").slice(0, 10),
+                              id: newId(),
                               name: "New outfit",
                               prompt: "",
                               reference_image_path: null,
