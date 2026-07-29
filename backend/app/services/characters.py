@@ -318,6 +318,47 @@ def _resolve_media_file(stored: str) -> Path:
     return resolve(stored)
 
 
+def build_character_edit_prompt(
+    *, instruction: str, name: str, appearance: str = ""
+) -> str:
+    """Prompt for editing a character reference still (stronger change emphasis)."""
+    from app.services.storyboard import _truncate
+
+    instr = (instruction or "").strip()
+    if not instr:
+        raise ValueError("edit instruction is required")
+    subject = (name or "the character").strip()
+    parts = [
+        f"Edit this character reference portrait of {subject}.",
+        f"REQUIRED CHANGE — make this clearly visible in the result: {instr}.",
+        "Apply the requested change strongly. When the instruction alters face shape, "
+        "body, hair, or wardrobe, do not keep the previous version of those features.",
+        "Keep plain studio background, single person, clear face, full frame, "
+        "no collage or text overlays.",
+    ]
+    look = _truncate((appearance or "").strip(), 280)
+    if look:
+        parts.append(
+            f"Base look (override anything the instruction changes): {look}."
+        )
+    return " ".join(parts)
+
+
+def _merge_appearance_with_edit(appearance: str, instruction: str) -> str:
+    base = (appearance or "").strip()
+    instr = (instruction or "").strip()
+    if not instr:
+        return base
+    if not base:
+        return instr
+    marker = "Applied edits:"
+    if marker in base:
+        if instr.lower() in base.lower():
+            return base
+        return f"{base}\n- {instr}"
+    return f"{base}\n\n{marker}\n- {instr}"
+
+
 async def generate_reference(
     project_id: int,
     character_id: int,
@@ -325,6 +366,9 @@ async def generate_reference(
     instruction: str | None = None,
 ) -> dict[str, Any]:
     """Generate or edit the character reference still used as look ground truth."""
+    import secrets
+    import time
+
     settings = get_settings()
     with SessionLocal() as db:
         c = db.get(Character, character_id)
@@ -338,7 +382,7 @@ async def generate_reference(
         premise = p.premise or ""
         genre = p.genre or ""
 
-    from app.services.storyboard import build_edit_prompt, still_negative_prompt
+    from app.services.storyboard import still_negative_prompt
 
     media = (
         settings.media_dir
@@ -357,37 +401,47 @@ async def generate_reference(
         prompt = f"{genre} genre. {prompt}"
     if premise:
         prompt = f"Film continuity for: {premise[:200]}. {prompt}"
-    if instruction:
+    if instruction and not old_ref:
         prompt = f"{prompt} Additional direction: {instruction.strip()}"
 
     comfy = ComfyUIClient()
-    neg = still_negative_prompt(prompt)
+    # Fresh seed on every edit so ReferenceLatent does not stick to one sample.
+    seed = secrets.randbelow(2**31 - 1) ^ (int(time.time()) & 0xFFFF)
     if old_ref and instruction:
         src = _resolve_media_file(old_ref)
         uploaded = await comfy.upload_image(src)
+        edit_prompt = build_character_edit_prompt(
+            instruction=instruction.strip(),
+            name=name,
+            appearance=appearance,
+        )
+        neg = (
+            still_negative_prompt(edit_prompt)
+            + ", ignoring the edit instruction, identical copy of the reference, "
+            "unchanged face shape"
+        )
         graph = apply_params(
             "still_edit",
             {
-                "positive_prompt": build_edit_prompt(
-                    instruction=instruction or appearance, frame_prompt=prompt
-                ),
+                "positive_prompt": edit_prompt,
                 "negative_prompt": neg,
-                "seed": character_id * 41,
+                "seed": seed,
                 "filename_prefix": f"local_video/p{project_id}_char{character_id}_ref",
                 "width": 1024,
                 "height": 576,
-                "steps": 20,
-                "cfg": 5.0,
+                "steps": 28,
+                "cfg": 6.5,
             },
             uploaded_image_name=uploaded,
         )
     else:
+        neg = still_negative_prompt(prompt)
         graph = apply_params(
             "still_hero",
             {
                 "positive_prompt": prompt,
                 "negative_prompt": neg,
-                "seed": character_id * 41,
+                "seed": seed if instruction else (character_id * 41),
                 "filename_prefix": f"local_video/p{project_id}_char{character_id}_ref",
             },
         )
@@ -401,11 +455,25 @@ async def generate_reference(
     dest = media / out["filename"]
     await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
 
+    # Remove previous reference file when replaced by an edit.
+    if old_ref and instruction:
+        try:
+            old = _resolve_media_file(old_ref)
+            if old.resolve() != dest.resolve() and old.is_file():
+                old.unlink()
+        except (FileNotFoundError, ValueError, OSError):
+            pass
+
     with SessionLocal() as db:
         ch = db.get(Character, character_id)
         assert ch
         ch.reference_image_path = str(dest)
         ch.auto_detected = False
+        if instruction and (instruction or "").strip():
+            ch.appearance_prompt = _merge_appearance_with_edit(
+                ch.appearance_prompt or appearance or "",
+                instruction.strip(),
+            )
         db.commit()
         db.refresh(ch)
         return _character_dict(ch)
