@@ -529,7 +529,11 @@ async def generate_frame_visual(
     video_backend: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
-    from app.services.characters import cast_sheet_for_frame, cast_sheet_for_project
+    from app.services.characters import (
+        cast_sheet_for_frame,
+        cast_sheet_for_project,
+        pick_cast_reference_path,
+    )
     from app.services.video_backends import get_video_backend, normalize_backend_id
 
     try:
@@ -554,15 +558,54 @@ async def generate_frame_visual(
         project_backend = getattr(p, "video_backend", None)
 
     if kind == "still":
-        workflow_id = workflow_id or "still_hero"
-        params = {
-            "positive_prompt": prompt,
-            "negative_prompt": still_negative_prompt(frame_prompt),
-            "seed": frame_id * 17,
-            "filename_prefix": f"local_video/p{project_id}_f{frame_id}_still",
-        }
-        graph = apply_params(workflow_id, params)
         comfy = ComfyUIClient()
+        seed = frame_id * 17
+        prefix = f"local_video/p{project_id}_f{frame_id}_still"
+        neg = still_negative_prompt(frame_prompt)
+        # Prefer img2img from cast/outfit reference when available (same as keyframes).
+        try:
+            ref = pick_cast_reference_path(
+                project_id, frame_id=frame_id, prompt=frame_prompt or prompt
+            )
+        except KeyError:
+            ref = None
+        if ref is not None:
+            uploaded = await comfy.upload_image(ref)
+            edit_prompt = build_edit_prompt(
+                instruction=(
+                    "Restage this same person into a new cinematic shot matching the "
+                    "beat. Keep face and identity locked. Dress them per the cast-lock "
+                    f"wardrobe for this beat even if the reference clothing differs: "
+                    f"{prompt}"
+                ),
+                frame_prompt=frame_prompt,
+                cast_sheet=cast_sheet,
+            )
+            graph = apply_params(
+                "still_edit",
+                {
+                    "positive_prompt": edit_prompt,
+                    "negative_prompt": neg,
+                    "seed": seed,
+                    "filename_prefix": prefix,
+                    "width": 1024,
+                    "height": 576,
+                    "steps": 28,
+                    "cfg": 6.5,
+                },
+                uploaded_image_name=uploaded,
+            )
+        else:
+            workflow_id = workflow_id or "still_hero"
+            graph = apply_params(
+                workflow_id,
+                {
+                    "positive_prompt": prompt,
+                    "negative_prompt": neg,
+                    "seed": seed,
+                    "filename_prefix": prefix,
+                },
+            )
         prompt_id = await comfy.queue_prompt(graph)
         history = await comfy.wait_for_prompt(prompt_id)
         outputs = comfy.collect_outputs(history)
@@ -772,6 +815,12 @@ async def edit_frame_still(
 ) -> dict[str, Any]:
     """Prompt-edit an existing still (Flux ReferenceLatent), replacing the still file."""
     settings = get_settings()
+    from app.services.characters import cast_sheet_for_frame, cast_sheet_for_project
+
+    try:
+        cast_sheet = cast_sheet_for_frame(project_id, frame_id)
+    except KeyError:
+        cast_sheet = cast_sheet_for_project(project_id)
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
@@ -782,7 +831,11 @@ async def edit_frame_still(
         frame_prompt = f.visual_prompt or f.description or ""
 
     source = _resolve_media_file(still_stored)
-    prompt = build_edit_prompt(instruction=instruction, frame_prompt=frame_prompt)
+    prompt = build_edit_prompt(
+        instruction=instruction,
+        frame_prompt=frame_prompt,
+        cast_sheet=cast_sheet,
+    )
     workflow_id = workflow_id or "still_edit"
     comfy = ComfyUIClient()
     uploaded = await comfy.upload_image(source)
@@ -1095,7 +1148,7 @@ async def _render_keyframe_image(
     """
     from app.services.characters import (
         cast_sheet_for_frame,
-        pick_character_reference_path,
+        pick_cast_reference_path,
     )
 
     settings = get_settings()
@@ -1140,13 +1193,17 @@ async def _render_keyframe_image(
     else:
         if force_edit:
             raise ValueError("edit source required")
-        char_ref = pick_character_reference_path(project_id, prompt)
+        char_ref = pick_cast_reference_path(
+            project_id, frame_id=frame_id, prompt=prompt
+        )
         if char_ref is not None:
             uploaded = await comfy.upload_image(char_ref)
             edit_prompt = build_edit_prompt(
                 instruction=(
                     "Restage this same person into a new cinematic shot matching the "
-                    f"instruction while keeping their face, hair, and wardrobe: {prompt}"
+                    "instruction. Keep face and identity locked. Dress them per the "
+                    "cast-lock wardrobe for this beat even if the reference clothing "
+                    f"differs: {prompt}"
                 ),
                 frame_prompt=prompt,
                 cast_sheet=cast_sheet,

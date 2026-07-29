@@ -166,6 +166,97 @@ def cast_sheet_for_frame(project_id: int, frame_id: int) -> str:
     )
 
 
+def pick_cast_reference_path(
+    project_id: int,
+    *,
+    frame_id: int | None = None,
+    prompt: str = "",
+) -> Path | None:
+    """Best reference still for locking identity (and wardrobe when available).
+
+    Prefers the frame's cast selection when ``frame_id`` is set. For each candidate,
+    uses the outfit reference image when present, else the character portrait.
+    Among candidates, prefers a name/alias mentioned in the prompt; otherwise a
+    sole cast member with a reference, or a single approved reference.
+    """
+    with SessionLocal() as db:
+        p = db.get(Project, project_id)
+        if not p:
+            raise KeyError(f"project {project_id} not found")
+        chars = sorted(p.characters, key=lambda x: x.position)
+        by_id = {c.id: c for c in chars}
+        selection: list[dict[str, Any]] | None = None
+        if frame_id is not None:
+            f = db.get(StoryboardFrame, frame_id)
+            if not f or f.project_id != project_id:
+                raise KeyError(f"frame {frame_id} not found")
+            selection = list(getattr(f, "cast", None) or []) or None
+
+        selected: list[tuple[Character, str | None]] = []
+        if selection:
+            for item in selection:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    cid = int(item.get("character_id"))
+                except (TypeError, ValueError):
+                    continue
+                c = by_id.get(cid)
+                if not c:
+                    continue
+                oid = item.get("outfit_id")
+                selected.append((c, str(oid) if oid else None))
+        else:
+            selected = [(c, None) for c in chars]
+
+        candidates: list[tuple[Character, Path]] = []
+        for c, outfit_id in selected:
+            outfits = _normalize_outfits(getattr(c, "outfits", None) or [])
+            outfit = _outfit_by_id(outfits, outfit_id)
+            stored = ""
+            if outfit:
+                stored = str(outfit.get("reference_image_path") or "").strip()
+            if not stored:
+                stored = str(c.reference_image_path or "").strip()
+            if not stored:
+                continue
+            try:
+                from app.services.storyboard import _resolve_media_file
+
+                path = _resolve_media_file(stored)
+            except (FileNotFoundError, ValueError, OSError):
+                continue
+            if path.is_file():
+                candidates.append((c, path))
+
+    if not candidates:
+        return None
+
+    prompt_l = (prompt or "").lower()
+    matched: list[tuple[Character, Path]] = []
+    for c, path in candidates:
+        names = [c.name or "", *(c.aliases or [])]
+        if any(n.strip() and n.strip().lower() in prompt_l for n in names):
+            matched.append((c, path))
+
+    chosen: tuple[Character, Path] | None = None
+    if len(matched) == 1:
+        chosen = matched[0]
+    elif len(matched) > 1:
+        approved = [(c, p) for c, p in matched if c.approved]
+        chosen = approved[0] if approved else matched[0]
+    elif len(candidates) == 1:
+        chosen = candidates[0]
+    else:
+        approved = [(c, p) for c, p in candidates if c.approved]
+        if len(approved) == 1:
+            chosen = approved[0]
+        else:
+            return None
+
+    return chosen[1]
+
+
 def pick_character_reference_path(
     project_id: int, prompt: str = ""
 ) -> Path | None:
@@ -174,50 +265,7 @@ def pick_character_reference_path(
     Prefers a name/alias mentioned in the prompt; otherwise a sole cast member with a
     reference, or a single approved reference when several exist.
     """
-    with SessionLocal() as db:
-        p = db.get(Project, project_id)
-        if not p:
-            raise KeyError(f"project {project_id} not found")
-        chars = [
-            c
-            for c in sorted(p.characters, key=lambda x: x.position)
-            if (c.reference_image_path or "").strip()
-        ]
-    if not chars:
-        return None
-
-    prompt_l = (prompt or "").lower()
-    matched: list[Character] = []
-    for c in chars:
-        names = [c.name or "", *(c.aliases or [])]
-        if any(n.strip() and n.strip().lower() in prompt_l for n in names):
-            matched.append(c)
-
-    chosen: Character | None = None
-    if len(matched) == 1:
-        chosen = matched[0]
-    elif len(matched) > 1:
-        approved = [c for c in matched if c.approved]
-        chosen = approved[0] if approved else matched[0]
-    elif len(chars) == 1:
-        chosen = chars[0]
-    else:
-        approved = [c for c in chars if c.approved]
-        if len(approved) == 1:
-            chosen = approved[0]
-        else:
-            return None
-
-    stored = (chosen.reference_image_path or "").strip()
-    if not stored:
-        return None
-    try:
-        from app.services.storyboard import _resolve_media_file
-
-        path = _resolve_media_file(stored)
-    except (FileNotFoundError, ValueError, OSError):
-        return None
-    return path if path.is_file() else None
+    return pick_cast_reference_path(project_id, prompt=prompt)
 
 
 def create_character(
