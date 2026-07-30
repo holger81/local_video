@@ -2264,7 +2264,7 @@ function ProjectPage() {
                     onClick={() => generateVisual(f.id, "still")}
                     title={
                       f.still_path
-                        ? "Update this still while keeping existing character faces (continuity)"
+                        ? "Update this still; corrects cast toward outfit refs while keeping other faces"
                         : "Generate the main still for this storyboard step"
                     }
                   >
@@ -2276,7 +2276,7 @@ function ProjectPage() {
                       className="ghost"
                       disabled={!!busy}
                       onClick={() => generateVisual(f.id, "still", { fresh: true })}
-                      title="Ignore the current still and restage only from cast/outfit reference images"
+                      title="Ignore the current still and rebuild only from cast/outfit reference images (use when wardrobe/faces drifted)"
                     >
                       Restage from cast
                     </button>

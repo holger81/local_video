@@ -321,16 +321,21 @@ def build_identity_pair_sheet(
     *,
     width: int = 1024,
     height: int = 576,
+    character_ratio: float = 0.58,
 ) -> Path:
-    """Left = current scene, right = character lock (iterative Flux ReferenceLatent)."""
+    """Left = current scene, right = character lock (iterative Flux ReferenceLatent).
+
+    Right panel is slightly wider so ReferenceLatent weights the identity/wardrobe lock.
+    """
     from PIL import Image
 
-    half = width // 2
+    right_w = max(width // 3, min(width - width // 4, int(width * character_ratio)))
+    left_w = width - right_w
     canvas = Image.new("RGB", (width, height), (20, 20, 24))
-    left = _fit_cover(Image.open(scene), half, height, prefer_upper=False)
-    right = _fit_cover(Image.open(character_ref), half, height, prefer_upper=True)
+    left = _fit_cover(Image.open(scene), left_w, height, prefer_upper=False)
+    right = _fit_cover(Image.open(character_ref), right_w, height, prefer_upper=True)
     canvas.paste(left, (0, 0))
-    canvas.paste(right, (half, 0))
+    canvas.paste(right, (left_w, 0))
     dest.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(dest)
     return dest

@@ -195,6 +195,25 @@ def wardrobe_conflict_negatives(appearance: str, wardrobe: str) -> str:
     return ", ".join(bits)
 
 
+def wardrobe_gap_negatives(wardrobe: str) -> str:
+    """Negate common extras that Flux invents when they are absent from the outfit."""
+    ward = (wardrobe or "").lower()
+    if not ward:
+        return ""
+    bits: list[str] = []
+    if not re.search(r"glove|mitten", ward):
+        bits.append("gloves, mittens, black gloves, work gloves, gauntlets")
+    if not re.search(r"helmet|hat|cap|beanie", ward):
+        bits.append("helmet, space helmet")
+    if not re.search(r"(?i)space\s*suit|spacesuit|astronaut|eva", ward):
+        bits.append("spacesuit, astronaut suit, EVA suit, pressure suit")
+    if re.search(r"short", ward) and not re.search(r"yellow", ward):
+        bits.append("yellow shorts")
+    if re.search(r"sneaker|shoe|boot", ward) and not re.search(r"black", ward):
+        bits.append("black shoes, black boots")
+    return ", ".join(bits)
+
+
 def is_stylized_genre(genre: str = "") -> bool:
     return bool(_ANIMATED_GENRE_RE.search(genre or ""))
 

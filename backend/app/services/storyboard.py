@@ -618,7 +618,11 @@ async def generate_frame_visual(
             list_cast_reference_panels,
             prepare_single_ref_canvas,
         )
-        from app.services.llm import style_negatives, wardrobe_conflict_negatives
+        from app.services.llm import (
+            style_negatives,
+            wardrobe_conflict_negatives,
+            wardrobe_gap_negatives,
+        )
 
         # UI contact sheet (labeled); generation uses iterative single-ID locks instead.
         try:
@@ -680,6 +684,7 @@ async def generate_frame_visual(
 
         wardrobe_neg = ""
         wardrobe_by_name: dict[str, str] = {}
+        wardrobe_prompt_by_name: dict[str, str] = {}
         try:
             with SessionLocal() as db:
                 fr = db.get(StoryboardFrame, frame_id)
@@ -691,6 +696,7 @@ async def generate_frame_visual(
                 oname = (e.get("outfit_name") or "").strip()
                 ward = (e.get("wardrobe_prompt") or "").strip()
                 if ward:
+                    wardrobe_prompt_by_name[name.lower()] = ward
                     wardrobe_by_name[name.lower()] = (
                         f"{name} / {oname}: {ward}" if oname else f"{name}: {ward}"
                     )
@@ -702,6 +708,7 @@ async def generate_frame_visual(
                             e.get("appearance_prompt") or "",
                             ward,
                         ),
+                        wardrobe_gap_negatives(ward),
                     )
                     if x
                 )
@@ -719,24 +726,33 @@ async def generate_frame_visual(
 
         if panels:
             # Flux ReferenceLatent is single-identity: lock characters one at a time.
+            # Each pass CORRECTS that character toward the RIGHT panel; other people on
+            # the LEFT stay frozen (do not "keep same" the target — that froze wrong outfits).
             current: Path | None = None
             prompt_id = ""
             for i, (label, path, _approved) in enumerate(panels):
                 name = (label.split("/")[0].strip() or label).strip()
                 ward_bit = wardrobe_by_name.get(name.lower(), "")
+                ward_exact = wardrobe_prompt_by_name.get(name.lower(), "")
+                ward_must = (
+                    f"{name} MUST wear exactly this outfit as shown on the RIGHT panel: "
+                    f"{ward_exact}. Copy the RIGHT clothing colors, pattern, and accessories; "
+                    "do not invent gloves, different shorts, or a different shirt. "
+                    if ward_exact
+                    else f"Match {name}'s clothing exactly to the RIGHT panel. "
+                )
                 if i == 0 and continuity_base is not None:
-                    # Anchor to prior still so regenerate / continue does not invent
-                    # a new face family that later shots then follow.
                     ref = build_identity_pair_sheet(
                         continuity_base, path, media / "cast_lock_0.png"
                     )
                     instruction = (
-                        "LEFT half is the continuity still — keep those character faces, "
-                        "hair, proportions, and art style. RIGHT half is the identity/"
-                        f"wardrobe lock for {label}. Adapt the LEFT scene into this beat "
-                        f"while making {name} match the RIGHT panel (face + wardrobe). "
-                        "Do not redesign other people from LEFT into strangers. "
-                        "Output ONE continuous shot, not a split screen. "
+                        "LEFT half is the continuity still (scene + other cast). "
+                        f"RIGHT half is the ground-truth look for {label}. "
+                        f"REPLACE/CORRECT {name} so face, hair, eyes, proportions, art "
+                        f"style, AND wardrobe match the RIGHT panel exactly. "
+                        f"{ward_must}"
+                        "Keep other people from LEFT unchanged. Adapt pose/placement to "
+                        "the beat. ONE continuous shot — not a split screen. "
                         + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
                         + f"Scene beat: {_truncate(frame_prompt, 280)}"
                     )
@@ -746,8 +762,9 @@ async def generate_frame_visual(
                     )
                     instruction = (
                         f"Restage this exact character ({label}) into the beat. "
-                        "Keep their face, eye color, hair shape, body proportions, and "
-                        "art style identical to the reference. Clothing as shown. "
+                        "Keep face, eye color, hair, proportions, and art style identical "
+                        "to the reference. "
+                        f"{ward_must}"
                         + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
                         + f"Scene beat: {_truncate(frame_prompt, 280)}"
                     )
@@ -757,12 +774,12 @@ async def generate_frame_visual(
                         current, path, media / f"cast_lock_{i}.png"
                     )
                     instruction = (
-                        "LEFT half is the current scene — keep that scene and every "
-                        "character already in it with the SAME faces (do not restyle "
-                        "or age them). RIGHT half is the identity lock for "
-                        f"{label}. Add or correct {name} so they match the RIGHT panel "
-                        "exactly (face, eyes, hair, proportions, art style, wardrobe). "
-                        "Output ONE continuous shot, not a split screen. "
+                        "LEFT half is the current scene. RIGHT half is the ground-truth "
+                        f"look for {label}. REPLACE or ADD {name} so they match the RIGHT "
+                        "panel exactly — same face, eyes, hair, proportions, art style, "
+                        f"and wardrobe. {ward_must}"
+                        "Freeze every OTHER character from LEFT (do not restyle them). "
+                        "ONE continuous shot — not a split screen. "
                         + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
                         + f"Scene beat: {_truncate(frame_prompt, 280)}"
                     )
@@ -783,8 +800,8 @@ async def generate_frame_visual(
                         "filename_prefix": f"{prefix}_p{i}",
                         "width": 1024,
                         "height": 576,
-                        "steps": 28,
-                        "cfg": 4.0,
+                        "steps": 30,
+                        "cfg": 5.5,
                     },
                     uploaded_image_name=uploaded,
                 )
