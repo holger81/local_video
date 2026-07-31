@@ -196,21 +196,18 @@ def wardrobe_conflict_negatives(appearance: str, wardrobe: str) -> str:
 
 
 def wardrobe_gap_negatives(wardrobe: str) -> str:
-    """Negate common extras that Flux invents when they are absent from the outfit."""
+    """Negate accessories Flux often invents when the outfit text omits them.
+
+    Only uses the outfit prompt itself — no scene-specific hardcodes.
+    """
     ward = (wardrobe or "").lower()
     if not ward:
         return ""
     bits: list[str] = []
     if not re.search(r"glove|mitten", ward):
-        bits.append("gloves, mittens, black gloves, work gloves, gauntlets")
-    if not re.search(r"helmet|hat|cap|beanie", ward):
-        bits.append("helmet, space helmet")
-    if not re.search(r"(?i)space\s*suit|spacesuit|astronaut|eva", ward):
-        bits.append("spacesuit, astronaut suit, EVA suit, pressure suit")
-    if re.search(r"short", ward) and not re.search(r"yellow", ward):
-        bits.append("yellow shorts")
-    if re.search(r"sneaker|shoe|boot", ward) and not re.search(r"black", ward):
-        bits.append("black shoes, black boots")
+        bits.append("gloves, mittens, gauntlets")
+    if not re.search(r"helmet", ward):
+        bits.append("helmet")
     return ", ".join(bits)
 
 
@@ -224,7 +221,7 @@ def style_lock_phrase(genre: str = "") -> str:
     if is_stylized_genre(g):
         return (
             f"{g} style: match the cast reference art style exactly "
-            "(stylized 3D / puppet look), one continuous camera shot, one moment only"
+            "(stylized look from the cast refs), one continuous camera shot, one moment only"
         )
     if g:
         return (
@@ -240,7 +237,7 @@ def style_negatives(genre: str = "") -> str:
     if is_stylized_genre(genre):
         return (
             "photorealistic human, live action, real photograph, documentary photo, "
-            "realistic skin pores, real child, stock photo"
+            "realistic skin pores, real person, stock photo"
         )
     return ""
 

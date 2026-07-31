@@ -725,48 +725,77 @@ async def generate_frame_visual(
         )
 
         if panels:
-            # Flux ReferenceLatent is single-identity: lock characters one at a time.
-            # Each pass CORRECTS that character toward the RIGHT panel; other people on
-            # the LEFT stay frozen (do not "keep same" the target — that froze wrong outfits).
+            # Flux ReferenceLatent is single-identity: lock cast one at a time.
+            # Pass 0 places ONLY the first cast member; later passes REPLACE — never ADD.
+            cast_names = [
+                (lab.split("/")[0].strip() or lab).strip() for lab, _p, _a in panels
+            ]
+            cast_count = len(cast_names)
+            cast_list = ", ".join(cast_names)
             current: Path | None = None
             prompt_id = ""
+            neg = (
+                neg
+                + ", extra person, duplicate character, additional character, crowd, "
+                "wrong cast size"
+            )
             for i, (label, path, _approved) in enumerate(panels):
                 name = (label.split("/")[0].strip() or label).strip()
                 ward_bit = wardrobe_by_name.get(name.lower(), "")
                 ward_exact = wardrobe_prompt_by_name.get(name.lower(), "")
                 ward_must = (
-                    f"{name} MUST wear exactly this outfit as shown on the RIGHT panel: "
-                    f"{ward_exact}. Copy the RIGHT clothing colors, pattern, and accessories; "
-                    "do not invent gloves, different shorts, or a different shirt. "
+                    f"{name} MUST wear exactly the outfit shown on the RIGHT panel: "
+                    f"{ward_exact}. Match RIGHT clothing; do not invent garments or "
+                    "accessories that are not on the RIGHT. "
                     if ward_exact
                     else f"Match {name}'s clothing exactly to the RIGHT panel. "
                 )
+                others = [n for n in cast_names if n.lower() != name.lower()]
+                others_bit = (
+                    f"Keep {', '.join(others)} from LEFT unchanged. "
+                    if others and i > 0
+                    else ""
+                )
+                beat_bit = _truncate(frame_prompt, 280)
+                if i == 0 and cast_count > 1 and continuity_base is None:
+                    # Avoid the beat naming other cast members so Flux doesn't invent them.
+                    beat_bit = (
+                        f"{name} alone in this beat setting. "
+                        f"Context: {_truncate(frame_prompt, 200)}"
+                    )
                 if i == 0 and continuity_base is not None:
                     ref = build_identity_pair_sheet(
                         continuity_base, path, media / "cast_lock_0.png"
                     )
                     instruction = (
-                        "LEFT half is the continuity still (scene + other cast). "
-                        f"RIGHT half is the ground-truth look for {label}. "
-                        f"REPLACE/CORRECT {name} so face, hair, eyes, proportions, art "
-                        f"style, AND wardrobe match the RIGHT panel exactly. "
-                        f"{ward_must}"
-                        "Keep other people from LEFT unchanged. Adapt pose/placement to "
-                        "the beat. ONE continuous shot — not a split screen. "
+                        "LEFT half is the continuity still. RIGHT half is the "
+                        f"ground-truth look for {label}. "
+                        f"REPLACE {name} so face, hair, eyes, proportions, art style, "
+                        f"AND wardrobe match the RIGHT panel exactly. {ward_must}"
+                        f"Final shot must contain exactly {cast_count} people: {cast_list}. "
+                        "Remove anyone not in that cast list. "
+                        f"{others_bit}"
+                        "ONE continuous shot — not a split screen. "
                         + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
-                        + f"Scene beat: {_truncate(frame_prompt, 280)}"
+                        + f"Scene beat: {beat_bit}"
                     )
                 elif i == 0:
                     ref = prepare_single_ref_canvas(
                         path, media / "cast_lock_0.png"
                     )
+                    only = (
+                        f"Show ONLY {name} in this shot — no other cast members yet. "
+                        if cast_count > 1
+                        else ""
+                    )
                     instruction = (
                         f"Restage this exact character ({label}) into the beat. "
+                        f"{only}"
                         "Keep face, eye color, hair, proportions, and art style identical "
                         "to the reference. "
                         f"{ward_must}"
                         + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
-                        + f"Scene beat: {_truncate(frame_prompt, 280)}"
+                        + f"Scene beat: {beat_bit}"
                     )
                 else:
                     assert current is not None
@@ -775,13 +804,16 @@ async def generate_frame_visual(
                     )
                     instruction = (
                         "LEFT half is the current scene. RIGHT half is the ground-truth "
-                        f"look for {label}. REPLACE or ADD {name} so they match the RIGHT "
-                        "panel exactly — same face, eyes, hair, proportions, art style, "
-                        f"and wardrobe. {ward_must}"
-                        "Freeze every OTHER character from LEFT (do not restyle them). "
+                        f"look for {label}. REPLACE any wrong stand-in for {name} with "
+                        f"{name} matching the RIGHT panel exactly — same face, eyes, hair, "
+                        "proportions, art style, and wardrobe. "
+                        f"Do NOT add an extra person. {ward_must}"
+                        f"Final shot must contain exactly {cast_count} people: {cast_list}. "
+                        "Remove duplicates and anyone not on that list. "
+                        f"{others_bit}"
                         "ONE continuous shot — not a split screen. "
                         + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
-                        + f"Scene beat: {_truncate(frame_prompt, 280)}"
+                        + f"Scene beat: {beat_bit}"
                     )
                 uploaded = await comfy.upload_image(ref)
                 edit_prompt = build_edit_prompt(
