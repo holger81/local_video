@@ -161,7 +161,7 @@ class Shot(Base):
     prompt_base: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="pending")
     frame_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # None = inherit job.video_backend; otherwise wan|ltx
+    # None = inherit job.video_backend; otherwise wan|ltx2|ltx23
     video_backend: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     job: Mapped[RenderJob] = relationship(back_populates="shots")

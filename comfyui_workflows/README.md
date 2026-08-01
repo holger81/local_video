@@ -17,46 +17,44 @@ See also [docs/video-backends.md](../docs/video-backends.md) for Wan vs LTX sele
 | Backend | Role | T2V / I2V / FLF map IDs |
 |---------|------|-------------------------|
 | **wan** (default) | Proven Wan 2.2 path; FLF is two-pass high→low | `wan22_t2v`, `wan22_i2v`, `wan22_flf2v` |
-| **ltx** | LTX T2V / I2V / FLF packaged (`ltx-2-19b-dev-fp8`) | `ltx_t2v`, `ltx_i2v`, `ltx_flf2v` |
-| **ltx ic-lora** | Ingredients reference-sheet path (identity lock) | `ltx_ic_lora` |
+| **ltx2** | LTX-2 19B FP8 | `ltx2_t2v`, `ltx2_i2v`, `ltx2_flf2v` |
+| **ltx23** | LTX-2.3 22B distilled FP8 | `ltx23_t2v`, `ltx23_i2v`, `ltx23_flf2v` (+ `ltx23_ic_lora`) |
 
-### LTX (ready)
+Legacy `"ltx"` / maps `ltx_*` alias to **ltx2** motion graphs (IC-LoRA legacy → ltx23).
 
-API graphs under `api/ltx_{t2v,i2v,flf2v}.json` use the working distilled single-pass topology (SaveVideo only). Confirm `GET /api/video-backends` → all three `*_ready: true` for `ltx`.
+### LTX-2 / LTX-2.3
+
+Confirm `GET /api/video-backends` → `flf2v_ready` for `ltx2` and `ltx23`.
 
 | ID | Role |
 |----|------|
-| `ltx_flf2v` | First + last frame (keyframe bridges) |
-| `ltx_i2v` | Start image only (same graph; start fed as both guides) |
-| `ltx_t2v` | Text only (guides stripped; size from width/height) |
-| `ltx_ic_lora` | **IC-LoRA Ingredients** — reference sheet + two-part prompt |
+| `ltx2_flf2v` / `ltx23_flf2v` | First + last frame (keyframe bridges) |
+| `ltx2_i2v` / `ltx23_i2v` | Start image only (start fed as both guides) |
+| `ltx2_t2v` / `ltx23_t2v` | Text only |
+| `ltx23_ic_lora` | **IC-LoRA Ingredients** — reference sheet + two-part prompt |
 
 Models (map `model_files`):
 
 ```
 ComfyUI/models/
-  checkpoints/ltx-2-19b-dev-fp8.safetensors   # T2V/I2V/FLF default
-  checkpoints/ltx-2.3-22b-distilled-fp8.safetensors  # IC-LoRA Ingredients only
+  checkpoints/ltx-2-19b-dev-fp8.safetensors            # ltx2
+  checkpoints/ltx-2.3-22b-distilled-fp8.safetensors    # ltx23 (+ IC-LoRA)
   text_encoders/gemma_3_12B_it_fp4_mixed.safetensors
-  loras/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors   # IC-LoRA only
+  loras/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors   # ltx23 IC-LoRA only
 ```
 
-Frame counts for plain LTX T2V/I2V/FLF must be **`8n+1`** (default **33**). On ROCm, avoid `--fp16-vae` with FP8 LTX (can yield black frames).
+Frame counts for LTX T2V/I2V/FLF must be **`8n+1`** (default **33**). On ROCm, avoid `--fp16-vae` with FP8 LTX (can yield black frames).
 
-### LTX IC-LoRA Ingredients (`ltx_ic_lora`)
+### LTX IC-LoRA Ingredients (`ltx23_ic_lora`)
 
-Comfy-Org template packaged as `import/ltx_ic_lora.json` + `api/ltx_ic_lora.json`. This is **not** a drop-in for FLF bridges — it expects:
+Packaged as `import/ltx23_ic_lora.json` + `api/ltx23_ic_lora.json`. Not a drop-in for FLF bridges — expects:
 
 1. A **reference sheet** image (character close-ups + turnaround, props, location; black background, no text)
-2. Prompt labeled `### Reference Sheet Description` / `### Target Description` (or `Reference sheet:` / `Generated video:`)
-3. Parameterized **`width` / `height` / `fps` / `num_frames`** (or `duration_sec` via `LtxBackend.render_ic_lora`, snapped to `8n+1`)
-4. LoRA `ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors` via `GetICLoRAParameters` → `LTXVAddGuide`
+2. Prompt labeled `### Reference Sheet Description` / `### Target Description`
+3. Parameterized **`width` / `height` / `fps` / `num_frames`** (or `duration_sec` via `render_ic_lora`, snapped to `8n+1`)
+4. LoRA `ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors`
 
-Trained bucket (best quality): **768×448**, **121** frames, **24** fps. For quick previews use e.g. **512×288**, **~2s** (`duration_sec=2` → 49 frames @ 24fps). Other sizes are out-of-distribution but supported.
-
-`bypass_first_frame` defaults **on** in the API graph. Studio movie/agent does not auto-route here yet — call `LtxBackend.render_ic_lora(...)` or the workflow map directly; cast-sheet builder integration is next.
-
-Official Comfy-Org UI blueprints (optional inspect / customize) live in `import/ltx_*.json`.
+Trained bucket: **768×448**, **121** frames, **24** fps. Studio movie/agent does not auto-route here yet.
 
 ## Import into ComfyUI
 
@@ -66,8 +64,8 @@ Official Comfy-Org UI blueprints (optional inspect / customize) live in `import/
    - `import/wan22_i2v.json` — official 14B I2V template
    - `import/wan22_t2v_5b.json` / `wan22_i2v_5b.json` — flat **5B TI2V** graphs tuned to **33 frames** (recommended for the agent)
    - `import/wan22_flf2v.json` — official **14B FLF2V** template (first + last frame)
-   - `import/ltx_flf2v.json` / `ltx_i2v.json` / `ltx_t2v.json` — LTX 2.3 UI blueprints (optional inspect)
-   - `import/ltx_ic_lora.json` — LTX 2.3 **IC-LoRA Ingredients** reference-sheet template
+   - `import/ltx2_*.json` — LTX-2 (19B) UI blueprints
+   - `import/ltx23_*.json` — LTX-2.3 UI blueprints (+ `ltx23_ic_lora`)
    - `import/still_hero.json` — simple SD1.5-style still (change checkpoint to yours)
 3. Confirm model filenames match your `ComfyUI/models/` tree.
 4. Run a test prompt once.
@@ -114,10 +112,10 @@ UNET loaders use `weight_dtype: default` (explicit `fp8_e4m3fn` was less stable 
 | `wan22_t2v` | Chunk 0 / `new_shot` (Wan) |
 | `wan22_i2v` | `continue` — uploads previous `last_frame.png` into LoadImage |
 | `wan22_flf2v` | **Keyframe / beat bridges** — two-pass 14B FLF2V (`start_image` + `end_image`); unloads between high/low UNETs |
-| `ltx_t2v` | Chunk 0 / `new_shot` when backend is `ltx` |
-| `ltx_i2v` | `continue` when backend is `ltx` (start image → both guides) |
-| `ltx_flf2v` | **Keyframe / beat bridges** when backend is `ltx` |
-| `ltx_ic_lora` | Reference-sheet Ingredients clips (not auto-routed by movie agent yet) |
+| `ltx2_t2v` / `ltx23_t2v` | Chunk 0 / `new_shot` when backend is `ltx2` / `ltx23` |
+| `ltx2_i2v` / `ltx23_i2v` | `continue` (start image → both guides) |
+| `ltx2_flf2v` / `ltx23_flf2v` | **Keyframe / beat bridges** |
+| `ltx23_ic_lora` | Reference-sheet Ingredients clips (not auto-routed yet) |
 | `still_hero` | Storyboard stills (text → image) |
 | `still_edit` | Prompt-edit an existing still (ReferenceLatent) |
 

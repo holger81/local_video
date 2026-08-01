@@ -356,14 +356,20 @@ function SettingsPage() {
             Default video backend
             <select value={videoBackend} onChange={(e) => setVideoBackend(e.target.value)}>
               <option value="wan">Wan 2.2</option>
-              <option value="ltx">LTX</option>
+              <option value="ltx2">LTX-2 (19B)</option>
+              <option value="ltx23">LTX-2.3</option>
             </select>
           </label>
-          {videoBackend === "ltx" &&
-            videoBackends.some((b) => b.id === "ltx" && !b.flf2v_ready) && (
+          {["ltx2", "ltx23", "ltx"].includes(videoBackend) &&
+            videoBackends.some(
+              (b) =>
+                (b.id === videoBackend ||
+                  (videoBackend === "ltx" && b.id === "ltx2")) &&
+                !b.flf2v_ready
+            ) && (
               <p className="error">
-                LTX FLF workflows are not installed yet — export API graphs into
-                comfyui_workflows/api/ before rendering with LTX.
+                Selected LTX FLF workflows are not installed yet — export API
+                graphs into comfyui_workflows/api/ before rendering.
               </p>
             )}
           <div className="row">
@@ -1139,11 +1145,17 @@ function ProjectPage() {
             }
           >
             <option value="wan">Wan 2.2</option>
-            <option value="ltx">LTX</option>
+            <option value="ltx2">LTX-2 (19B)</option>
+            <option value="ltx23">LTX-2.3</option>
           </select>
         </label>
-        {(project.video_backend || "wan") === "ltx" &&
-          videoBackends.some((b) => b.id === "ltx" && !b.flf2v_ready) && (
+        {["ltx2", "ltx23", "ltx"].includes(project.video_backend || "wan") &&
+          videoBackends.some(
+            (b) =>
+              (b.id === project.video_backend ||
+                (project.video_backend === "ltx" && b.id === "ltx2")) &&
+              !b.flf2v_ready
+          ) && (
             <p className="error">
               LTX FLF workflows are not installed — import API graphs before rendering.
             </p>
@@ -1493,15 +1505,21 @@ function ProjectPage() {
               }
             >
               <option value="wan">Wan 2.2</option>
-              <option value="ltx">LTX</option>
+              <option value="ltx2">LTX-2 (19B)</option>
+              <option value="ltx23">LTX-2.3</option>
             </select>
           </label>
         </div>
-        {(movieForm.video_backend || "wan") === "ltx" &&
-          videoBackends.some((b) => b.id === "ltx" && !b.flf2v_ready) && (
+        {["ltx2", "ltx23", "ltx"].includes(movieForm.video_backend || "wan") &&
+          videoBackends.some(
+            (b) =>
+              (b.id === movieForm.video_backend ||
+                (movieForm.video_backend === "ltx" && b.id === "ltx2")) &&
+              !b.flf2v_ready
+          ) && (
             <p className="error">
               LTX is selected but FLF workflows are missing — movie render will fail until
-              you export ltx_flf2v into comfyui_workflows/api/.
+              you export ltx2_flf2v / ltx23_flf2v into comfyui_workflows/api/.
             </p>
           )}
         {(project.frames || []).length > 0 && (
@@ -1533,7 +1551,8 @@ function ProjectPage() {
                     >
                       <option value="">Default ({movieForm.video_backend || "wan"})</option>
                       <option value="wan">Wan</option>
-                      <option value="ltx">LTX</option>
+                      <option value="ltx2">LTX-2 (19B)</option>
+                      <option value="ltx23">LTX-2.3</option>
                     </select>
                   </li>
                 ))}

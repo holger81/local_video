@@ -17,7 +17,7 @@ class StartMovieIn(BaseModel):
     height: int | None = None
     fps: int | None = None
     video_backend: str | None = None
-    # frame_id or shot position → wan|ltx
+    # frame_id or shot position → wan|ltx2|ltx23
     shot_backends: dict[str, str] | None = None
     t2v_workflow: str | None = None
     i2v_workflow: str | None = None

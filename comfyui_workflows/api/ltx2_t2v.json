@@ -1,0 +1,265 @@
+{
+  "196": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 0
+    }
+  },
+  "197": {
+    "class_type": "LTXVEmptyLatentAudio",
+    "inputs": {
+      "audio_vae": [
+        "224",
+        0
+      ],
+      "frames_number": [
+        "198",
+        0
+      ],
+      "frame_rate": [
+        "205",
+        0
+      ],
+      "batch_size": 1
+    }
+  },
+  "198": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 33
+    }
+  },
+  "201": {
+    "class_type": "EmptyLTXVLatentVideo",
+    "inputs": {
+      "width": [
+        "215",
+        0
+      ],
+      "height": [
+        "216",
+        0
+      ],
+      "length": [
+        "198",
+        0
+      ],
+      "batch_size": 1
+    }
+  },
+  "202": {
+    "class_type": "LTXVConditioning",
+    "inputs": {
+      "positive": [
+        "222",
+        0
+      ],
+      "negative": [
+        "217",
+        0
+      ],
+      "frame_rate": [
+        "212",
+        0
+      ]
+    }
+  },
+  "205": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 24
+    }
+  },
+  "207": {
+    "class_type": "CFGGuider",
+    "inputs": {
+      "model": [
+        "223",
+        0
+      ],
+      "positive": [
+        "202",
+        0
+      ],
+      "negative": [
+        "202",
+        1
+      ],
+      "cfg": 1
+    }
+  },
+  "208": {
+    "class_type": "SamplerEulerAncestral",
+    "inputs": {
+      "eta": 0,
+      "s_noise": 1
+    }
+  },
+  "209": {
+    "class_type": "ManualSigmas",
+    "inputs": {
+      "sigmas": "1., 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
+    }
+  },
+  "210": {
+    "class_type": "LTXVConcatAVLatent",
+    "inputs": {
+      "video_latent": [
+        "201",
+        0
+      ],
+      "audio_latent": [
+        "197",
+        0
+      ]
+    }
+  },
+  "211": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "196",
+        0
+      ],
+      "guider": [
+        "207",
+        0
+      ],
+      "sampler": [
+        "208",
+        0
+      ],
+      "sigmas": [
+        "209",
+        0
+      ],
+      "latent_image": [
+        "210",
+        0
+      ]
+    }
+  },
+  "212": {
+    "class_type": "ComfyMathExpression",
+    "inputs": {
+      "values.a": [
+        "205",
+        0
+      ],
+      "expression": "a"
+    }
+  },
+  "215": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 768
+    }
+  },
+  "216": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 768
+    }
+  },
+  "217": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "225",
+        0
+      ],
+      "text": "blurry, black frame, empty, distorted face, extra fingers, watermark, text artifacts"
+    }
+  },
+  "218": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": [
+        "219",
+        0
+      ],
+      "fps": 24.0
+    }
+  },
+  "219": {
+    "class_type": "VAEDecodeTiled",
+    "inputs": {
+      "samples": [
+        "221",
+        0
+      ],
+      "vae": [
+        "223",
+        2
+      ],
+      "tile_size": 256,
+      "overlap": 32,
+      "temporal_size": 8,
+      "temporal_overlap": 4
+    }
+  },
+  "220": {
+    "class_type": "LTXVAudioVAEDecode",
+    "inputs": {
+      "samples": [
+        "221",
+        1
+      ],
+      "audio_vae": [
+        "224",
+        0
+      ]
+    }
+  },
+  "221": {
+    "class_type": "LTXVSeparateAVLatent",
+    "inputs": {
+      "av_latent": [
+        "211",
+        1
+      ]
+    }
+  },
+  "222": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "225",
+        0
+      ],
+      "text": "a cinematic shot, continuous motion"
+    }
+  },
+  "223": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "ltx-2-19b-dev-fp8.safetensors"
+    }
+  },
+  "224": {
+    "class_type": "LTXVAudioVAELoader",
+    "inputs": {
+      "ckpt_name": "ltx-2-19b-dev-fp8.safetensors"
+    }
+  },
+  "225": {
+    "class_type": "LTXAVTextEncoderLoader",
+    "inputs": {
+      "text_encoder": "gemma_3_12B_it_fp4_mixed.safetensors",
+      "ckpt_name": "ltx-2-19b-dev-fp8.safetensors",
+      "device": "default"
+    }
+  },
+  "9003": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": [
+        "218",
+        0
+      ],
+      "filename_prefix": "local_video/ltx_t2v",
+      "format": "auto",
+      "codec": "auto"
+    }
+  }
+}

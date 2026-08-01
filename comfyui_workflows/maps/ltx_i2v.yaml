@@ -1,5 +1,7 @@
-workflow: ltx_i2v.json
+workflow: ltx2_i2v.json
 description: >
+  LEGACY map id `ltx_i2v` → same graph as `ltx2_i2v`.
+  LTX-2 (19B FP8) I2V graph.
   LTX-2 19B image-to-video (start-locked). Same distilled single-pass topology as
   ltx_flf2v with start image fed as both first and last guide (proven I2V path).
   Frame rule: 8n+1.

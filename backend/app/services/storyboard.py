@@ -2039,10 +2039,14 @@ async def _bridge_clip_between_images(
         "",
         "wan22_flf2v",
         "ltx_flf2v",
+        "ltx2_flf2v",
+        "ltx23_flf2v",
         wfs["flf2v"],
         wfs["i2v"],
         "wan22_i2v",
         "ltx_i2v",
+        "ltx2_i2v",
+        "ltx23_i2v",
     ):
         validate_frame_count(num_frames)
         comfy = ComfyUIClient()
@@ -2080,7 +2084,8 @@ async def _bridge_clip_between_images(
     # Default FLF when both endpoints exist; otherwise I2V from start.
     use_flf = end_image is not None and (
         not workflow_id
-        or workflow_id in ("wan22_flf2v", "ltx_flf2v", wfs["flf2v"])
+        or workflow_id
+        in ("wan22_flf2v", "ltx_flf2v", "ltx2_flf2v", "ltx23_flf2v", wfs["flf2v"])
     )
     if use_flf:
         return await backend.render_flf2v(

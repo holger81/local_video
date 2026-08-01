@@ -4,7 +4,17 @@ import math
 from typing import Any
 
 from app.config import get_settings
+from app.services.video_backends import is_ltx_backend, normalize_backend_id
 from app.services.workflows import validate_frame_count
+
+
+def _model_tag(video_backend: str | None) -> str:
+    bid = normalize_backend_id(video_backend)
+    if bid == "wan":
+        return "wan2.2"
+    if bid == "ltx23":
+        return "ltx2.3"
+    return "ltx2"
 
 
 def assert_chunk_frames(n: int) -> int:
@@ -186,7 +196,7 @@ def _flf_handoff(
     return {
         "shot_id": shot_id,
         "mode": "flf2v",
-        "model": "wan2.2" if video_backend == "wan" else "ltx",
+        "model": _model_tag(video_backend),
         "video_backend": video_backend,
         "chunk_index": chunk_index,
         "frame_count": frame_count,
@@ -263,7 +273,7 @@ def _plan_flf_chunks_for_group(
             fps,
             default=33,
             maximum=max_frames,
-            step=8 if video_backend == "ltx" else 4,
+            step=8 if is_ltx_backend(video_backend) else 4,
         )
         prompt = _transition_prompt(
             premise=prompt_base or prompt_for_shot,
@@ -484,7 +494,7 @@ def plan_shots_from_frames(
             handoff = {
                 "shot_id": f"shot_{si:02d}",
                 "mode": mode,
-                "model": "wan2.2" if shot_backend == "wan" else "ltx",
+                "model": _model_tag(shot_backend),
                 "video_backend": shot_backend,
                 "chunk_index": ci,
                 "frame_count": chunk_frames,

@@ -9,8 +9,13 @@ from app.services.comfyui import ComfyUIClient
 from app.services.workflows import WorkflowError, apply_params, validate_frame_count
 
 BACKEND_WAN = "wan"
+BACKEND_LTX2 = "ltx2"
+BACKEND_LTX23 = "ltx23"
+# Legacy product id — normalize to LTX-2 (19B).
 BACKEND_LTX = "ltx"
-VALID_BACKENDS = frozenset({BACKEND_WAN, BACKEND_LTX})
+VALID_BACKENDS = frozenset({BACKEND_WAN, BACKEND_LTX2, BACKEND_LTX23})
+_BACKEND_ALIASES = {BACKEND_LTX: BACKEND_LTX2}
+LTX_FAMILY = frozenset({BACKEND_LTX2, BACKEND_LTX23})
 
 DEFAULT_NEG = (
     "blurry, watermark, text, static, jump cut, morphing face, flickering, "
@@ -20,19 +25,30 @@ DEFAULT_NEG = (
 
 def normalize_backend_id(name: str | None, *, default: str = BACKEND_WAN) -> str:
     raw = (name or default or BACKEND_WAN).strip().lower()
+    raw = _BACKEND_ALIASES.get(raw, raw)
     if raw not in VALID_BACKENDS:
-        raise ValueError(f"unknown video backend: {name!r} (expected wan|ltx)")
+        raise ValueError(
+            f"unknown video backend: {name!r} (expected wan|ltx2|ltx23; "
+            f"'ltx' aliases to ltx2)"
+        )
     return raw
+
+
+def is_ltx_backend(name: str | None) -> bool:
+    try:
+        return normalize_backend_id(name) in LTX_FAMILY
+    except ValueError:
+        return False
 
 
 def flf_safe_size(video_backend: str | None = None) -> tuple[int, int]:
     """Resolution for FLF beat animation — full default W×H often crashes ROCm.
 
-    LTX prefers its trained bucket; Wan uses a moderated cap under project defaults.
+    LTX-2 / LTX-2.3 prefer the trained bucket; Wan uses a moderated cap.
     """
     settings = get_settings()
     bid = normalize_backend_id(video_backend)
-    if bid == BACKEND_LTX:
+    if bid in LTX_FAMILY:
         return 768, 448
     w = min(int(settings.default_width or 1280), 832)
     h = min(int(settings.default_height or 704), 480)
@@ -358,21 +374,34 @@ class WanBackend:
         )
 
 
-class LtxBackend:
-    """LTX adapter — same contract as Wan; requires imported ltx_* API graphs."""
+class LtxFamilyBackend:
+    """Shared LTX-2 / LTX-2.3 adapter — same contract as Wan; different workflow prefix."""
 
-    id = BACKEND_LTX
+    def __init__(
+        self,
+        backend_id: str,
+        *,
+        workflow_prefix: str,
+        label: str,
+        with_ic_lora: bool = False,
+    ) -> None:
+        self.id = backend_id
+        self._prefix = workflow_prefix
+        self._label = label
+        self._with_ic_lora = with_ic_lora
 
     def workflows(self) -> dict[str, str]:
-        return {
-            "t2v": "ltx_t2v",
-            "i2v": "ltx_i2v",
-            "flf2v": "ltx_flf2v",
-            "ic_lora": "ltx_ic_lora",
+        wfs = {
+            "t2v": f"{self._prefix}_t2v",
+            "i2v": f"{self._prefix}_i2v",
+            "flf2v": f"{self._prefix}_flf2v",
         }
+        if self._with_ic_lora:
+            wfs["ic_lora"] = f"{self._prefix}_ic_lora"
+        return wfs
 
     def validate_num_frames(self, n: int) -> int:
-        # LTX EmptyLTXVLatentVideo expects 8n+1 (subset of Wan's 4n+1).
+        # EmptyLTXVLatentVideo expects 8n+1 (subset of Wan's 4n+1).
         validate_frame_count(n, step=8)
         return n
 
@@ -380,7 +409,10 @@ class LtxBackend:
         return _workflow_exists(self.workflows()["flf2v"])
 
     def ic_lora_ready(self) -> bool:
-        return _workflow_exists(self.workflows()["ic_lora"])
+        wfs = self.workflows()
+        if "ic_lora" not in wfs:
+            return False
+        return _workflow_exists(wfs["ic_lora"])
 
     async def render_ic_lora(
         self,
@@ -411,8 +443,8 @@ class LtxBackend:
         settings = get_settings()
         if not self.ic_lora_ready():
             raise WorkflowError(
-                "LTX IC-LoRA workflow is not installed. Add api/ltx_ic_lora.json "
-                "(see docs/video-backends.md)."
+                f"{self._label} IC-LoRA workflow is not installed. Add "
+                f"api/{self._prefix}_ic_lora.json (see docs/video-backends.md)."
             )
         fps_v = int(fps if fps is not None else settings.default_fps or 24)
         if num_frames is None:
@@ -483,8 +515,9 @@ class LtxBackend:
         wf = self.workflows()["flf2v"]
         if not self.flf2v_ready():
             raise WorkflowError(
-                "LTX FLF2V workflow is not installed. Export/import ltx_flf2v into "
-                "comfyui_workflows/api/ and maps/ltx_flf2v.yaml (see docs/video-backends.md)."
+                f"{self._label} FLF2V workflow is not installed. Export/import "
+                f"{wf} into comfyui_workflows/api/ and maps/{wf}.yaml "
+                f"(see docs/video-backends.md)."
             )
         comfy = ComfyUIClient()
         uploads = {
@@ -613,7 +646,18 @@ class LtxBackend:
 
 _BACKENDS: dict[str, VideoBackend] = {
     BACKEND_WAN: WanBackend(),
-    BACKEND_LTX: LtxBackend(),
+    BACKEND_LTX2: LtxFamilyBackend(
+        BACKEND_LTX2,
+        workflow_prefix="ltx2",
+        label="LTX-2",
+        with_ic_lora=False,
+    ),
+    BACKEND_LTX23: LtxFamilyBackend(
+        BACKEND_LTX23,
+        workflow_prefix="ltx23",
+        label="LTX-2.3",
+        with_ic_lora=True,
+    ),
 }
 
 

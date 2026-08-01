@@ -1,6 +1,5 @@
 workflow: ltx2_flf2v.json
 description: >
-  LEGACY map id `ltx_flf2v` → same graph as `ltx2_flf2v`.
   LTX-2 (19B FP8) FLF2V graph.
   LTX-2 19B first+last frame → video (single-graph FLF for keyframes / movie).
   Packaged from the working Comfy-Org FLF blueprint (LTX-2 19B FP8 + Gemma FP4).

@@ -1,6 +1,5 @@
 workflow: ltx23_ic_lora.json
 description: >
-  LEGACY map id `ltx_ic_lora` → same as `ltx23_ic_lora`.
   LTX 2.3 IC-LoRA Ingredients — reference-sheet conditioned video.
   Prompt: ### Reference Sheet Description / ### Target Description.
   Width, height, fps, and num_frames are fully parameterized (preview-friendly:
