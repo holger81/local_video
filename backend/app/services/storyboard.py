@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import re
 from pathlib import Path
 from typing import Any
@@ -2015,7 +2014,11 @@ async def _bridge_clip_between_images(
 ) -> Path:
     """Generate a clip locked to start (and optionally end) image via FLF2V or I2V."""
     from app.db.models import Project
-    from app.services.video_backends import get_video_backend, normalize_backend_id
+    from app.services.video_backends import (
+        flf_safe_size,
+        get_video_backend,
+        normalize_backend_id,
+    )
 
     settings = get_settings()
     if video_backend is None:
@@ -2028,6 +2031,7 @@ async def _bridge_clip_between_images(
             )
     backend = get_video_backend(normalize_backend_id(video_backend))
     wfs = backend.workflows()
+    safe_w, safe_h = flf_safe_size(video_backend)
 
     # Explicit legacy / override workflow id (non-FLF maps).
     if workflow_id and workflow_id not in (
@@ -2054,8 +2058,8 @@ async def _bridge_clip_between_images(
             ),
             "seed": seed,
             "num_frames": num_frames,
-            "width": settings.default_width,
-            "height": settings.default_height,
+            "width": safe_w,
+            "height": safe_h,
             "fps": settings.default_fps,
             "cfg": settings.default_cfg,
             "filename_prefix": f"local_video/p{project_id}_f{frame_id}_{label}",
@@ -2088,6 +2092,8 @@ async def _bridge_clip_between_images(
             label=label,
             num_frames=num_frames,
             seed=seed,
+            width=safe_w,
+            height=safe_h,
         )
 
     return await backend.render_i2v(
@@ -2098,6 +2104,8 @@ async def _bridge_clip_between_images(
         label=label,
         num_frames=num_frames,
         seed=seed,
+        width=safe_w,
+        height=safe_h,
     )
 
 
@@ -2130,18 +2138,21 @@ async def _run_flf2v_two_pass(
         "start_image": await comfy.upload_image(start_image),
         "end_image": await comfy.upload_image(end_image),
     }
+    from app.services.video_backends import flf_safe_size, soft_release_comfy_vram
+
+    safe_w, safe_h = flf_safe_size("wan")
     shared = {
         "positive_prompt": prompt,
         "negative_prompt": neg,
         "num_frames": num_frames,
-        "width": width if width is not None else settings.default_width,
-        "height": height if height is not None else settings.default_height,
+        "width": width if width is not None else safe_w,
+        "height": height if height is not None else safe_h,
     }
     prefix = filename_prefix or f"local_video/p{project_id}_f{frame_id}_{label}"
 
     # Pass 1: high-noise only → SaveLatent
-    # Avoid POST /free on this ROCm host — it can kill the ComfyUI process.
-    # Separate prompts still let Comfy unload the high UNET before loading low.
+    # Avoid POST /free unload_models on this ROCm host — it can kill ComfyUI.
+    # Separate prompts + soft free_memory still let the high UNET leave before low.
     high_params = {
         **shared,
         "seed": seed,
@@ -2169,8 +2180,8 @@ async def _run_flf2v_two_pass(
         raise RuntimeError("FLF2V high pass produced no latent output")
     latent_ref = comfy.latent_annotated_path(latents[0])
 
-    # Brief pause so the high-noise model can leave GPU before low-noise loads.
-    await asyncio.sleep(2)
+    # Ease VRAM so the high-noise model can leave GPU before low-noise loads.
+    await soft_release_comfy_vram(comfy)
 
     # Pass 2: low-noise + tiled decode → video
     low_params = {
@@ -2229,11 +2240,17 @@ async def generate_step_clips(
     project_id: int,
     frame_id: int,
     *,
-    num_frames: int = 33,
+    num_frames: int = 17,
     workflow_id: str | None = None,
     video_backend: str | None = None,
 ) -> dict[str, Any]:
-    """FLF2V between consecutive keyframes in the series; concat into preview_path."""
+    """FLF2V between consecutive keyframes in the series; concat into preview_path.
+
+    Uses a moderated FLF resolution (not full DEFAULT_WIDTH×HEIGHT) and short
+    clips by default — full-size 33-frame FLF often OOMs/crashes ROCm ComfyUI.
+    """
+    from app.services.video_backends import soft_release_comfy_vram
+
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
@@ -2244,6 +2261,12 @@ async def generate_step_clips(
         beat = f.visual_prompt or f.description or ""
         dialog = (getattr(f, "dialog", None) or "").strip()
         premise = p.premise or ""
+        if video_backend is None:
+            video_backend = (
+                getattr(p, "video_backend", None)
+                or get_settings().default_video_backend
+                or "wan"
+            )
         if len(keyframes) < 2 or not _keyframes_ready(keyframes):
             raise ValueError(
                 "frame needs a complete keyframe series (at least first and last)"
@@ -2291,6 +2314,8 @@ async def generate_step_clips(
     clip_paths: list[Path] = []
     frame_dirs: list[Path] = []
     for i in range(len(keyframes) - 1):
+        if i > 0:
+            await soft_release_comfy_vram()
         a = keyframes[i]
         b = keyframes[i + 1]
         start_p = _resolve_media_file(a["path"])
@@ -2334,10 +2359,12 @@ async def generate_all_step_clips(
     project_id: int,
     *,
     skip_existing: bool = True,
-    num_frames: int = 33,
+    num_frames: int = 17,
     video_backend: str | None = None,
     workflow_id: str | None = None,
 ) -> dict[str, Any]:
+    from app.services.video_backends import soft_release_comfy_vram
+
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         if not p:
@@ -2353,6 +2380,7 @@ async def generate_all_step_clips(
     results: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     skipped = 0
+    ran_any = False
     for fr in frames:
         if not fr["ready"]:
             errors.append({"frame_id": fr["id"], "error": "missing keyframes"})
@@ -2362,6 +2390,8 @@ async def generate_all_step_clips(
             skipped += 1
             continue
         try:
+            if ran_any:
+                await soft_release_comfy_vram()
             results.append(
                 await generate_step_clips(
                     project_id,
@@ -2371,6 +2401,7 @@ async def generate_all_step_clips(
                     workflow_id=workflow_id,
                 )
             )
+            ran_any = True
         except Exception as e:
             errors.append({"frame_id": fr["id"], "error": str(e)})
     return {

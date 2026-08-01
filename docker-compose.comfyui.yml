@@ -1,0 +1,62 @@
+# Optional ComfyUI stack for the AMD/ROCm GPU host.
+# This is NOT the Local Video Studio stack — use docker-compose.yml for that.
+#
+# Your live ComfyUI reports argv under /workload/ComfyUI with:
+#   --listen 0.0.0.0 --port 8188 --gpu-only --disable-smart-memory
+#
+# Portainer (same git repo as the studio):
+#   Stacks → Add stack → Repository → Compose path: docker-compose.comfyui.yml
+#   Set environment COMFYUI_IMAGE to the image your current container uses.
+#
+# Already have a ComfyUI stack? Prefer editing that stack: mount
+#   ./comfyui/entrypoint-amd.sh:/entrypoint-amd.sh:ro
+# set entrypoint to ["/bin/bash", "/entrypoint-amd.sh"] and keep your existing
+# command/args. That re-applies the AMD SaveVideo audio .cpu() fix on every start.
+
+x-comfy-env: &comfy-env
+  COMFYUI_DIR: /workload/ComfyUI
+  HSA_ENABLE_SDMA: "0"
+  HSA_USE_SVM: "0"
+  HIP_VISIBLE_DEVICES: "0"
+  PYTORCH_HIP_ALLOC_CONF: "backend:native,expandable_segments:True,garbage_collection_threshold:0.7,max_split_size_mb:256"
+  TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL: "1"
+
+services:
+  comfyui:
+    # REQUIRED: set to the image your AMD box already runs (Portainer → env).
+    image: ${COMFYUI_IMAGE:?Set COMFYUI_IMAGE to your existing ComfyUI image}
+    container_name: comfyui
+    restart: unless-stopped
+    ports:
+      - "8188:8188"
+    environment:
+      <<: *comfy-env
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - render
+    ipc: host
+    security_opt:
+      - seccomp:unconfined
+    cap_add:
+      - SYS_PTRACE
+    volumes:
+      # Point these at your existing host paths (models must survive recreate).
+      - ${COMFYUI_HOST_DIR:-/shared/comfyui}/models:/workload/ComfyUI/models
+      - ${COMFYUI_HOST_DIR:-/shared/comfyui}/input:/workload/ComfyUI/input
+      - ${COMFYUI_HOST_DIR:-/shared/comfyui}/output:/workload/ComfyUI/output
+      - ${COMFYUI_HOST_DIR:-/shared/comfyui}/custom_nodes:/workload/ComfyUI/custom_nodes
+      - ${COMFYUI_HOST_DIR:-/shared/comfyui}/user:/workload/ComfyUI/user
+      - ./comfyui/entrypoint-amd.sh:/entrypoint-amd.sh:ro
+    entrypoint: ["/bin/bash", "/entrypoint-amd.sh"]
+    command:
+      - python
+      - /workload/ComfyUI/main.py
+      - --listen
+      - "0.0.0.0"
+      - --port
+      - "8188"
+      - --gpu-only
+      - --disable-smart-memory

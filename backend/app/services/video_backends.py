@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -22,6 +23,36 @@ def normalize_backend_id(name: str | None, *, default: str = BACKEND_WAN) -> str
     if raw not in VALID_BACKENDS:
         raise ValueError(f"unknown video backend: {name!r} (expected wan|ltx)")
     return raw
+
+
+def flf_safe_size(video_backend: str | None = None) -> tuple[int, int]:
+    """Resolution for FLF beat animation — full default W×H often crashes ROCm.
+
+    LTX prefers its trained bucket; Wan uses a moderated cap under project defaults.
+    """
+    settings = get_settings()
+    bid = normalize_backend_id(video_backend)
+    if bid == BACKEND_LTX:
+        return 768, 448
+    w = min(int(settings.default_width or 1280), 832)
+    h = min(int(settings.default_height or 704), 480)
+    w -= w % 16
+    h -= h % 16
+    return max(w, 640), max(h, 384)
+
+
+async def soft_release_comfy_vram(comfy: ComfyUIClient | None = None) -> None:
+    """Best-effort VRAM ease between heavy FLF jobs.
+
+    Full unload via POST /free has killed this ROCm host before, so we only ask
+    for free_memory (no unload_models) and always pause briefly.
+    """
+    client = comfy or ComfyUIClient()
+    try:
+        await client.free_memory(unload_models=False)
+    except Exception:
+        pass
+    await asyncio.sleep(2.0)
 
 
 def resolve_video_backend(
@@ -460,13 +491,14 @@ class LtxBackend:
             "start_image": await comfy.upload_image(start_image),
             "end_image": await comfy.upload_image(end_image),
         }
+        safe_w, safe_h = flf_safe_size(self.id)
         params = {
             "positive_prompt": prompt,
             "negative_prompt": negative_prompt or DEFAULT_NEG,
             "seed": seed,
             "num_frames": num_frames,
-            "width": width if width is not None else settings.default_width,
-            "height": height if height is not None else settings.default_height,
+            "width": width if width is not None else safe_w,
+            "height": height if height is not None else safe_h,
             "fps": fps if fps is not None else settings.default_fps,
             "filename_prefix": filename_prefix
             or f"local_video/p{project_id}_f{frame_id}_{label}",

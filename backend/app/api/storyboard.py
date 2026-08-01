@@ -72,7 +72,7 @@ class KeyframesIn(BaseModel):
 
 class StepClipsIn(BaseModel):
     workflow_id: str | None = None
-    num_frames: int = 33
+    num_frames: int = 17
     skip_existing: bool = True
     video_backend: str | None = None
 

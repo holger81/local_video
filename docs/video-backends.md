@@ -26,12 +26,14 @@ Prefer a hard cut (`is_new_shot`) when switching Wan ↔ LTX. Continuous FLF acr
 - Default working path.
 - FLF2V is **two-pass** (`wan22_flf2v_high` → `wan22_flf2v_low`) to avoid dual-UNET VRAM crashes on ROCm.
 - Frame rule: `4n+1` (e.g. 33).
+- Storyboard **Animate this beat** / step clips use a capped size (≤832×480) and default **17** frames, plus a soft `free_memory` (no unload) between passes/clips. Full `DEFAULT_WIDTH×HEIGHT` FLF often kills ROCm ComfyUI.
 
 ## LTX
 
 - Same interface (`render_flf2v` / `render_i2v` / `render_t2v`).
 - **T2V / I2V / FLF are shipped** as distilled single-pass graphs (`api/ltx_*.json` + maps).
 - Frame rule: **`8n+1`** (e.g. 33). Planning snaps to this when the job/shot backend is `ltx`.
+- Storyboard FLF step clips default to the quality bucket **768×448** (not full project defaults).
 - I2V reuses the FLF topology with the start image as both guides; T2V drops image guides and sizes the latent from width/height.
 - Host needs custom nodes used by the graphs (`ComfyMathExpression`, `ResizeImageMaskNode`) and matching model filenames under `ComfyUI/models/`.
 

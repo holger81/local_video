@@ -23,6 +23,12 @@ docker compose up -d --build
 5. Open `http://<host>:8000`
 6. MCP SSE: `http://<host>:8700/sse` (see MCP section below)
 
+### ComfyUI on the AMD box (separate stack)
+
+Studio compose does **not** start ComfyUI. For ROCm, re-apply the SaveVideo audio `.cpu()` patch on every container start via [`docker-compose.comfyui.yml`](docker-compose.comfyui.yml) + [`comfyui/entrypoint-amd.sh`](comfyui/entrypoint-amd.sh).
+
+In Portainer (GPU host), deploy a second stack from the same git repo with compose path `docker-compose.comfyui.yml`, and set `COMFYUI_IMAGE` / `COMFYUI_HOST_DIR` to match your existing install. Or only add the entrypoint mount + `entrypoint` to your current ComfyUI stack.
+
 Volumes on the Portainer host:
 
 ```
