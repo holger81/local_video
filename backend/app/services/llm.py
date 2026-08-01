@@ -484,17 +484,19 @@ async def plan_keyframe_image_prompt(
 ) -> str:
     """One self-contained image prompt for a keyframe slot (Comfy sees only this)."""
     system = (
-        "You write ONE photorealistic cinematic still image prompt for a moment in a continuous shot. "
+        "You write ONE cinematic still image prompt for a moment in a continuous shot. "
         'Return ONLY valid JSON: {"image_prompt": "..."}. '
-        "Rules: one moment; concrete subject/pose/camera/light; no collage or panels; "
+        "Rules: one moment; concrete action/pose/camera/light/setting; no collage or panels; "
         "no whole-film dump; never invent subjects not in the beat; do not say the word keyframe. "
-        "If a cast lock is provided, you MUST name those characters and weave their exact visual "
-        "looks (face, hair, wardrobe) into the image_prompt — do not drop or rewrite the look. "
-        "Never invent gloves, mittens, helmets, or accessories not listed in wardrobe. "
-        "If hands are visible and wardrobe has no gloves, say 'bare hands' — never write "
-        "'NO GLOVES' or other all-caps bans (those often cause the forbidden item). "
-        "If CONTINUATION: do not say new shot; keep identity from context. "
-        "If NEW SHOT and role is first: establish a fresh camera/composition."
+        "CRITICAL — character looks are NOT part of this prompt: do not describe face, hair, age, "
+        "skin, body type, clothing, outfits, wardrobe, gloves, helmets, shoes, or accessories. "
+        "Those come only from a separate cast lock applied at render time. "
+        "If a cast lock is provided, name those characters exactly when they appear, then describe "
+        "only what they are doing and how the camera sees the moment. "
+        "Never invent people, props-on-characters, or outfit changes. "
+        "If CONTINUATION: do not say new shot; keep the same named people and setting. "
+        "If NEW SHOT and role is first: establish a fresh camera/composition. "
+        "If previous prompts include look/wardrobe text, IGNORE that look text — do not copy it."
     )
     shot = (
         "NEW SHOT — independent keyframe series; fresh camera for the first frame."
@@ -506,15 +508,29 @@ async def plan_keyframe_image_prompt(
         f"Beat description: {description}\n"
         f"Beat visual note: {visual}\n"
         f"This frame role={role} at t={t_sec}s.\n"
+        "Write image_prompt for action, pose, camera, light, and environment only.\n"
     )
     if cast_sheet:
-        user += f"{cast_sheet}\n"
+        user += (
+            f"{cast_sheet}\n"
+            "Use only the cast names above. Do NOT paste Face/body or Wardrobe lines "
+            "into image_prompt — looks are applied separately.\n"
+        )
     if prev_prompt:
-        user += f"Previous frame prompt (edit starts from that image):\n{prev_prompt}\n"
+        user += (
+            "Previous frame prompt (continue action/camera only; ignore any look text):\n"
+            f"{prev_prompt}\n"
+        )
     if first_prompt and role != "first":
-        user += f"Shot first prompt:\n{first_prompt}\n"
+        user += (
+            "Shot first prompt (action/camera continuity only; ignore look text):\n"
+            f"{first_prompt}\n"
+        )
     if last_goal and role != "last":
-        user += f"Shot should end toward:\n{last_goal}\n"
+        user += (
+            "Shot should end toward (action/camera only; ignore look text):\n"
+            f"{last_goal}\n"
+        )
     if role == "last":
         user += "Write the ENDING still of this shot."
     elif role == "first":

@@ -2176,7 +2176,7 @@ function ProjectPage() {
                 <div>
                   <h2>Step #{f.position + 1} editor</h2>
                   <p className="muted tiny">
-                    LLM image prompts only (Comfy never sees the full story). Middles fill
+                    LLM plans action/camera only (looks come from cast &amp; wardrobe). Middles fill
                     ≤2s gaps. {f.is_new_shot ? "New shot = own series." : "Continue = shares prior end as this start (exact image)."}
                   </p>
                 </div>
@@ -2417,7 +2417,7 @@ function ProjectPage() {
                   type="button"
                   disabled={!!busy}
                   onClick={rebuildKeyframePrompts}
-                  title="LLM-plan start/middles/end image prompts from beat + duration (≤2s spacing)"
+                  title="LLM-plan start/middles/end action/camera prompts (looks stay on cast sheet; ≤2s spacing)"
                 >
                   Rebuild LLM keyframe prompts
                 </button>
