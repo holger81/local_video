@@ -2,21 +2,32 @@
 FastMCP server exposing Local Video Studio tools for other LLMs.
 
 Run: python -m app.mcp_server
-SSE endpoint (when using mcp SSE transport via uvicorn wrapper): see docker-compose.
+SSE endpoint: http://<host>:8700/sse (see docker-compose).
 """
 
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
 from mcp.server.fastmcp import FastMCP
 
 from app.config import get_settings
 from app.db.models import init_db
+from app.services import characters as char_svc
 from app.services import images as images_svc
 from app.services import movie as movie_svc
 from app.services import projects as projects_svc
+from app.services import runtime_settings as rs
 from app.services import story as story_svc
 from app.services import storyboard as sb_svc
+from app.services.comfyui import ComfyUIClient
 from app.services.workflows import list_workflows
 
 mcp = FastMCP("local_video")
+
+
+# --- Projects -----------------------------------------------------------------
 
 
 @mcp.tool()
@@ -33,8 +44,31 @@ def create_project(title: str, genre: str = "", premise: str = "") -> dict:
 
 @mcp.tool()
 def get_project(project_id: int) -> dict:
-    """Get a project including storyboard frames."""
+    """Get a project including storyboard frames and cast summary fields."""
     return projects_svc.get_project(project_id)
+
+
+@mcp.tool()
+def update_project(
+    project_id: int,
+    title: str | None = None,
+    genre: str | None = None,
+    premise: str | None = None,
+    video_backend: str | None = None,
+) -> dict:
+    """Patch project fields (title, genre, premise, default video_backend)."""
+    fields = {
+        "title": title,
+        "genre": genre,
+        "premise": premise,
+        "video_backend": video_backend,
+    }
+    return projects_svc.update_project(
+        project_id, **{k: v for k, v in fields.items() if v is not None}
+    )
+
+
+# --- Story --------------------------------------------------------------------
 
 
 @mcp.tool()
@@ -56,6 +90,121 @@ def set_story(project_id: int, story: str, approved: bool = False) -> dict:
 
 
 @mcp.tool()
+async def approve_story(project_id: int) -> dict:
+    """Mark the project story as approved (may trigger cast detect)."""
+    return await story_svc.approve_story(project_id)
+
+
+# --- Characters / outfits -----------------------------------------------------
+
+
+@mcp.tool()
+def list_characters(project_id: int) -> list:
+    """List cast characters for a project (appearance, outfits, reference paths)."""
+    return char_svc.list_characters(project_id)
+
+
+@mcp.tool()
+def create_character(
+    project_id: int,
+    name: str,
+    description: str = "",
+    appearance_prompt: str = "",
+    aliases: list[str] | None = None,
+    outfits: list[dict[str, Any]] | None = None,
+    approved: bool = False,
+    intro_frame_id: int | None = None,
+) -> dict:
+    """Create a cast character. outfits items: {id?, name, prompt, reference_image_path?, is_default?}."""
+    return char_svc.create_character(
+        project_id,
+        name=name,
+        description=description,
+        appearance_prompt=appearance_prompt,
+        aliases=aliases,
+        outfits=outfits,
+        approved=approved,
+        intro_frame_id=intro_frame_id,
+        auto_detected=False,
+    )
+
+
+@mcp.tool()
+def update_character(
+    project_id: int,
+    character_id: int,
+    name: str | None = None,
+    description: str | None = None,
+    appearance_prompt: str | None = None,
+    aliases: list[str] | None = None,
+    outfits: list[dict[str, Any]] | None = None,
+    position: int | None = None,
+    approved: bool | None = None,
+    intro_frame_id: int | None = None,
+) -> dict:
+    """Patch a character (including full outfits list replacement when provided)."""
+    fields = {
+        "name": name,
+        "description": description,
+        "appearance_prompt": appearance_prompt,
+        "aliases": aliases,
+        "outfits": outfits,
+        "position": position,
+        "approved": approved,
+        "intro_frame_id": intro_frame_id,
+    }
+    return char_svc.update_character(
+        project_id, character_id, **{k: v for k, v in fields.items() if v is not None}
+    )
+
+
+@mcp.tool()
+def delete_character(project_id: int, character_id: int) -> dict:
+    """Delete a character and its reference media."""
+    return char_svc.delete_character(project_id, character_id)
+
+
+@mcp.tool()
+async def detect_characters(project_id: int, replace_auto: bool = False) -> list:
+    """LLM-extract cast from the story into character rows."""
+    return await char_svc.detect_characters(project_id, replace_auto=replace_auto)
+
+
+@mcp.tool()
+async def generate_character_reference(
+    project_id: int,
+    character_id: int,
+    instruction: str | None = None,
+) -> dict:
+    """Generate or edit the character portrait reference (also syncs a portrait outfit)."""
+    return await char_svc.generate_reference(
+        project_id, character_id, instruction=instruction
+    )
+
+
+@mcp.tool()
+def delete_character_reference(project_id: int, character_id: int) -> dict:
+    """Clear the character portrait reference image."""
+    return char_svc.delete_reference(project_id, character_id)
+
+
+@mcp.tool()
+async def generate_outfit_reference(
+    project_id: int,
+    character_id: int,
+    outfit_id: str,
+    instruction: str | None = None,
+) -> dict:
+    """Generate or edit a wardrobe reference still for one outfit id."""
+    return await char_svc.generate_outfit_reference(
+        project_id, character_id, outfit_id, instruction=instruction
+    )
+
+
+# --- Storyboard ---------------------------------------------------------------
+
+
+@mcp.tool()
 async def propose_storyboard(project_id: int, max_frames: int = 8) -> list:
     """Propose storyboard frames from the current story."""
     return await sb_svc.propose_storyboard(project_id, max_frames)
@@ -67,55 +216,36 @@ def update_frame(
     frame_id: int,
     description: str | None = None,
     visual_prompt: str | None = None,
+    dialog: str | None = None,
     duration_hint_sec: float | None = None,
     is_new_shot: bool | None = None,
+    position: int | None = None,
     keyframe_first_prompt: str | None = None,
     keyframe_mid_prompt: str | None = None,
     keyframe_last_prompt: str | None = None,
+    keyframes: list[dict[str, Any]] | None = None,
+    cast: list[dict[str, Any]] | None = None,
 ) -> dict:
-    """Update a storyboard frame (beat text and/or keyframe prompts)."""
+    """Update a storyboard frame (beat text, dialog, cast, keyframe series).
+
+    cast items: {character_id, outfit_id?}.
+    keyframes items: {role?, t_sec?, image_prompt|prompt?, path?}.
+    """
     fields = {
         "description": description,
         "visual_prompt": visual_prompt,
+        "dialog": dialog,
         "duration_hint_sec": duration_hint_sec,
         "is_new_shot": is_new_shot,
+        "position": position,
         "keyframe_first_prompt": keyframe_first_prompt,
         "keyframe_mid_prompt": keyframe_mid_prompt,
         "keyframe_last_prompt": keyframe_last_prompt,
+        "keyframes": keyframes,
+        "cast": cast,
     }
     return sb_svc.update_frame(
         project_id, frame_id, **{k: v for k, v in fields.items() if v is not None}
-    )
-
-
-@mcp.tool()
-async def rebuild_frame_keyframe_prompts(project_id: int, frame_id: int) -> dict:
-    """LLM-plan first/middle(s)/last keyframe image prompts (≤2s spacing)."""
-    return await sb_svc.rebuild_frame_keyframe_prompts(project_id, frame_id)
-
-
-@mcp.tool()
-async def generate_one_keyframe(
-    project_id: int,
-    frame_id: int,
-    phase: str,
-    seed: int | None = None,
-) -> dict:
-    """Render one keyframe phase (first|mid|last) from its stored prompt."""
-    return await sb_svc.generate_one_keyframe(project_id, frame_id, phase, seed=seed)
-
-
-@mcp.tool()
-async def edit_frame_keyframe(
-    project_id: int,
-    frame_id: int,
-    phase: str,
-    instruction: str,
-    seed: int | None = None,
-) -> dict:
-    """Prompt-edit a keyframe image for one phase."""
-    return await sb_svc.edit_frame_keyframe(
-        project_id, frame_id, phase, instruction=instruction, seed=seed
     )
 
 
@@ -126,16 +256,39 @@ def approve_storyboard(project_id: int) -> dict:
 
 
 @mcp.tool()
+async def generate_frame_dialog(project_id: int, frame_id: int) -> dict:
+    """LLM-write spoken dialog / audio cues for one beat."""
+    return await sb_svc.generate_frame_dialog(project_id, frame_id)
+
+
+@mcp.tool()
+def generate_cast_ref_sheet(project_id: int, frame_id: int) -> dict:
+    """Build the labeled cast/outfit contact sheet image for a beat."""
+    return sb_svc.generate_cast_ref_sheet(project_id, frame_id)
+
+
+@mcp.tool()
 async def generate_frame_visual(
     project_id: int,
     frame_id: int,
     kind: str = "still",
     workflow_id: str | None = None,
     num_frames: int = 33,
+    video_backend: str | None = None,
+    fresh: bool = False,
 ) -> dict:
-    """Generate a still or short preview clip for a storyboard frame via ComfyUI."""
+    """Generate a still or short preview clip for a storyboard frame via ComfyUI.
+
+    fresh=true ignores continuity still and restages from cast refs.
+    """
     return await sb_svc.generate_frame_visual(
-        project_id, frame_id, kind=kind, workflow_id=workflow_id, num_frames=num_frames
+        project_id,
+        frame_id,
+        kind=kind,
+        workflow_id=workflow_id,
+        num_frames=num_frames,
+        video_backend=video_backend,
+        fresh=fresh,
     )
 
 
@@ -170,38 +323,33 @@ async def create_all_stills(
 
 
 @mcp.tool()
-async def generate_between_stills(
-    project_id: int,
-    frame_id: int,
-    workflow_id: str | None = None,
-    num_frames: int = 33,
-    video_backend: str | None = None,
-) -> dict:
-    """Generate a clip from this frame's end into the next frame's start (FLF2V)."""
-    return await sb_svc.generate_between_stills(
-        project_id,
-        frame_id,
-        workflow_id=workflow_id,
-        num_frames=num_frames,
-        video_backend=video_backend,
-    )
+async def rebuild_frame_keyframe_prompts(project_id: int, frame_id: int) -> dict:
+    """LLM-plan first/middle(s)/last keyframe image prompts (≤2s spacing)."""
+    return await sb_svc.rebuild_frame_keyframe_prompts(project_id, frame_id)
 
 
 @mcp.tool()
-async def create_all_between_stills(
+async def generate_one_keyframe(
     project_id: int,
-    workflow_id: str | None = None,
-    skip_existing: bool = True,
-    num_frames: int = 33,
-    video_backend: str | None = None,
+    frame_id: int,
+    phase: str,
+    seed: int | None = None,
 ) -> dict:
-    """Generate between-stills clips for consecutive still pairs (sequential)."""
-    return await sb_svc.generate_all_between_stills(
-        project_id,
-        workflow_id=workflow_id,
-        skip_existing=skip_existing,
-        num_frames=num_frames,
-        video_backend=video_backend,
+    """Render one keyframe (first|mid|last or index) from its stored prompt."""
+    return await sb_svc.generate_one_keyframe(project_id, frame_id, phase, seed=seed)
+
+
+@mcp.tool()
+async def edit_frame_keyframe(
+    project_id: int,
+    frame_id: int,
+    phase: str,
+    instruction: str,
+    seed: int | None = None,
+) -> dict:
+    """Prompt-edit a keyframe image for one phase."""
+    return await sb_svc.edit_frame_keyframe(
+        project_id, frame_id, phase, instruction=instruction, seed=seed
     )
 
 
@@ -260,15 +408,48 @@ async def create_all_step_clips(
 
 
 @mcp.tool()
+async def generate_between_stills(
+    project_id: int,
+    frame_id: int,
+    workflow_id: str | None = None,
+    num_frames: int = 33,
+    video_backend: str | None = None,
+) -> dict:
+    """Generate a clip from this frame's end into the next frame's start (FLF2V)."""
+    return await sb_svc.generate_between_stills(
+        project_id,
+        frame_id,
+        workflow_id=workflow_id,
+        num_frames=num_frames,
+        video_backend=video_backend,
+    )
+
+
+@mcp.tool()
+async def create_all_between_stills(
+    project_id: int,
+    workflow_id: str | None = None,
+    skip_existing: bool = True,
+    num_frames: int = 33,
+    video_backend: str | None = None,
+) -> dict:
+    """Generate between-stills clips for consecutive still pairs (sequential)."""
+    return await sb_svc.generate_all_between_stills(
+        project_id,
+        workflow_id=workflow_id,
+        skip_existing=skip_existing,
+        num_frames=num_frames,
+        video_backend=video_backend,
+    )
+
+
+@mcp.tool()
 def delete_frame_media(project_id: int, frame_id: int, kind: str) -> dict:
-    """Delete a frame still, preview, or keyframe. kind: still|preview|keyframe_first|keyframe_mid|keyframe_last."""
+    """Delete frame media. kind: still|preview|keyframe_first|keyframe_mid|keyframe_last|keyframe:N."""
     return sb_svc.delete_frame_media(project_id, frame_id, kind)
 
 
-@mcp.tool(name="list_workflows")
-def list_workflows_tool() -> list:
-    """List available ComfyUI workflow profiles."""
-    return list_workflows()
+# --- Generic image ------------------------------------------------------------
 
 
 @mcp.tool()
@@ -287,9 +468,8 @@ async def generate_image(
 ) -> dict:
     """Generate a generic still via ComfyUI (not tied to a storyboard frame).
 
-    Text-to-image uses still_hero (Flux.2 Klein). Pass reference_image_path (under
-    MEDIA_DIR) to edit from an existing image via still_edit. Returns path, media_path,
-    and /api/media/... url.
+    Text-to-image uses still_hero. Pass reference_image_path (under MEDIA_DIR) for
+    still_edit. Returns path, media_path, and /api/media/... url.
     """
     return await images_svc.generate_image(
         prompt,
@@ -306,22 +486,36 @@ async def generate_image(
     )
 
 
+# --- Movies / jobs ------------------------------------------------------------
+
+
+@mcp.tool(name="list_workflows")
+def list_workflows_tool() -> list:
+    """List available ComfyUI workflow profiles."""
+    return list_workflows()
+
+
 @mcp.tool()
 async def start_movie(
     project_id: int,
     target_length_sec: float = 30.0,
     format: str = "mp4",
     aspect: str = "16:9",
-    chunk_frames: int = 33,
-    overlap_frames: int = 12,
-    t2v_workflow: str = "wan22_t2v",
-    i2v_workflow: str = "wan22_i2v",
+    chunk_frames: int | None = None,
+    overlap_frames: int | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    fps: int | None = None,
+    video_backend: str | None = None,
+    shot_backends: dict[str, str] | None = None,
+    t2v_workflow: str | None = None,
+    i2v_workflow: str | None = None,
+    flf2v_workflow: str | None = None,
+    prompt_base: str = "",
+    negative_prompt: str = "",
     seed: int = 42,
 ) -> dict:
-    """
-    Start the agentic movie render. Returns immediately with job_id.
-    Poll get_job_status until completed/failed.
-    """
+    """Start the agentic movie render. Returns immediately with job_id; poll get_job_status."""
     return await movie_svc.start_movie(
         project_id,
         target_length_sec=target_length_sec,
@@ -329,8 +523,16 @@ async def start_movie(
         aspect=aspect,
         chunk_frames=chunk_frames,
         overlap_frames=overlap_frames,
+        width=width,
+        height=height,
+        fps=fps,
+        video_backend=video_backend,
+        shot_backends=shot_backends,
         t2v_workflow=t2v_workflow,
         i2v_workflow=i2v_workflow,
+        flf2v_workflow=flf2v_workflow,
+        prompt_base=prompt_base,
+        negative_prompt=negative_prompt,
         seed=seed,
     )
 
@@ -360,6 +562,12 @@ def cancel_job(job_id: int) -> dict:
 
 
 @mcp.tool()
+def delete_job(job_id: int) -> dict:
+    """Delete a job record and its movie file when present."""
+    return movie_svc.delete_job(job_id)
+
+
+@mcp.tool()
 def list_assets(project_id: int) -> dict:
     """List media assets for a project."""
     return movie_svc.list_assets(project_id)
@@ -369,6 +577,127 @@ def list_assets(project_id: int) -> dict:
 def get_movie(job_id: int) -> dict:
     """Get final movie path for a completed job."""
     return movie_svc.get_movie(job_id)
+
+
+# --- Settings / health --------------------------------------------------------
+
+
+@mcp.tool()
+def get_settings_public() -> dict:
+    """Return public app settings (Comfy/LLM URLs, defaults; secrets redacted)."""
+    return rs.settings_public(get_settings())
+
+
+@mcp.tool()
+async def update_settings(
+    llama_base_url: str | None = None,
+    llama_model: str | None = None,
+    llama_api_key: str | None = None,
+    llama_n_ctx: int | None = None,
+    llama_max_tokens: int | None = None,
+    comfyui_base_url: str | None = None,
+    default_video_backend: str | None = None,
+) -> dict:
+    """Update runtime settings overlay (persisted under data_dir/app_settings.json)."""
+    updates = {
+        k: v
+        for k, v in {
+            "llama_base_url": llama_base_url,
+            "llama_model": llama_model,
+            "llama_api_key": llama_api_key,
+            "llama_n_ctx": llama_n_ctx,
+            "llama_max_tokens": llama_max_tokens,
+            "comfyui_base_url": comfyui_base_url,
+            "default_video_backend": default_video_backend,
+        }.items()
+        if v is not None
+    }
+    if not updates:
+        return rs.settings_public(get_settings())
+
+    if "llama_model" in updates and "llama_n_ctx" not in updates:
+        try:
+            listed = await list_llm_models()
+            match = next(
+                (m for m in listed["models"] if m["id"] == updates["llama_model"]),
+                None,
+            )
+            if match and match.get("n_ctx"):
+                updates["llama_n_ctx"] = int(match["n_ctx"])
+        except Exception:
+            pass
+
+    if "default_video_backend" in updates:
+        from app.services.video_backends import normalize_backend_id
+
+        updates["default_video_backend"] = normalize_backend_id(
+            updates["default_video_backend"]
+        )
+
+    rs.save_overlay(updates)
+    return rs.settings_public(get_settings())
+
+
+@mcp.tool()
+def list_video_backends() -> dict:
+    """List selectable video backends (wan, ltx2, ltx23) and the current default."""
+    from app.services.video_backends import list_video_backends as list_backends
+
+    settings = get_settings()
+    return {
+        "default": settings.default_video_backend or "wan",
+        "backends": list_backends(),
+    }
+
+
+@mcp.tool()
+async def list_llm_models() -> dict:
+    """List models from the configured llama.cpp / OpenAI-compatible server."""
+    settings = get_settings()
+    base = settings.llama_base_url.rstrip("/")
+    url = f"{base}/models"
+    headers = {}
+    if settings.llama_api_key:
+        headers["Authorization"] = f"Bearer {settings.llama_api_key}"
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        payload = resp.json()
+    raw = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(raw, list):
+        raise ValueError("Unexpected /models response from LLM server")
+    models = [rs.normalize_llm_model(item) for item in raw if isinstance(item, dict)]
+    models = [m for m in models if m.get("id")]
+    models.sort(
+        key=lambda m: (0 if m.get("status") == "loaded" else 1, m["id"].lower())
+    )
+    return {
+        "base_url": settings.llama_base_url,
+        "selected": settings.llama_model,
+        "llama_n_ctx": settings.llama_n_ctx,
+        "llama_max_tokens": settings.llama_max_tokens,
+        "models": models,
+    }
+
+
+@mcp.tool()
+async def health() -> dict:
+    """Check API/MCP process health and ComfyUI reachability."""
+    settings = get_settings()
+    comfy_ok = False
+    comfy_info: Any = None
+    try:
+        comfy_info = await ComfyUIClient().health()
+        comfy_ok = True
+    except Exception as e:
+        comfy_info = {"error": str(e)}
+    return {
+        "status": "ok",
+        "comfyui": {"ok": comfy_ok, "info": comfy_info},
+        "llama_base_url": settings.llama_base_url,
+        "llama_model": settings.llama_model,
+        "default_video_backend": settings.default_video_backend,
+    }
 
 
 def main() -> None:

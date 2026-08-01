@@ -70,9 +70,14 @@ Cursor / MCP client example (`mcp.json`):
 }
 ```
 
-Tools include: `list_projects`, `create_project`, `generate_story`, `propose_storyboard`, `generate_image`, `start_movie`, `get_job_status`, `pause_job`, `resume_job`, `cancel_job`, `get_movie`, …
+The MCP surface mirrors the REST API so an agent can drive the full studio:
 
-`generate_image` runs a freeform Comfy still (`still_hero`, or `still_edit` when `reference_image_path` is set). Output lands under `media/generated/` (or `media/projects/<id>/generated/`).
+- **Projects / story:** `list_projects`, `create_project`, `get_project`, `update_project`, `generate_story`, `extend_story`, `set_story`, `approve_story`
+- **Cast:** `list_characters`, `create_character`, `update_character`, `delete_character`, `detect_characters`, `generate_character_reference`, `delete_character_reference`, `generate_outfit_reference`
+- **Storyboard:** `propose_storyboard`, `update_frame` (incl. cast/keyframes/dialog), `approve_storyboard`, `generate_frame_dialog`, `generate_cast_ref_sheet`, stills/keyframes/step-clips/between-stills (+ edit/delete helpers)
+- **Images:** `generate_image` (freeform `still_hero` / `still_edit`)
+- **Movies:** `start_movie`, `get_job_status`, `pause_job`, `resume_job`, `cancel_job`, `delete_job`, `list_assets`, `get_movie`, `list_workflows`
+- **Settings:** `get_settings_public`, `update_settings`, `list_video_backends`, `list_llm_models`, `health`
 
 Long renders return a `job_id` immediately — poll `get_job_status`.
 
