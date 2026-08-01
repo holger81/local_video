@@ -554,7 +554,7 @@ def _find_intro_frame_id(
 
 async def detect_characters(
     project_id: int, *, replace_auto: bool = False
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Extract cast from story/premise; upsert by name; set intro_frame_id when possible."""
     with SessionLocal() as db:
         p = db.get(Project, project_id)
@@ -562,9 +562,14 @@ async def detect_characters(
             raise KeyError(f"project {project_id} not found")
         story = (p.story or p.premise or "").strip()
         if not story:
-            raise ValueError("project has no story/premise to detect characters from")
+            raise ValueError(
+                "project has no story/premise to detect characters from — "
+                "save or generate a story first"
+            )
 
     extracted = await llm.extract_cast(story)
+    created = 0
+    updated = 0
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         assert p is not None
@@ -589,17 +594,24 @@ async def detect_characters(
             intro = _find_intro_frame_id(frames, name, aliases)
             if key in by_name:
                 c = by_name[key]
+                changed = False
                 # Only fill empty auto fields; never overwrite user-approved look.
                 if c.auto_detected or not (c.appearance_prompt or "").strip():
                     if item.get("appearance_prompt"):
                         c.appearance_prompt = str(item["appearance_prompt"]).strip()
+                        changed = True
                 if c.auto_detected or not (c.description or "").strip():
                     if item.get("description"):
                         c.description = str(item["description"]).strip()
+                        changed = True
                 if aliases and not c.aliases:
                     c.aliases = aliases
+                    changed = True
                 if intro and not c.intro_frame_id:
                     c.intro_frame_id = intro
+                    changed = True
+                if changed:
+                    updated += 1
             else:
                 c = Character(
                     project_id=project_id,
@@ -615,10 +627,17 @@ async def detect_characters(
                 db.add(c)
                 by_name[key] = c
                 next_pos += 1
+                created += 1
         db.commit()
-        return [
+        characters = [
             _character_dict(c) for c in sorted(p.characters, key=lambda x: x.position)
         ]
+    return {
+        "characters": characters,
+        "extracted": len(extracted),
+        "created": created,
+        "updated": updated,
+    }
 
 
 async def sync_intro_frames(project_id: int) -> list[dict[str, Any]]:

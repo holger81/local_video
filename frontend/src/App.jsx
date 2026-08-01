@@ -602,6 +602,7 @@ function ProjectPage() {
     setEditorDraft({
       description: f.description || "",
       visual_prompt: f.visual_prompt || "",
+      dialog: f.dialog || "",
       duration_hint_sec: f.duration_hint_sec ?? 4,
       is_new_shot: !!f.is_new_shot,
       cast: Array.isArray(f.cast)
@@ -756,6 +757,7 @@ function ProjectPage() {
       body: JSON.stringify({
         description: editorDraft.description,
         visual_prompt: editorDraft.visual_prompt,
+        dialog: editorDraft.dialog || "",
         duration_hint_sec: Number(editorDraft.duration_hint_sec) || 4,
         is_new_shot: !!editorDraft.is_new_shot,
         cast: (editorDraft.cast || []).map((x) => ({
@@ -1093,12 +1095,22 @@ function ProjectPage() {
             type="button"
             disabled={!!busy}
             onClick={() =>
-              run("detect characters", () =>
-                api(`/projects/${id}/characters/detect`, {
+              run("detect characters", async () => {
+                // Detect reads the saved DB story — flush the editor first.
+                if ((storyEdit || "").trim() && storyEdit !== (project.story || "")) {
+                  await api(`/projects/${id}/story`, {
+                    method: "PUT",
+                    body: JSON.stringify({ story: storyEdit }),
+                  });
+                }
+                const result = await api(`/projects/${id}/characters/detect`, {
                   method: "POST",
                   body: JSON.stringify({ replace_auto: false }),
-                })
-              )
+                });
+                if (!(result?.extracted > 0)) {
+                  throw new Error("No characters found in the story.");
+                }
+              })
             }
           >
             Detect from story
@@ -2087,6 +2099,22 @@ function ProjectPage() {
                       setEditorDraft((d) => ({ ...d, visual_prompt: e.target.value }))
                     }
                   />
+                </label>
+                <label className="kf-field">
+                  <span>Dialog / audio</span>
+                  <textarea
+                    rows={3}
+                    value={editorDraft.dialog || ""}
+                    disabled={!!busy}
+                    onChange={(e) =>
+                      setEditorDraft((d) => ({ ...d, dialog: e.target.value }))
+                    }
+                    placeholder='Em: "Look at that!" Soft wind. Footsteps on gravel.'
+                  />
+                  <span className="tiny muted">
+                    Spoken lines and SFX for this beat. Used when animating (best with LTX,
+                    which can synthesize speech in the clip). Wan is mostly silent video.
+                  </span>
                 </label>
                 <div className="kf-field-row">
                   <label className="kf-field">

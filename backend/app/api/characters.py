@@ -63,6 +63,22 @@ def create_character(project_id: int, body: CharacterIn):
         raise HTTPException(400, str(e)) from e
 
 
+# Static path before /{character_id} so "detect" is never treated as an id.
+@router.post("/detect")
+async def detect_characters(project_id: int, body: DetectIn | None = None):
+    body = body or DetectIn()
+    try:
+        return await char_svc.detect_characters(
+            project_id, replace_auto=body.replace_auto
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
 @router.patch("/{character_id}")
 def patch_character(project_id: int, character_id: int, body: CharacterPatch):
     try:
@@ -81,19 +97,6 @@ def delete_character(project_id: int, character_id: int):
         return char_svc.delete_character(project_id, character_id)
     except KeyError as e:
         raise HTTPException(404, str(e)) from e
-
-
-@router.post("/detect")
-async def detect_characters(project_id: int, body: DetectIn | None = None):
-    body = body or DetectIn()
-    try:
-        return await char_svc.detect_characters(
-            project_id, replace_auto=body.replace_auto
-        )
-    except KeyError as e:
-        raise HTTPException(404, str(e)) from e
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
 
 
 @router.post("/{character_id}/reference")

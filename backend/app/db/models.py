@@ -92,6 +92,8 @@ class StoryboardFrame(Base):
     position: Mapped[int] = mapped_column(Integer, default=0)
     description: Mapped[str] = mapped_column(Text, default="")
     visual_prompt: Mapped[str] = mapped_column(Text, default="")
+    # Spoken lines / SFX notes for this beat (woven into LTX motion prompts).
+    dialog: Mapped[str] = mapped_column(Text, default="")
     still_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # Per-step video keyframes: first → mid → last (before movie / between-stills clips)
     keyframe_first_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -227,6 +229,7 @@ def _migrate_sqlite(engine) -> None:
             "keyframe_last_prompt": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_last_prompt TEXT DEFAULT ''",
             "keyframes": "ALTER TABLE storyboard_frames ADD COLUMN keyframes JSON",
             "cast": "ALTER TABLE storyboard_frames ADD COLUMN cast JSON",
+            "dialog": "ALTER TABLE storyboard_frames ADD COLUMN dialog TEXT DEFAULT ''",
         }
         for name, ddl in additions.items():
             if name not in cols:

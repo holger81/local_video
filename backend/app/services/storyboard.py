@@ -159,6 +159,7 @@ def _frame_dict(f: StoryboardFrame) -> dict[str, Any]:
         "position": f.position,
         "description": f.description,
         "visual_prompt": f.visual_prompt,
+        "dialog": getattr(f, "dialog", None) or "",
         "still_path": f.still_path,
         "cast_ref_sheet_path": _cast_ref_sheet_path(f.project_id, f.id),
         "keyframes": keyframes,
@@ -266,8 +267,12 @@ async def propose_storyboard(
     # Ensure cast exists before proposing beats that name them.
     try:
         await char_svc.detect_characters(project_id, replace_auto=False)
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "cast detect before storyboard propose failed: %s", e
+        )
     cast_sheet = ""
     try:
         cast_sheet = char_svc.cast_sheet_for_project(project_id)
@@ -315,6 +320,7 @@ def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any
     allowed = {
         "description",
         "visual_prompt",
+        "dialog",
         "duration_hint_sec",
         "is_new_shot",
         "position",
@@ -1235,11 +1241,13 @@ def build_transition_prompt(
     premise: str,
     start_prompt: str,
     end_prompt: str,
+    dialog: str = "",
 ) -> str:
     """Prompt for a clip that starts on one still and moves toward the next."""
     world = _truncate(premise or "", 280)
     start = _truncate(start_prompt or "", 220)
     end = _truncate(end_prompt or "", 220)
+    speech = _truncate(dialog or "", 320)
     parts = [
         "Cinematic continuous video, one camera move, smooth motion between two keyframes.",
         "Begin matched to the starting image; progress toward the ending beat.",
@@ -1250,6 +1258,11 @@ def build_transition_prompt(
         parts.append(f"Starting beat: {start}.")
     if end:
         parts.append(f"Move toward: {end}.")
+    if speech:
+        parts.append(
+            "Audio for this beat (spoken dialogue and/or sound): "
+            f"{speech}. Characters articulate clearly in sync with the action."
+        )
     parts.append(
         "Keep the same cast, wardrobe, and location; do not jump-cut or show a collage."
     )
@@ -1324,6 +1337,7 @@ async def generate_between_stills(
         )
         premise = p.premise or ""
         next_frame_id = nxt.id
+        dialog = (getattr(cur, "dialog", None) or "").strip()
 
     dest = await _bridge_clip_between_images(
         project_id=project_id,
@@ -1331,7 +1345,10 @@ async def generate_between_stills(
         start_image=_resolve_media_file(start_stored),
         end_image=_resolve_media_file(end_ref),
         prompt=build_transition_prompt(
-            premise=premise, start_prompt=start_beat, end_prompt=end_beat
+            premise=premise,
+            start_prompt=start_beat,
+            end_prompt=end_beat,
+            dialog=dialog,
         ),
         label="between",
         num_frames=num_frames,
@@ -2174,6 +2191,7 @@ async def generate_step_clips(
         assert p is not None
         keyframes = _keyframes_list(f)
         beat = f.visual_prompt or f.description or ""
+        dialog = (getattr(f, "dialog", None) or "").strip()
         premise = p.premise or ""
         if len(keyframes) < 2 or not _keyframes_ready(keyframes):
             raise ValueError(
@@ -2200,6 +2218,7 @@ async def generate_step_clips(
                 premise=premise,
                 start_prompt=a.get("image_prompt") or f"t={a.get('t_sec')}s: {beat}",
                 end_prompt=b.get("image_prompt") or f"t={b.get('t_sec')}s: {beat}",
+                dialog=dialog,
             ),
             label=f"clip_{i:02d}",
             num_frames=num_frames,

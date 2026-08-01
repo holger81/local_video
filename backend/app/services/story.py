@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.db.models import Project, SessionLocal
 from app.services import llm
+
+log = logging.getLogger(__name__)
 
 
 def set_story(project_id: int, story: str, approved: bool = False) -> dict[str, Any]:
@@ -22,8 +25,8 @@ async def _maybe_detect_cast(project_id: int) -> None:
         from app.services import characters as char_svc
 
         await char_svc.detect_characters(project_id, replace_auto=False)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("auto cast detect failed for project %s: %s", project_id, e)
 
 
 async def generate_story(project_id: int) -> dict[str, Any]:

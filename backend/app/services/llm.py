@@ -335,18 +335,41 @@ def format_cast_sheet(characters: list[dict[str, Any]]) -> str:
 async def extract_cast(story: str) -> list[dict[str, Any]]:
     """Pull distinct characters from a story for the cast sheet."""
     system = (
-        "You extract the cast for a short film. Return ONLY valid JSON array. "
+        "You extract the cast for a short film. Return ONLY valid JSON. "
+        "Prefer a raw array. Also accept "
+        '{"characters": [...]} or {"cast": [...]}. '
         "Each item: "
         '{"name": str, "aliases": [str], "description": str, "appearance_prompt": str}. '
         "Include only named or clearly recurring characters (not crowds). "
         "appearance_prompt must be a concrete visual look: age range, face, hair, wardrobe, "
         "distinctive details — suitable for image generation. Keep each field concise."
     )
-    user = f"Story:\n{story}\n\nExtract the cast."
+    user = f"Story:\n{story}\n\nExtract the cast as JSON."
     raw = await chat(system, user, temperature=0.2)
-    data = _extract_json(raw)
+    try:
+        data = _extract_json(raw)
+    except Exception as e:
+        snippet = (raw or "").strip().replace("\n", " ")[:240]
+        raise ValueError(
+            f"cast JSON parse failed: {e}. Model replied: {snippet or '(empty)'}"
+        ) from e
+
+    if isinstance(data, dict):
+        for key in ("characters", "cast", "people", "items", "data"):
+            if isinstance(data.get(key), list):
+                data = data[key]
+                break
+        else:
+            # Single character object
+            if data.get("name"):
+                data = [data]
+            else:
+                raise ValueError(
+                    "cast response was an object without a characters/cast array"
+                )
     if not isinstance(data, list):
         raise ValueError("cast response was not a list")
+
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in data:
@@ -371,6 +394,12 @@ async def extract_cast(story: str) -> list[dict[str, Any]]:
                     item.get("appearance_prompt") or item.get("look") or ""
                 ).strip(),
             }
+        )
+    if not out:
+        snippet = (raw or "").strip().replace("\n", " ")[:240]
+        raise ValueError(
+            "no characters extracted from story. "
+            f"Model replied: {snippet or '(empty)'}"
         )
     return out
 

@@ -13,6 +13,7 @@ class ProposeIn(BaseModel):
 class FrameUpdate(BaseModel):
     description: str | None = None
     visual_prompt: str | None = None
+    dialog: str | None = None
     duration_hint_sec: float | None = None
     is_new_shot: bool | None = None
     position: int | None = None
