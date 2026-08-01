@@ -1,9 +1,9 @@
 workflow: ltx_t2v.json
 description: >
-  LTX 2.3 text-to-video. Distilled single-pass graph derived from ltx_flf2v with
+  LTX-2 19B text-to-video. Single-pass graph derived from ltx_flf2v with
   image guides removed; latent size from width/height primitives. Frame rule: 8n+1.
 model_files:
-  - models/checkpoints/ltx-2.3-22b-distilled-fp8.safetensors
+  - models/checkpoints/ltx-2-19b-dev-fp8.safetensors
   - models/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors
 fields:
   positive_prompt: {node: "222", input: text}

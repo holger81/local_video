@@ -1,10 +1,10 @@
 workflow: ltx_flf2v.json
 description: >
-  LTX 2.3 first+last frame → video (single-graph FLF for keyframes / movie).
-  Packaged from the working Comfy-Org FLF blueprint (FP8 distilled + Gemma FP4).
+  LTX-2 19B first+last frame → video (single-graph FLF for keyframes / movie).
+  Packaged from the working Comfy-Org FLF blueprint (LTX-2 19B FP8 + Gemma FP4).
   Frame rule: 8n+1 (e.g. 33). Host needs ComfyMathExpression + ResizeImageMaskNode.
 model_files:
-  - models/checkpoints/ltx-2.3-22b-distilled-fp8.safetensors
+  - models/checkpoints/ltx-2-19b-dev-fp8.safetensors
   - models/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors
 fields:
   positive_prompt: {node: "222", input: text}

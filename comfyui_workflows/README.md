@@ -17,7 +17,7 @@ See also [docs/video-backends.md](../docs/video-backends.md) for Wan vs LTX sele
 | Backend | Role | T2V / I2V / FLF map IDs |
 |---------|------|-------------------------|
 | **wan** (default) | Proven Wan 2.2 path; FLF is two-pass high→low | `wan22_t2v`, `wan22_i2v`, `wan22_flf2v` |
-| **ltx** | LTX 2.3 T2V / I2V / FLF packaged (distilled FP8) | `ltx_t2v`, `ltx_i2v`, `ltx_flf2v` |
+| **ltx** | LTX T2V / I2V / FLF packaged (`ltx-2-19b-dev-fp8`) | `ltx_t2v`, `ltx_i2v`, `ltx_flf2v` |
 | **ltx ic-lora** | Ingredients reference-sheet path (identity lock) | `ltx_ic_lora` |
 
 ### LTX (ready)
@@ -35,7 +35,8 @@ Models (map `model_files`):
 
 ```
 ComfyUI/models/
-  checkpoints/ltx-2.3-22b-distilled-fp8.safetensors
+  checkpoints/ltx-2-19b-dev-fp8.safetensors   # T2V/I2V/FLF default
+  checkpoints/ltx-2.3-22b-distilled-fp8.safetensors  # IC-LoRA Ingredients only
   text_encoders/gemma_3_12B_it_fp4_mixed.safetensors
   loras/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors   # IC-LoRA only
 ```

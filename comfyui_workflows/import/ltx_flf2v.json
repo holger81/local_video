@@ -2476,14 +2476,14 @@
               "secondTabWidth": 65,
               "models": [
                 {
-                  "name": "ltx-2.3-22b-distilled-fp8.safetensors",
-                  "url": "https://huggingface.co/Lightricks/LTX-2.3-fp8/resolve/main/ltx-2.3-22b-distilled-fp8.safetensors",
+                  "name": "ltx-2-19b-dev-fp8.safetensors",
+                  "url": "https://huggingface.co/Lightricks/LTX-2.3-fp8/resolve/main/ltx-2-19b-dev-fp8.safetensors",
                   "directory": "checkpoints"
                 }
               ]
             },
             "widgets_values": [
-              "ltx-2.3-22b-distilled-fp8.safetensors"
+              "ltx-2-19b-dev-fp8.safetensors"
             ]
           },
           {
@@ -2540,14 +2540,14 @@
               "secondTabWidth": 65,
               "models": [
                 {
-                  "name": "ltx-2.3-22b-distilled-fp8.safetensors",
-                  "url": "https://huggingface.co/Lightricks/LTX-2.3-fp8/resolve/main/ltx-2.3-22b-distilled-fp8.safetensors",
+                  "name": "ltx-2-19b-dev-fp8.safetensors",
+                  "url": "https://huggingface.co/Lightricks/LTX-2.3-fp8/resolve/main/ltx-2-19b-dev-fp8.safetensors",
                   "directory": "checkpoints"
                 }
               ]
             },
             "widgets_values": [
-              "ltx-2.3-22b-distilled-fp8.safetensors"
+              "ltx-2-19b-dev-fp8.safetensors"
             ]
           },
           {
@@ -2627,15 +2627,15 @@
                   "directory": "text_encoders"
                 },
                 {
-                  "name": "ltx-2.3-22b-distilled-fp8.safetensors",
-                  "url": "https://huggingface.co/Lightricks/LTX-2.3-fp8/resolve/main/ltx-2.3-22b-distilled-fp8.safetensors",
+                  "name": "ltx-2-19b-dev-fp8.safetensors",
+                  "url": "https://huggingface.co/Lightricks/LTX-2.3-fp8/resolve/main/ltx-2-19b-dev-fp8.safetensors",
                   "directory": "checkpoints"
                 }
               ]
             },
             "widgets_values": [
               "gemma_3_12B_it_fp4_mixed.safetensors",
-              "ltx-2.3-22b-distilled-fp8.safetensors",
+              "ltx-2-19b-dev-fp8.safetensors",
               "default"
             ]
           },

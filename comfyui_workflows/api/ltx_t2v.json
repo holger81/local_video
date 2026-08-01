@@ -233,20 +233,20 @@
   "223": {
     "class_type": "CheckpointLoaderSimple",
     "inputs": {
-      "ckpt_name": "ltx-2.3-22b-distilled-fp8.safetensors"
+      "ckpt_name": "ltx-2-19b-dev-fp8.safetensors"
     }
   },
   "224": {
     "class_type": "LTXVAudioVAELoader",
     "inputs": {
-      "ckpt_name": "ltx-2.3-22b-distilled-fp8.safetensors"
+      "ckpt_name": "ltx-2-19b-dev-fp8.safetensors"
     }
   },
   "225": {
     "class_type": "LTXAVTextEncoderLoader",
     "inputs": {
       "text_encoder": "gemma_3_12B_it_fp4_mixed.safetensors",
-      "ckpt_name": "ltx-2.3-22b-distilled-fp8.safetensors",
+      "ckpt_name": "ltx-2-19b-dev-fp8.safetensors",
       "device": "default"
     }
   },

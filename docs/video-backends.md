@@ -31,9 +31,10 @@ Prefer a hard cut (`is_new_shot`) when switching Wan ↔ LTX. Continuous FLF acr
 ## LTX
 
 - Same interface (`render_flf2v` / `render_i2v` / `render_t2v`).
-- **T2V / I2V / FLF are shipped** as distilled single-pass graphs (`api/ltx_*.json` + maps).
+- **T2V / I2V / FLF are shipped** as single-pass graphs (`api/ltx_*.json` + maps) on **`ltx-2-19b-dev-fp8`**.
 - Frame rule: **`8n+1`** (e.g. 33). Planning snaps to this when the job/shot backend is `ltx`.
 - Storyboard FLF step clips default to the quality bucket **768×448** (not full project defaults).
+- IC-LoRA Ingredients stays on **`ltx-2.3-22b-distilled-fp8`** (LoRA is 2.3-specific).
 - I2V reuses the FLF topology with the start image as both guides; T2V drops image guides and sizes the latent from width/height.
 - Host needs custom nodes used by the graphs (`ComfyMathExpression`, `ResizeImageMaskNode`) and matching model filenames under `ComfyUI/models/`.
 
