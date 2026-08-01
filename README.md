@@ -70,7 +70,9 @@ Cursor / MCP client example (`mcp.json`):
 }
 ```
 
-Tools include: `list_projects`, `create_project`, `generate_story`, `propose_storyboard`, `start_movie`, `get_job_status`, `pause_job`, `resume_job`, `cancel_job`, `get_movie`, …
+Tools include: `list_projects`, `create_project`, `generate_story`, `propose_storyboard`, `generate_image`, `start_movie`, `get_job_status`, `pause_job`, `resume_job`, `cancel_job`, `get_movie`, …
+
+`generate_image` runs a freeform Comfy still (`still_hero`, or `still_edit` when `reference_image_path` is set). Output lands under `media/generated/` (or `media/projects/<id>/generated/`).
 
 Long renders return a `job_id` immediately — poll `get_job_status`.
 

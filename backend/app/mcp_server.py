@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 
 from app.config import get_settings
 from app.db.models import init_db
+from app.services import images as images_svc
 from app.services import movie as movie_svc
 from app.services import projects as projects_svc
 from app.services import story as story_svc
@@ -82,7 +83,9 @@ def update_frame(
         "keyframe_mid_prompt": keyframe_mid_prompt,
         "keyframe_last_prompt": keyframe_last_prompt,
     }
-    return sb_svc.update_frame(project_id, frame_id, **{k: v for k, v in fields.items() if v is not None})
+    return sb_svc.update_frame(
+        project_id, frame_id, **{k: v for k, v in fields.items() if v is not None}
+    )
 
 
 @mcp.tool()
@@ -266,6 +269,41 @@ def delete_frame_media(project_id: int, frame_id: int, kind: str) -> dict:
 def list_workflows_tool() -> list:
     """List available ComfyUI workflow profiles."""
     return list_workflows()
+
+
+@mcp.tool()
+async def generate_image(
+    prompt: str,
+    negative_prompt: str = "",
+    seed: int | None = None,
+    width: int = 1024,
+    height: int = 576,
+    steps: int = 20,
+    cfg: float = 5.0,
+    workflow_id: str | None = None,
+    reference_image_path: str | None = None,
+    project_id: int | None = None,
+    label: str = "gen",
+) -> dict:
+    """Generate a generic still via ComfyUI (not tied to a storyboard frame).
+
+    Text-to-image uses still_hero (Flux.2 Klein). Pass reference_image_path (under
+    MEDIA_DIR) to edit from an existing image via still_edit. Returns path, media_path,
+    and /api/media/... url.
+    """
+    return await images_svc.generate_image(
+        prompt,
+        negative_prompt=negative_prompt,
+        seed=seed,
+        width=width,
+        height=height,
+        steps=steps,
+        cfg=cfg,
+        workflow_id=workflow_id,
+        reference_image_path=reference_image_path,
+        project_id=project_id,
+        label=label,
+    )
 
 
 @mcp.tool()
