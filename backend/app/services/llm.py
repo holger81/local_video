@@ -656,3 +656,53 @@ async def plan_keyframe_series(
         "keyframes": keyframes,
         "shared_first": shared,
     }
+
+
+async def plan_beat_audio_prompt(
+    *,
+    story: str,
+    description: str,
+    visual: str,
+    duration_sec: float = 4.0,
+    cast_names: list[str] | None = None,
+    premise: str = "",
+) -> str:
+    """LLM: spoken lines + SFX notes for one storyboard beat (from the story)."""
+    system = (
+        "You write the AUDIO cue sheet for ONE short film beat. "
+        'Return ONLY valid JSON: {"audio_prompt": "..."}. '
+        "Include spoken dialogue (Character: \"line\") when the story implies speech, "
+        "plus brief ambient SFX / music notes that fit this moment only. "
+        "Use exact cast names when provided. Do not invent major plot events. "
+        "Keep it concise (2–6 short lines). No visual/camera description. "
+        "If the beat is silent, say so and list only ambient sound."
+    )
+    names = [n for n in (cast_names or []) if (n or "").strip()]
+    user = (
+        f"Beat duration ≈ {float(duration_sec or 4.0):.1f}s.\n"
+        f"Beat description: {description}\n"
+        f"Beat visual note: {visual}\n"
+    )
+    if premise:
+        user += f"Premise: {premise}\n"
+    if names:
+        user += "Cast names: " + ", ".join(names) + "\n"
+    user += f"Full story (for dialog context):\n{story}\n\nWrite audio_prompt for this beat only."
+    raw = await chat(system, user, temperature=0.3)
+    data = _extract_json(raw)
+    if isinstance(data, dict):
+        text = str(
+            data.get("audio_prompt")
+            or data.get("dialog")
+            or data.get("dialogue")
+            or data.get("prompt")
+            or ""
+        ).strip()
+    elif isinstance(data, str):
+        text = data.strip()
+    else:
+        text = ""
+    if not text:
+        raise ValueError("empty audio_prompt from model")
+    return text
+

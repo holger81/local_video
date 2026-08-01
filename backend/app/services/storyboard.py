@@ -239,6 +239,57 @@ async def rebuild_frame_keyframe_prompts(
         return _frame_dict(fr)
 
 
+async def generate_frame_dialog(project_id: int, frame_id: int) -> dict[str, Any]:
+    """LLM-write spoken dialog + SFX for this beat from the project story."""
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+        p = db.get(Project, project_id)
+        assert p is not None
+        story = (p.story or p.premise or "").strip()
+        if not story:
+            raise ValueError("project has no story/premise to generate audio from")
+        description = f.description or ""
+        visual = f.visual_prompt or ""
+        duration = float(f.duration_hint_sec or 4.0)
+        premise = p.premise or ""
+        cast_sel = list(getattr(f, "cast", None) or [])
+        cast_ids = {
+            int(x.get("character_id"))
+            for x in cast_sel
+            if isinstance(x, dict) and x.get("character_id") is not None
+        }
+        names: list[str] = []
+        for c in sorted(p.characters, key=lambda x: x.position):
+            if cast_ids and c.id not in cast_ids:
+                continue
+            if (c.name or "").strip():
+                names.append(c.name.strip())
+        if not names:
+            names = [
+                c.name.strip()
+                for c in sorted(p.characters, key=lambda x: x.position)
+                if (c.name or "").strip()
+            ]
+
+    audio = await llm.plan_beat_audio_prompt(
+        story=story,
+        description=description,
+        visual=visual,
+        duration_sec=duration,
+        cast_names=names,
+        premise=premise,
+    )
+    with SessionLocal() as db:
+        fr = db.get(StoryboardFrame, frame_id)
+        assert fr
+        fr.dialog = audio
+        db.commit()
+        db.refresh(fr)
+        return _frame_dict(fr)
+
+
 def _frames_payload(project_id: int) -> list[dict[str, Any]]:
     with SessionLocal() as db:
         p = db.get(Project, project_id)

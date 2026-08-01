@@ -2233,6 +2233,30 @@ function ProjectPage() {
                     }
                     placeholder='Em: "Look at that!" Soft wind. Footsteps on gravel.'
                   />
+                  <div className="row" style={{ marginTop: "0.35rem", marginBottom: 0 }}>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      disabled={!!busy}
+                      onClick={() =>
+                        run(`dialog ${f.id}`, async () => {
+                          await patchEditorFields();
+                          const updated = await api(
+                            `/projects/${id}/storyboard/frames/${f.id}/dialog`,
+                            { method: "POST" }
+                          );
+                          if (updated?.dialog != null) {
+                            setEditorDraft((d) =>
+                              d ? { ...d, dialog: updated.dialog || "" } : d
+                            );
+                          }
+                        })
+                      }
+                      title="LLM: write spoken lines and SFX for this beat from the story"
+                    >
+                      Generate from story
+                    </button>
+                  </div>
                   <span className="tiny muted">
                     Spoken lines and SFX for this beat. Used when animating (best with LTX,
                     which can synthesize speech in the clip). Wan is mostly silent video.

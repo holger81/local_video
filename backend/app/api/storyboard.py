@@ -181,6 +181,19 @@ async def generate_visual(project_id: int, frame_id: int, body: VisualIn | None 
         raise HTTPException(500, str(e)) from e
 
 
+@router.post("/frames/{frame_id}/dialog")
+async def generate_frame_dialog(project_id: int, frame_id: int):
+    """LLM: fill Dialog/audio for this beat from the project story."""
+    try:
+        return await sb_svc.generate_frame_dialog(project_id, frame_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
 @router.post("/frames/{frame_id}/keyframes")
 async def frame_keyframes(project_id: int, frame_id: int, body: KeyframesIn | None = None):
     body = body or KeyframesIn()
