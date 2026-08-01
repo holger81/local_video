@@ -205,6 +205,49 @@ def face_body_lock(appearance: str, *, has_wardrobe: bool) -> str:
     return " ".join(kept).strip()
 
 
+async def describe_outfit_from_character_look(
+    *,
+    name: str,
+    appearance: str,
+    extra_instruction: str | None = None,
+) -> dict[str, str]:
+    """Infer a wardrobe outfit card from a character portrait look description.
+
+    Returns ``{"name": short outfit label, "prompt": clothing-only prompt}``.
+    """
+    look = (appearance or "").strip()
+    who = (name or "Character").strip() or "Character"
+    extra = (extra_instruction or "").strip()
+    system = (
+        "You write wardrobe cards for film continuity. Return ONLY valid JSON: "
+        '{"name": str, "prompt": str}. '
+        'name = short outfit label (2–4 words, e.g. "Yellow summer dress"). '
+        "prompt = clothing/footwear/accessories ONLY — colors, materials, garments. "
+        "No face, hair, age, body type, pose, or background. Concise (under 40 words)."
+    )
+    user = f"Character: {who}\nFull look notes:\n{look or '(none)'}\n"
+    if extra:
+        user += f"Latest edit direction (may change clothes):\n{extra}\n"
+    user += "Describe the outfit visible / implied for this character portrait as JSON."
+    try:
+        raw = await chat(system, user, temperature=0.2)
+        data = _extract_json(raw)
+        if not isinstance(data, dict):
+            raise ValueError("outfit describe response was not an object")
+        oname = str(data.get("name") or "").strip() or "From portrait"
+        prompt = str(data.get("prompt") or data.get("wardrobe") or "").strip()
+        if not prompt:
+            raise ValueError("empty outfit prompt")
+        return {"name": oname[:48], "prompt": prompt}
+    except Exception:
+        # Text-only fallback when the LLM is down or returns junk.
+        fallback = look or "clothing as shown in the character portrait"
+        return {
+            "name": "From portrait",
+            "prompt": f"Wardrobe from character portrait: {fallback[:280]}",
+        }
+
+
 def wardrobe_conflict_negatives(appearance: str, wardrobe: str) -> str:
     """Negative tokens for clothing mentioned in appearance but not in wardrobe."""
     app = (appearance or "").lower()
@@ -212,9 +255,9 @@ def wardrobe_conflict_negatives(appearance: str, wardrobe: str) -> str:
     if not ward:
         return ""
     bits: list[str] = []
-    if re.search(r"(?i)space\s*suit|spacesuit|astronaut|eva\s*suit", app) and not re.search(
-        r"(?i)space\s*suit|spacesuit|astronaut|eva\s*suit", ward
-    ):
+    if re.search(
+        r"(?i)space\s*suit|spacesuit|astronaut|eva\s*suit", app
+    ) and not re.search(r"(?i)space\s*suit|spacesuit|astronaut|eva\s*suit", ward):
         bits.append(
             "astronaut suit, spacesuit, space suit, EVA suit, helmet, NASA suit, "
             "pressure suit, white space suit"
@@ -279,9 +322,7 @@ def style_lock_phrase(genre: str = "") -> str:
             f"{g} genre cinematic still, one continuous camera shot, one moment only, "
             "full frame"
         )
-    return (
-        "Cinematic still, one continuous camera shot, one moment only, full frame"
-    )
+    return "Cinematic still, one continuous camera shot, one moment only, full frame"
 
 
 def style_negatives(genre: str = "") -> str:
@@ -310,9 +351,7 @@ def format_cast_sheet(characters: list[dict[str, Any]]) -> str:
         if wardrobe:
             label = f"Wardrobe ({outfit_name})" if outfit_name else "Wardrobe"
             hand_note = (
-                "; bare hands"
-                if not re.search(r"(?i)glove|mitten", wardrobe)
-                else ""
+                "; bare hands" if not re.search(r"(?i)glove|mitten", wardrobe) else ""
             )
             bits.append(
                 f"{label}: {wardrobe}{hand_note} "
@@ -329,7 +368,6 @@ def format_cast_sheet(characters: list[dict[str, Any]]) -> str:
     return "Cast lock (use these exact names, looks, and wardrobes):\n" + "\n".join(
         lines
     )
-
 
 
 async def extract_cast(story: str) -> list[dict[str, Any]]:
@@ -398,8 +436,7 @@ async def extract_cast(story: str) -> list[dict[str, Any]]:
     if not out:
         snippet = (raw or "").strip().replace("\n", " ")[:240]
         raise ValueError(
-            "no characters extracted from story. "
-            f"Model replied: {snippet or '(empty)'}"
+            f"no characters extracted from story. Model replied: {snippet or '(empty)'}"
         )
     return out
 
@@ -672,7 +709,7 @@ async def plan_beat_audio_prompt(
     system = (
         "You write the AUDIO cue sheet for ONE short film beat. "
         'Return ONLY valid JSON: {"audio_prompt": "..."}. '
-        "Include spoken dialogue (Character: \"line\") when the story implies speech, "
+        'Include spoken dialogue (Character: "line") when the story implies speech, '
         "plus brief ambient SFX / music notes that fit this moment only. "
         "Use exact cast names when provided. Do not invent major plot events. "
         "Keep it concise (2–6 short lines). No visual/camera description. "
@@ -706,4 +743,3 @@ async def plan_beat_audio_prompt(
     if not text:
         raise ValueError("empty audio_prompt from model")
     return text
-

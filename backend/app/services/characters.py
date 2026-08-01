@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -12,6 +13,9 @@ from app.db.models import Character, Project, SessionLocal, StoryboardFrame
 from app.services import llm
 from app.services.comfyui import ComfyUIClient
 from app.services.workflows import apply_params
+
+# Outfit created automatically from the character portrait reference.
+_PORTRAIT_OUTFIT_SOURCE = "character_reference"
 
 _TITLE_TOKENS = frozenset(
     {
@@ -173,12 +177,14 @@ def _normalize_outfit(
     oid = str(item.get("id") or fallback_id or uuid.uuid4().hex[:10]).strip()
     name = str(item.get("name") or "").strip() or "Outfit"
     prompt = str(item.get("prompt") or item.get("appearance") or "").strip()
+    source = str(item.get("source") or "").strip() or None
     return {
         "id": oid,
         "name": name,
         "prompt": prompt,
         "reference_image_path": (item.get("reference_image_path") or None),
         "is_default": bool(item.get("is_default")),
+        "source": source,
     }
 
 
@@ -964,9 +970,117 @@ async def generate_reference(
                 ch.appearance_prompt or appearance or "",
                 instruction.strip(),
             )
+        appearance_now = ch.appearance_prompt or appearance or ""
+        name_now = ch.name or name
         db.commit()
+
+    # Portrait → outfit: same picture + wardrobe description for cast locking.
+    try:
+        await _sync_outfit_from_character_reference(
+            project_id,
+            character_id,
+            dest,
+            name=name_now,
+            appearance=appearance_now,
+            instruction=(instruction or "").strip() or None,
+        )
+    except Exception:
+        # Reference still succeeded; outfit sync is best-effort.
+        pass
+
+    with SessionLocal() as db:
+        ch = db.get(Character, character_id)
+        assert ch
         db.refresh(ch)
         return _character_dict(ch)
+
+
+async def _sync_outfit_from_character_reference(
+    project_id: int,
+    character_id: int,
+    ref_path: Path,
+    *,
+    name: str,
+    appearance: str,
+    instruction: str | None = None,
+) -> None:
+    """Copy the portrait into an outfit card and fill wardrobe name/prompt via LLM."""
+    described = await llm.describe_outfit_from_character_look(
+        name=name,
+        appearance=appearance,
+        extra_instruction=instruction,
+    )
+    outfit_name = (described.get("name") or "From portrait").strip() or "From portrait"
+    wardrobe = (described.get("prompt") or "").strip()
+    if not wardrobe:
+        wardrobe = f"Wardrobe as shown in {name}'s character portrait"
+
+    outfits_dir = (
+        get_settings().media_dir
+        / "projects"
+        / str(project_id)
+        / "characters"
+        / str(character_id)
+        / "outfits"
+    )
+    outfits_dir.mkdir(parents=True, exist_ok=True)
+    dest = outfits_dir / f"from_portrait{ref_path.suffix or '.png'}"
+    shutil.copy2(ref_path, dest)
+
+    with SessionLocal() as db:
+        ch = db.get(Character, character_id)
+        if not ch or ch.project_id != project_id:
+            raise KeyError(f"character {character_id} not found")
+        outfits = _normalize_outfits(ch.outfits or [])
+        portrait = next(
+            (o for o in outfits if (o.get("source") or "") == _PORTRAIT_OUTFIT_SOURCE),
+            None,
+        )
+        if (
+            portrait is None
+            and len(outfits) == 1
+            and not (outfits[0].get("prompt") or "").strip()
+        ):
+            # Empty single placeholder outfit → claim it as the portrait outfit.
+            portrait = outfits[0]
+            portrait["source"] = _PORTRAIT_OUTFIT_SOURCE
+
+        old_img = None
+        if portrait is not None:
+            old_img = portrait.get("reference_image_path")
+            portrait["name"] = outfit_name
+            portrait["prompt"] = wardrobe
+            portrait["reference_image_path"] = str(dest)
+            portrait["source"] = _PORTRAIT_OUTFIT_SOURCE
+            if not any(o.get("is_default") for o in outfits):
+                portrait["is_default"] = True
+        else:
+            make_default = not any(o.get("is_default") for o in outfits)
+            if make_default:
+                for o in outfits:
+                    o["is_default"] = False
+            outfits.append(
+                {
+                    "id": uuid.uuid4().hex[:10],
+                    "name": outfit_name,
+                    "prompt": wardrobe,
+                    "reference_image_path": str(dest),
+                    "is_default": make_default or not outfits,
+                    "source": _PORTRAIT_OUTFIT_SOURCE,
+                }
+            )
+        ch.outfits = list(outfits)
+        db.commit()
+
+    if old_img:
+        try:
+            prev = _resolve_media_file(str(old_img))
+            if prev.resolve() != dest.resolve() and prev.is_file():
+                # Don't delete if it is the live character portrait path.
+                if prev.resolve() != ref_path.resolve():
+                    prev.unlink()
+        except (FileNotFoundError, ValueError, OSError):
+            pass
 
 
 def delete_reference(project_id: int, character_id: int) -> dict[str, Any]:
