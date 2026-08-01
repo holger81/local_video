@@ -86,31 +86,64 @@ def apply_params(
 
     # CreateVideo.fps is FLOAT in current Comfy; PrimitiveInt links fail validation.
     _fix_create_video_fps(graph, params.get("fps"))
-    # ROCm: large temporal windows (incl. defaults ≥ clip length) hard-crash decode.
-    _clamp_vae_decode_tiled(graph)
+    # ROCm: temporal_size ≥ clip length decodes in one chunk and hard-crashes.
+    # Tiny tiles/overlap (256/32/8/4) leave visible spatial seams + temporal ghosting.
+    frames = params.get("num_frames", params.get("length"))
+    _clamp_vae_decode_tiled(graph, num_frames=frames)
     return graph
 
 
-# Keep temporal_size under typical step-clip length so tiling actually chunks.
-_SAFE_VAE_TILED = {
-    "tile_size": 256,
-    "overlap": 32,
-    "temporal_size": 8,
-    "temporal_overlap": 4,
-}
+def _vae_tiled_settings(num_frames: Any = None) -> dict[str, int]:
+    """Balance seam quality vs ROCm VAE decode stability.
+
+    Spatial: 512/128 covers 448px height in one tile and blends the single
+    horizontal join on 768-wide FLF clips (256/32 left grid seams).
+
+    Temporal: stay strictly below the clip length so decode still chunks.
+    Prefer larger windows on 33-frame step clips to cut ghosting.
+    """
+    tile_size = 512
+    overlap = 128
+    temporal_size = 16
+    temporal_overlap = 8
+    n: int | None = None
+    if num_frames is not None:
+        try:
+            n = int(num_frames)
+        except (TypeError, ValueError):
+            n = None
+    if n is not None and n > 0:
+        # Prefer fewer temporal joins when the clip is long enough.
+        preferred = 24 if n >= 33 else 16
+        # Must remain < n; leave at least one frame of headroom.
+        cap = max(8, ((n - 1) // 4) * 4)
+        temporal_size = min(preferred, cap)
+        if temporal_size < 2 * temporal_overlap:
+            temporal_overlap = max(4, (temporal_size // 2 // 4) * 4)
+            temporal_overlap = min(temporal_overlap, temporal_size // 2)
+            temporal_overlap = max(4, temporal_overlap)
+    return {
+        "tile_size": tile_size,
+        "overlap": overlap,
+        "temporal_size": temporal_size,
+        "temporal_overlap": temporal_overlap,
+    }
 
 
-def _clamp_vae_decode_tiled(graph: dict[str, Any]) -> None:
-    """Force conservative VAEDecodeTiled settings on every queued graph."""
+def _clamp_vae_decode_tiled(graph: dict[str, Any], *, num_frames: Any = None) -> None:
+    """Force VAEDecodeTiled settings that avoid ROCm OOM without grid artefacts."""
+    settings = _vae_tiled_settings(num_frames)
     for node in graph.values():
         if not isinstance(node, dict) or node.get("class_type") != "VAEDecodeTiled":
             continue
         inputs = node.setdefault("inputs", {})
-        for key, value in _SAFE_VAE_TILED.items():
+        for key, value in settings.items():
             inputs[key] = value
 
 
-def _coerce_value_for_node(graph: dict[str, Any], node_id: str, input_name: str, value: Any) -> Any:
+def _coerce_value_for_node(
+    graph: dict[str, Any], node_id: str, input_name: str, value: Any
+) -> Any:
     cls = (graph.get(node_id) or {}).get("class_type") or ""
     if input_name == "fps" and cls == "CreateVideo":
         return float(value)
@@ -152,6 +185,7 @@ def _apply_field(
             raise WorkflowError(f"node {node_id} missing in {workflow_id}")
         coerced = _coerce_value_for_node(graph, node_id, input_name, value)
         graph[node_id]["inputs"][input_name] = coerced
+
 
 def validate_frame_count(n: int, *, step: int = 4) -> None:
     """Wan uses 4n+1; LTX Comfy graphs want 8n+1 (also satisfies 4n+1)."""

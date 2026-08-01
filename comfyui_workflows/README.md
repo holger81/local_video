@@ -93,7 +93,7 @@ If you change an `import/` graph in ComfyUI:
 
 Agent defaults expect `length` / `num_frames` = **33** (`4n+1`).
 
-Video API graphs (`wan22_t2v`, `wan22_i2v`, `wan22_flf2v`) use **VAE Decode (Tiled)** (`VAEDecodeTiled`) to reduce VRAM during decode. All video graphs force `tile_size=256`, `overlap=32`, `temporal_size=8`, `temporal_overlap=4` (backend also clamps on queue). Values ≥ clip length (e.g. 64 on a 17-frame beat) still decode in one temporal chunk and crash ROCm.
+Video API graphs use **VAE Decode (Tiled)** (`VAEDecodeTiled`) to reduce VRAM during decode. Defaults in `api/` are `tile_size=512`, `overlap=128`, `temporal_size=16`, `temporal_overlap=8`. On queue the backend reclamps: spatial stays 512/128; temporal grows to 24 on ≥33-frame clips but always stays **strictly below** `num_frames` (values ≥ clip length decode in one temporal chunk and crash ROCm). The older 256/32/8/4 clamp left visible grid seams and temporal ghosting on step previews.
 
 ### FLF2V two-pass (AMD / ROCm)
 
