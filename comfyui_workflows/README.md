@@ -94,7 +94,7 @@ If you change an `import/` graph in ComfyUI:
 
 Agent defaults expect `length` / `num_frames` = **33** (`4n+1`).
 
-Video API graphs (`wan22_t2v`, `wan22_i2v`, `wan22_flf2v`) use **VAE Decode (Tiled)** (`VAEDecodeTiled`) to reduce VRAM during decode.
+Video API graphs (`wan22_t2v`, `wan22_i2v`, `wan22_flf2v`) use **VAE Decode (Tiled)** (`VAEDecodeTiled`) to reduce VRAM during decode. LTX graphs use `tile_size=512`, `temporal_size=64` (not 4096 — max temporal window OOMs/crashes ROCm decode).
 
 ### FLF2V two-pass (AMD / ROCm)
 
