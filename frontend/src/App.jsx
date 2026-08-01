@@ -1,6 +1,35 @@
 import { Link, Route, Routes, useParams, useNavigate } from "react-router-dom";
 import { useCallback, useEffect, useState } from "react";
 
+function formatApiError(detail, fallback = "Request failed") {
+  if (detail == null || detail === "") return fallback;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object") {
+          const loc = Array.isArray(item.loc) ? item.loc.join(".") : "";
+          const msg = item.msg || item.message || JSON.stringify(item);
+          return loc ? `${loc}: ${msg}` : String(msg);
+        }
+        return String(item);
+      })
+      .filter(Boolean)
+      .join("; ");
+  }
+  if (typeof detail === "object") {
+    if (detail.message) return String(detail.message);
+    if (detail.error) return String(detail.error);
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      return fallback;
+    }
+  }
+  return String(detail);
+}
+
 const api = async (path, opts = {}) => {
   const res = await fetch(`/api${path}`, {
     headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
@@ -13,7 +42,11 @@ const api = async (path, opts = {}) => {
   } catch {
     data = { detail: text };
   }
-  if (!res.ok) throw new Error(data?.detail || data?.error || res.statusText);
+  if (!res.ok) {
+    throw new Error(
+      formatApiError(data?.detail ?? data?.error, res.statusText || "Request failed")
+    );
+  }
   return data;
 };
 
@@ -1617,6 +1650,10 @@ function ProjectPage() {
                   Close
                 </button>
               </header>
+              {err && <p className="error kf-editor-status">{err}</p>}
+              {busy && !err && (
+                <p className="muted kf-editor-status">Working: {busy}…</p>
+              )}
               <div className="kf-editor-fields">
                 <label>
                   Name
@@ -2023,6 +2060,10 @@ function ProjectPage() {
                   ×
                 </button>
               </header>
+              {err && <p className="error kf-editor-status">{err}</p>}
+              {busy && !err && (
+                <p className="muted kf-editor-status">Working: {busy}…</p>
+              )}
 
               <div className="kf-editor-grid">
                 <label className="kf-field">
@@ -2551,6 +2592,11 @@ function ProjectPage() {
                   <strong>Motion</strong>
                   <span className="tiny muted">FLF2V animate consecutive keyframes into a preview</span>
                 </div>
+                {!keyframesReady(f) && (
+                  <p className="tiny muted">
+                    Needs every keyframe image first (use “Create missing keyframe images”).
+                  </p>
+                )}
                 <div className="frame-stage-actions">
                   <button
                     type="button"
@@ -2574,7 +2620,9 @@ function ProjectPage() {
                         : "Needs a complete keyframe series first"
                     }
                   >
-                    Animate this beat
+                    {visualBusy?.frameId === f.id && visualBusy.kind === "step_clips"
+                      ? "Animating this beat…"
+                      : "Animate this beat"}
                   </button>
                   {(() => {
                     const frames = [...(project.frames || [])].sort(
