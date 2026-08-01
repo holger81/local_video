@@ -84,7 +84,37 @@ def apply_params(
             continue
         _apply_field(graph, workflow_id, fields[key], filename)
 
+    # CreateVideo.fps is FLOAT in current Comfy; PrimitiveInt links fail validation.
+    _fix_create_video_fps(graph, params.get("fps"))
     return graph
+
+
+def _coerce_value_for_node(graph: dict[str, Any], node_id: str, input_name: str, value: Any) -> Any:
+    cls = (graph.get(node_id) or {}).get("class_type") or ""
+    if input_name == "fps" and cls == "CreateVideo":
+        return float(value)
+    if input_name == "value" and cls == "PrimitiveInt":
+        return int(value)
+    return value
+
+
+def _fix_create_video_fps(graph: dict[str, Any], fps_param: Any) -> None:
+    """Ensure CreateVideo.fps is a FLOAT widget value, not an INT link."""
+    for node in graph.values():
+        if node.get("class_type") != "CreateVideo":
+            continue
+        inputs = node.setdefault("inputs", {})
+        fps = inputs.get("fps")
+        if isinstance(fps, (list, tuple)) and fps:
+            linked = graph.get(str(fps[0])) or {}
+            if fps_param is not None:
+                inputs["fps"] = float(fps_param)
+            elif linked.get("class_type") == "PrimitiveInt":
+                inputs["fps"] = float((linked.get("inputs") or {}).get("value", 24))
+            else:
+                inputs["fps"] = 24.0
+        elif fps is not None:
+            inputs["fps"] = float(fps)
 
 
 def _apply_field(
@@ -99,8 +129,8 @@ def _apply_field(
         input_name = target["input"]
         if node_id not in graph:
             raise WorkflowError(f"node {node_id} missing in {workflow_id}")
-        graph[node_id]["inputs"][input_name] = value
-
+        coerced = _coerce_value_for_node(graph, node_id, input_name, value)
+        graph[node_id]["inputs"][input_name] = coerced
 
 def validate_frame_count(n: int, *, step: int = 4) -> None:
     """Wan uses 4n+1; LTX Comfy graphs want 8n+1 (also satisfies 4n+1)."""

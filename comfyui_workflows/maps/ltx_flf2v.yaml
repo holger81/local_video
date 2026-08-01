@@ -13,7 +13,11 @@ fields:
   num_frames: {node: "198", input: value}
   width: {node: "215", input: value}
   height: {node: "216", input: value}
-  fps: {node: "205", input: value}
+  fps:
+    node: "205"
+    input: value
+    also:
+      - {node: "218", input: fps}
   filename_prefix: {node: "9003", input: filename_prefix}
   start_image: {node: "9001", input: image, upload: true}
   end_image: {node: "9002", input: image, upload: true}
