@@ -496,6 +496,7 @@ async def plan_keyframe_image_prompt(
         "Never invent people, props-on-characters, or outfit changes. "
         "If CONTINUATION: do not say new shot; keep the same named people and setting. "
         "If NEW SHOT and role is first: establish a fresh camera/composition. "
+        "Never imply an outfit, shoe, or accessory change between frames — wardrobe is fixed. "
         "If previous prompts include look/wardrobe text, IGNORE that look text — do not copy it."
     )
     shot = (

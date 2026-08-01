@@ -1595,10 +1595,20 @@ async def _render_keyframe_image(
             if bare_hands
             else ""
         )
-        edit_prompt = build_edit_prompt(
-            instruction=(
+        continuity = (
+            "Edit only pose, expression, and camera as needed for this beat. "
+            "Do NOT change clothing, shoes, accessories, hair length/style, or body type — "
+            "copy wardrobe pixel-identically from the previous keyframe (same dress/shirt/"
+            "shorts/footwear/colors). No new sneakers, jackets, gloves, or outfit swaps."
+            if role in ("middle", "last")
+            else (
                 "Edit only pose/camera/expression as needed for this beat; "
                 "preserve faces, art style, and clothing from the previous keyframe."
+            )
+        )
+        edit_prompt = build_edit_prompt(
+            instruction=(
+                f"{continuity}"
                 f"{wardrobe_block}{hands_block} Instruction: {prompt}"
             ),
             frame_prompt=prompt,
@@ -2143,7 +2153,7 @@ async def _run_flf2v_two_pass(
         "start_image": await comfy.upload_image(start_image),
         "end_image": await comfy.upload_image(end_image),
     }
-    from app.services.video_backends import flf_safe_size, soft_release_comfy_vram
+    from app.services.video_backends import flf_safe_size, unload_comfy_models
 
     safe_w, safe_h = flf_safe_size("wan")
     shared = {
@@ -2156,8 +2166,6 @@ async def _run_flf2v_two_pass(
     prefix = filename_prefix or f"local_video/p{project_id}_f{frame_id}_{label}"
 
     # Pass 1: high-noise only → SaveLatent
-    # Avoid POST /free unload_models on this ROCm host — it can kill ComfyUI.
-    # Separate prompts + soft free_memory still let the high UNET leave before low.
     high_params = {
         **shared,
         "seed": seed,
@@ -2185,8 +2193,8 @@ async def _run_flf2v_two_pass(
         raise RuntimeError("FLF2V high pass produced no latent output")
     latent_ref = comfy.latent_annotated_path(latents[0])
 
-    # Ease VRAM so the high-noise model can leave GPU before low-noise loads.
-    await soft_release_comfy_vram(comfy)
+    # Required with --disable-smart-memory: unload high UNET before low loads.
+    await unload_comfy_models(comfy)
 
     # Pass 2: low-noise + tiled decode → video
     low_params = {
@@ -2245,16 +2253,16 @@ async def generate_step_clips(
     project_id: int,
     frame_id: int,
     *,
-    num_frames: int = 17,
+    num_frames: int = 33,
     workflow_id: str | None = None,
     video_backend: str | None = None,
 ) -> dict[str, Any]:
     """FLF2V between consecutive keyframes in the series; concat into preview_path.
 
-    Uses a moderated FLF resolution (not full DEFAULT_WIDTH×HEIGHT) and short
-    clips by default — full-size 33-frame FLF often OOMs/crashes ROCm ComfyUI.
+    Uses a moderated FLF resolution (not full DEFAULT_WIDTH×HEIGHT). Same-backend
+    clips reuse loaded models; unload after the beat finishes.
     """
-    from app.services.video_backends import soft_release_comfy_vram
+    from app.services.video_backends import is_ltx_backend, unload_comfy_models
 
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
@@ -2318,36 +2326,43 @@ async def generate_step_clips(
 
     clip_paths: list[Path] = []
     frame_dirs: list[Path] = []
-    for i in range(len(keyframes) - 1):
-        if i > 0:
-            await soft_release_comfy_vram()
-        a = keyframes[i]
-        b = keyframes[i + 1]
-        start_p = _resolve_media_file(a["path"])
-        end_p = _resolve_media_file(b["path"])
-        clip = await _bridge_clip_between_images(
-            project_id=project_id,
-            frame_id=frame_id,
-            start_image=start_p,
-            end_image=end_p,
-            prompt=build_transition_prompt(
-                premise=premise,
-                start_prompt=a.get("image_prompt") or f"t={a.get('t_sec')}s: {beat}",
-                end_prompt=b.get("image_prompt") or f"t={b.get('t_sec')}s: {beat}",
-                dialog=dialog,
-            ),
-            label=f"clip_{i:02d}",
-            num_frames=num_frames,
-            seed=frame_id * 17 + 11 + i,
-            workflow_id=workflow_id,
-            video_backend=video_backend,
-        )
-        clip_paths.append(clip)
-        raw = media / f"_clip_{i:02d}_frames"
-        extract_frames_from_video(clip, raw)
-        frame_dirs.append(raw)
-        # Publish growing preview so the UI can refresh mid-beat.
-        preview = _write_partial_preview(clip_paths, frame_dirs)
+    try:
+        for i in range(len(keyframes) - 1):
+            # Same graph for every pair → keep models loaded (reuse).
+            # Wan FLF unloads high→low inside _run_flf2v_two_pass.
+            if i > 0 and not is_ltx_backend(video_backend):
+                await unload_comfy_models()
+            a = keyframes[i]
+            b = keyframes[i + 1]
+            start_p = _resolve_media_file(a["path"])
+            end_p = _resolve_media_file(b["path"])
+            clip = await _bridge_clip_between_images(
+                project_id=project_id,
+                frame_id=frame_id,
+                start_image=start_p,
+                end_image=end_p,
+                prompt=build_transition_prompt(
+                    premise=premise,
+                    start_prompt=a.get("image_prompt")
+                    or f"t={a.get('t_sec')}s: {beat}",
+                    end_prompt=b.get("image_prompt") or f"t={b.get('t_sec')}s: {beat}",
+                    dialog=dialog,
+                ),
+                label=f"clip_{i:02d}",
+                num_frames=num_frames,
+                seed=frame_id * 17 + 11 + i,
+                workflow_id=workflow_id,
+                video_backend=video_backend,
+            )
+            clip_paths.append(clip)
+            raw = media / f"_clip_{i:02d}_frames"
+            extract_frames_from_video(clip, raw)
+            frame_dirs.append(raw)
+            # Publish growing preview so the UI can refresh mid-beat.
+            preview = _write_partial_preview(clip_paths, frame_dirs)
+    finally:
+        # Free GPU after the beat so the next still/Flux/Wan job can load cleanly.
+        await unload_comfy_models()
 
     return {
         "frame_id": frame_id,
@@ -2364,11 +2379,11 @@ async def generate_all_step_clips(
     project_id: int,
     *,
     skip_existing: bool = True,
-    num_frames: int = 17,
+    num_frames: int = 33,
     video_backend: str | None = None,
     workflow_id: str | None = None,
 ) -> dict[str, Any]:
-    from app.services.video_backends import soft_release_comfy_vram
+    from app.services.video_backends import unload_comfy_models
 
     with SessionLocal() as db:
         p = db.get(Project, project_id)
@@ -2395,8 +2410,9 @@ async def generate_all_step_clips(
             skipped += 1
             continue
         try:
+            # generate_step_clips already unloads at the end of each beat.
             if ran_any:
-                await soft_release_comfy_vram()
+                await unload_comfy_models()
             results.append(
                 await generate_step_clips(
                     project_id,

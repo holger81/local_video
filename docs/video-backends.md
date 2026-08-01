@@ -28,7 +28,8 @@ Prefer a hard cut (`is_new_shot`) when switching Wan ↔ LTX family (or LTX-2 �
 - Default working path.
 - FLF2V is **two-pass** (`wan22_flf2v_high` → `wan22_flf2v_low`) to avoid dual-UNET VRAM crashes on ROCm.
 - Frame rule: `4n+1` (e.g. 33).
-- Storyboard **Animate this beat** / step clips use a capped size (≤832×480) and default **17** frames, plus a soft `free_memory` (no unload) between passes/clips. Full `DEFAULT_WIDTH×HEIGHT` FLF often kills ROCm ComfyUI.
+- Storyboard **Animate this beat** / step clips use a capped size (≤832×480) and default **33** frames.
+- VRAM: LTX clips in one beat **reuse** loaded models; Wan FLF **unloads** high→low between passes; models unload after each beat finishes.
 
 ## LTX-2 (`ltx2`)
 

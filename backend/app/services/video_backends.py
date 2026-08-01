@@ -57,18 +57,35 @@ def flf_safe_size(video_backend: str | None = None) -> tuple[int, int]:
     return max(w, 640), max(h, 384)
 
 
-async def soft_release_comfy_vram(comfy: ComfyUIClient | None = None) -> None:
-    """Best-effort VRAM ease between heavy FLF jobs.
+async def release_comfy_vram(
+    comfy: ComfyUIClient | None = None,
+    *,
+    unload_models: bool = False,
+    pause_sec: float = 2.0,
+) -> None:
+    """Best-effort VRAM ease between Comfy jobs.
 
-    Full unload via POST /free has killed this ROCm host before, so we only ask
-    for free_memory (no unload_models) and always pause briefly.
+    With ``--disable-smart-memory``, models stay resident until
+    ``unload_models=True``. Prefer reuse within the same graph; unload when
+    swapping UNETs (Wan high→low) or finishing a beat.
     """
     client = comfy or ComfyUIClient()
     try:
-        await client.free_memory(unload_models=False)
+        await client.free_memory(unload_models=unload_models)
     except Exception:
         pass
-    await asyncio.sleep(2.0)
+    if pause_sec > 0:
+        await asyncio.sleep(pause_sec)
+
+
+async def soft_release_comfy_vram(comfy: ComfyUIClient | None = None) -> None:
+    """Free cached tensors but keep models loaded (reuse)."""
+    await release_comfy_vram(comfy, unload_models=False, pause_sec=1.0)
+
+
+async def unload_comfy_models(comfy: ComfyUIClient | None = None) -> None:
+    """Unload models from GPU so the next prompt can load a different set."""
+    await release_comfy_vram(comfy, unload_models=True, pause_sec=3.0)
 
 
 def resolve_video_backend(

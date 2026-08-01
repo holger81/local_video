@@ -1085,7 +1085,7 @@ function ProjectPage() {
         await withLiveRefresh(async () => {
           await api(`/projects/${id}/storyboard/frames/${f.id}/step-clips`, {
             method: "POST",
-            body: JSON.stringify({ num_frames: 17 }),
+            body: JSON.stringify({ num_frames: 33 }),
           });
         });
         setVisualBusy(null);
@@ -2790,7 +2790,7 @@ function ProjectPage() {
                               `/projects/${id}/storyboard/frames/${f.id}/step-clips`,
                               {
                                 method: "POST",
-                                body: JSON.stringify({ num_frames: 17 }),
+                                body: JSON.stringify({ num_frames: 33 }),
                               }
                             );
                           });
