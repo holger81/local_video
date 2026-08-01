@@ -662,6 +662,37 @@ def _cast_wardrobe_maps(
     return wardrobe_by_name, wardrobe_prompt_by_name, wardrobe_neg, bare_hands
 
 
+def _looks_like_vertical_split(path: Path) -> bool:
+    """True when a hard mid-frame vertical seam suggests a pair-sheet leak."""
+    from PIL import Image
+
+    im = Image.open(path).convert("L")
+    w, h = im.size
+    if w < 64 or h < 64:
+        return False
+    pix = im.load()
+    assert pix is not None
+    # Mean abs horizontal gradient per column.
+    col_dx = [0.0] * (w - 1)
+    for x in range(w - 1):
+        total = 0.0
+        for y in range(h):
+            total += abs(pix[x + 1, y] - pix[x, y])
+        col_dx[x] = total / h
+    mid = w // 2
+    band = col_dx[max(0, mid - 10) : mid + 10]
+    if not band:
+        return False
+    peak = max(band)
+    # Typical interior gradient (exclude outer 10%).
+    lo, hi = int(w * 0.1), int(w * 0.9)
+    interior = sorted(col_dx[lo:hi])
+    if not interior:
+        return False
+    median = interior[len(interior) // 2]
+    return peak > 18.0 and peak > median * 3.2
+
+
 async def _iterative_cast_lock_render(
     *,
     comfy: ComfyUIClient,
@@ -683,9 +714,8 @@ async def _iterative_cast_lock_render(
 ) -> tuple[Path, str]:
     """Lock cast one identity at a time — Flux ReferenceLatent is single-identity.
 
-    Pass 0 places the first cast member; later passes REPLACE that person from a
-    LEFT=scene / RIGHT=ref pair. Feeding a full contact sheet in one pass invents
-    wardrobe (e.g. wrong dress color).
+    Pass 0 places the first cast member; later passes INSERT the next person from a
+    scene-dominant LEFT / narrow RIGHT ref pair (not a full contact sheet).
     """
     from app.services.characters import (
         build_identity_pair_sheet,
@@ -694,30 +724,81 @@ async def _iterative_cast_lock_render(
 
     cast_names = [(lab.split("/")[0].strip() or lab).strip() for lab, _p, _a in panels]
     cast_count = len(cast_names)
-    cast_list = ", ".join(cast_names)
     current: Path | None = None
     prompt_id = ""
     neg = (
         neg + ", extra person, duplicate character, additional character, crowd, "
-        "wrong cast size"
+        "wrong cast size, split screen, side by side, diptych, two panels, "
+        "mirrored scene, vertical seam, dual image"
     )
+
+    async def _run_pass(
+        *,
+        i: int,
+        label: str,
+        path: Path,
+        instruction: str,
+        ref: Path,
+        pass_seed: int,
+        attempt: int,
+    ) -> Path:
+        nonlocal prompt_id
+        uploaded = await comfy.upload_image(ref)
+        edit_prompt = build_edit_prompt(
+            instruction=instruction,
+            frame_prompt=beat_prompt,
+            cast_sheet=cast_sheet,
+            genre=genre,
+            from_cast_sheet=True,
+        )
+        graph = apply_params(
+            "still_edit",
+            {
+                "positive_prompt": edit_prompt,
+                "negative_prompt": neg,
+                "seed": pass_seed,
+                "filename_prefix": f"{filename_prefix}_p{i}",
+                "width": width,
+                "height": height,
+                "steps": steps,
+                "cfg": cfg,
+            },
+            uploaded_image_name=uploaded,
+        )
+        prompt_id = await comfy.queue_prompt(graph)
+        history = await comfy.wait_for_prompt(prompt_id)
+        outs = comfy.collect_outputs(history)
+        if not outs:
+            raise RuntimeError(
+                f"ComfyUI produced no outputs for cast lock pass {i} ({label})"
+            )
+        out = outs[0]
+        dest = media / f"cast_lock_out_{i}_a{attempt}_{out['filename']}"
+        await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+        return dest
+
     for i, (label, path, _approved) in enumerate(panels):
         name = (label.split("/")[0].strip() or label).strip()
         ward_bit = wardrobe_by_name.get(name.lower(), "")
         ward_exact = wardrobe_prompt_by_name.get(name.lower(), "")
-        ward_must = (
-            f"{name} MUST wear exactly the outfit shown on the RIGHT panel: "
-            f"{ward_exact}. Match RIGHT clothing; do not invent garments or "
-            "accessories that are not on the RIGHT. "
-            if ward_exact
-            else f"Match {name}'s clothing exactly to the RIGHT panel. "
-        )
-        others = [n for n in cast_names if n.lower() != name.lower()]
-        others_bit = (
-            f"Keep {', '.join(others)} from LEFT unchanged. "
-            if others and i > 0
-            else ""
-        )
+        uses_pair = i > 0 or continuity_base is not None
+        if ward_exact:
+            ward_must = (
+                f"{name} MUST wear exactly: {ward_exact}. "
+                "Match that clothing from the identity guide; do not invent garments. "
+                if uses_pair
+                else f"{name} MUST wear exactly: {ward_exact}. "
+                "Match the reference clothing; do not invent garments. "
+            )
+        else:
+            ward_must = (
+                f"Match {name}'s clothing exactly to the identity guide. "
+                if uses_pair
+                else f"Match {name}'s clothing exactly to the reference. "
+            )
+        people_so_far = cast_names[: i + 1]
+        people_list = ", ".join(people_so_far)
+        prior = cast_names[:i]
         beat_bit = _truncate(beat_prompt, 280)
         if i == 0 and cast_count > 1 and continuity_base is None:
             # Avoid the beat naming other cast members so Flux doesn't invent them.
@@ -730,14 +811,13 @@ async def _iterative_cast_lock_render(
                 continuity_base, path, media / "cast_lock_0.png"
             )
             instruction = (
-                "LEFT half is the continuity still. RIGHT half is the "
-                f"ground-truth look for {label}. "
-                f"REPLACE {name} so face, hair, eyes, proportions, art style, "
-                f"AND wardrobe match the RIGHT panel exactly. {ward_must}"
-                f"Final shot must contain exactly {cast_count} people: {cast_list}. "
-                "Remove anyone not in that cast list. "
-                f"{others_bit}"
-                "ONE continuous shot — not a split screen. "
+                "Guide layout (do not copy as output): LEFT is the continuity still; "
+                f"RIGHT strip is the ground-truth look for {label}. "
+                f"Output ONE continuous shot of the LEFT scene with {name} replaced so "
+                f"face, hair, eyes, proportions, art style, AND wardrobe match the RIGHT "
+                f"strip. {ward_must}"
+                f"People in this pass: exactly {len(people_so_far)} — {people_list}. "
+                "No split screen, no second panel, no vertical seam. "
                 + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
                 + f"Scene beat: {beat_bit}"
             )
@@ -760,51 +840,51 @@ async def _iterative_cast_lock_render(
         else:
             assert current is not None
             ref = build_identity_pair_sheet(current, path, media / f"cast_lock_{i}.png")
+            prior_bit = (
+                f"Keep {', '.join(prior)} from the LEFT scene unchanged (same faces, "
+                "outfits, poses, camera). "
+                if prior
+                else ""
+            )
             instruction = (
-                "LEFT half is the current scene. RIGHT half is the ground-truth "
-                f"look for {label}. REPLACE any wrong stand-in for {name} with "
-                f"{name} matching the RIGHT panel exactly — same face, eyes, hair, "
-                "proportions, art style, and wardrobe. "
-                f"Do NOT add an extra person. {ward_must}"
-                f"Final shot must contain exactly {cast_count} people: {cast_list}. "
-                "Remove duplicates and anyone not on that list. "
-                f"{others_bit}"
-                "ONE continuous shot — not a split screen. "
+                "Guide layout (do not copy as output): LEFT ~2/3 is the current scene; "
+                f"RIGHT strip is ONLY the identity/wardrobe lock for {label}. "
+                f"INSERT {name} into the LEFT scene in the same continuous attic/space — "
+                f"matching the RIGHT strip's face, hair, body, art style, and wardrobe. "
+                f"{prior_bit}{ward_must}"
+                f"People in this pass: exactly {len(people_so_far)} — {people_list}. "
+                "Output must be ONE camera frame filling the whole image — never a "
+                "side-by-side, diptych, or mirrored duplicate of the guide. "
                 + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
                 + f"Scene beat: {beat_bit}"
             )
-        uploaded = await comfy.upload_image(ref)
-        edit_prompt = build_edit_prompt(
+
+        pass_seed = seed + i * 17
+        dest = await _run_pass(
+            i=i,
+            label=label,
+            path=path,
             instruction=instruction,
-            frame_prompt=beat_prompt,
-            cast_sheet=cast_sheet,
-            genre=genre,
-            from_cast_sheet=True,
+            ref=ref,
+            pass_seed=pass_seed,
+            attempt=0,
         )
-        graph = apply_params(
-            "still_edit",
-            {
-                "positive_prompt": edit_prompt,
-                "negative_prompt": neg,
-                "seed": seed + i * 17,
-                "filename_prefix": f"{filename_prefix}_p{i}",
-                "width": width,
-                "height": height,
-                "steps": steps,
-                "cfg": cfg,
-            },
-            uploaded_image_name=uploaded,
-        )
-        prompt_id = await comfy.queue_prompt(graph)
-        history = await comfy.wait_for_prompt(prompt_id)
-        outs = comfy.collect_outputs(history)
-        if not outs:
-            raise RuntimeError(
-                f"ComfyUI produced no outputs for cast lock pass {i} ({label})"
+        # Pair-sheet passes sometimes leak as a literal split; retry once harder.
+        if uses_pair and _looks_like_vertical_split(dest):
+            retry_instruction = (
+                instruction
+                + " RETRY: the previous result was an illegal split-screen. "
+                "Fill the entire frame with a single merged scene only."
             )
-        out = outs[0]
-        dest = media / f"cast_lock_out_{i}_{out['filename']}"
-        await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+            dest = await _run_pass(
+                i=i,
+                label=label,
+                path=path,
+                instruction=retry_instruction,
+                ref=ref,
+                pass_seed=pass_seed + 101,
+                attempt=1,
+            )
         current = dest
 
     assert current is not None
@@ -924,6 +1004,36 @@ async def generate_frame_visual(
         wardrobe_by_name, wardrobe_prompt_by_name, wardrobe_neg, _bare = (
             _cast_wardrobe_maps(project_id, frame_id)
         )
+        from app.services.characters import (
+            cast_sheet_for_named_characters,
+            filter_cast_panels_by_prompt,
+        )
+
+        panels, omitted_cast = filter_cast_panels_by_prompt(
+            project_id, panels, frame_prompt, strict=False
+        )
+        on_screen = [
+            (lab.split("/")[0].strip() or lab).strip() for lab, _p, _a in panels
+        ]
+        if omitted_cast and on_screen:
+            # Beat text named some cast → don't force the rest into the still.
+            cast_sheet = cast_sheet_for_named_characters(
+                project_id, frame_id, on_screen
+            )
+            keep = {n.lower() for n in on_screen}
+            wardrobe_by_name = {k: v for k, v in wardrobe_by_name.items() if k in keep}
+            wardrobe_prompt_by_name = {
+                k: v for k, v in wardrobe_prompt_by_name.items() if k in keep
+            }
+            neg = (
+                neg
+                + ", "
+                + ", ".join(
+                    f"no {n}, without {n}, {n} not in shot, exclude {n}"
+                    for n in omitted_cast
+                    if n
+                )
+            )
         style_neg = style_negatives(genre)
         extra_neg = ", ".join(x for x in (wardrobe_neg, style_neg) if x)
         if extra_neg:
@@ -934,11 +1044,16 @@ async def generate_frame_visual(
         )
 
         if panels:
+            only_bit = (
+                f"Show ONLY {', '.join(on_screen)} — no other cast members. "
+                if on_screen and omitted_cast
+                else ""
+            )
             current, prompt_id = await _iterative_cast_lock_render(
                 comfy=comfy,
                 media=media,
                 panels=panels,
-                beat_prompt=frame_prompt,
+                beat_prompt=f"{only_bit}{frame_prompt}",
                 cast_sheet=cast_sheet,
                 genre=genre,
                 neg=neg,
@@ -1553,6 +1668,8 @@ async def _render_keyframe_image(
     from app.services.characters import (
         cast_reference_for_frame,
         cast_sheet_for_frame,
+        cast_sheet_for_named_characters,
+        filter_cast_panels_by_prompt,
         list_cast_reference_panels,
     )
     from app.services.llm import strip_positive_anti_prompts, style_negatives
@@ -1562,24 +1679,53 @@ async def _render_keyframe_image(
     media.mkdir(parents=True, exist_ok=True)
     comfy = ComfyUIClient()
     try:
-        cast_sheet = cast_sheet_for_frame(project_id, frame_id)
+        full_cast_sheet = cast_sheet_for_frame(project_id, frame_id)
     except KeyError:
         from app.services.characters import cast_sheet_for_project
 
-        cast_sheet = cast_sheet_for_project(project_id)
+        full_cast_sheet = cast_sheet_for_project(project_id)
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         genre = (p.genre or "") if p else ""
 
     prompt = strip_positive_anti_prompts(prompt)
-    composed = compose_keyframe_prompt(prompt, cast_sheet=cast_sheet, genre=genre)
     neg = still_negative_prompt(prompt)
     label = f"{index:02d}_{role}"
 
     wardrobe_by_name, wardrobe_prompt_by_name, wardrobe_neg, bare_hands = (
         _cast_wardrobe_maps(project_id, frame_id)
     )
+    # Spotlight keyframes: only lock characters named in this keyframe prompt.
+    panels_all: list[tuple[str, Path, bool]] = []
+    try:
+        panels_all = list_cast_reference_panels(project_id, frame_id=frame_id)
+    except KeyError:
+        panels_all = []
+    panels, omitted_cast = filter_cast_panels_by_prompt(
+        project_id, panels_all, prompt, strict=True
+    )
+    on_screen = [(lab.split("/")[0].strip() or lab).strip() for lab, _p, _a in panels]
+    if on_screen:
+        cast_sheet = cast_sheet_for_named_characters(project_id, frame_id, on_screen)
+        keep = {n.lower() for n in on_screen}
+        wardrobe_by_name = {k: v for k, v in wardrobe_by_name.items() if k in keep}
+        wardrobe_prompt_by_name = {
+            k: v for k, v in wardrobe_prompt_by_name.items() if k in keep
+        }
+    else:
+        cast_sheet = full_cast_sheet
     wardrobe_lines = list(wardrobe_by_name.values())
+    if omitted_cast:
+        neg = (
+            neg
+            + ", "
+            + ", ".join(
+                f"no {n}, without {n}, {n} not in shot, exclude {n}"
+                for n in omitted_cast
+                if n
+            )
+        )
+    composed = compose_keyframe_prompt(prompt, cast_sheet=cast_sheet, genre=genre)
     style_neg = style_negatives(genre)
     extra_neg = ", ".join(x for x in (wardrobe_neg, style_neg) if x)
     if extra_neg:
@@ -1646,29 +1792,29 @@ async def _render_keyframe_image(
     if force_edit:
         raise ValueError("edit source required")
 
-    # Refresh UI contact sheet; generate via iterative locks (not the sheet itself).
+    # Refresh UI contact sheet (full beat cast); generate only named characters.
     try:
         cast_reference_for_frame(
             project_id, frame_id, dest=media / f"cast_ref_sheet_kf_{label}.png"
         )
     except KeyError:
         pass
-    panels: list[tuple[str, Path, bool]] = []
-    try:
-        panels = list_cast_reference_panels(project_id, frame_id=frame_id)
-    except KeyError:
-        panels = []
 
     if panels:
+        only_bit = (
+            f"Show ONLY {', '.join(on_screen)} — no other cast members. "
+            if on_screen
+            else ""
+        )
         neg = (
             neg + ", collage, contact sheet, multi-panel, split screen, grid layout, "
-            "side by side panels"
+            "side by side panels, extra child, extra kids, crowd"
         )
         current, _pid = await _iterative_cast_lock_render(
             comfy=comfy,
             media=media,
             panels=panels,
-            beat_prompt=prompt,
+            beat_prompt=f"{only_bit}{prompt}",
             cast_sheet=cast_sheet,
             genre=genre,
             neg=neg,

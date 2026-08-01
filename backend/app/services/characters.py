@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import secrets
 import time
 import uuid
@@ -11,6 +12,124 @@ from app.db.models import Character, Project, SessionLocal, StoryboardFrame
 from app.services import llm
 from app.services.comfyui import ComfyUIClient
 from app.services.workflows import apply_params
+
+_TITLE_TOKENS = frozenset(
+    {
+        "aunt",
+        "uncle",
+        "mr",
+        "mrs",
+        "ms",
+        "miss",
+        "dr",
+        "sir",
+        "lady",
+        "lord",
+        "the",
+    }
+)
+
+
+def character_mentioned_in_prompt(
+    name: str,
+    prompt: str,
+    *,
+    aliases: list[str] | None = None,
+) -> bool:
+    """True when the character's name or alias appears in the prompt text."""
+    text = prompt or ""
+    if not text.strip():
+        return False
+    text_l = text.lower()
+    candidates: list[str] = []
+    raw_name = (name or "").strip()
+    if raw_name:
+        candidates.append(raw_name)
+        for part in re.split(r"[\s/]+", raw_name):
+            p = part.strip()
+            if len(p) > 2 and p.lower() not in _TITLE_TOKENS:
+                candidates.append(p)
+    for a in aliases or []:
+        a = str(a).strip()
+        if a:
+            candidates.append(a)
+    seen: set[str] = set()
+    for token in candidates:
+        key = token.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if len(token) <= 2:
+            if re.search(rf"(?i)\b{re.escape(token)}\b", text):
+                return True
+        elif key in text_l:
+            return True
+    return False
+
+
+def filter_cast_panels_by_prompt(
+    project_id: int,
+    panels: list[tuple[str, Path, bool]],
+    prompt: str,
+    *,
+    strict: bool = False,
+) -> tuple[list[tuple[str, Path, bool]], list[str]]:
+    """Keep panels for characters named in ``prompt``; return (kept, omitted_names).
+
+    When ``strict`` and nothing matches, return an empty kept list (caller should not
+    force the full beat cast into a spotlight keyframe). When not strict and nothing
+    matches, keep all panels (hero stills with vague beats).
+    """
+    if not panels:
+        return [], []
+    aliases_by_name: dict[str, list[str]] = {}
+    with SessionLocal() as db:
+        p = db.get(Project, project_id)
+        if p:
+            for c in p.characters:
+                n = (c.name or "").strip()
+                if n:
+                    aliases_by_name[n.lower()] = [
+                        str(a).strip() for a in (c.aliases or []) if str(a).strip()
+                    ]
+    kept: list[tuple[str, Path, bool]] = []
+    omitted: list[str] = []
+    for label, path, approved in panels:
+        name = (label.split("/")[0].strip() or label).strip()
+        aliases = aliases_by_name.get(name.lower(), [])
+        if character_mentioned_in_prompt(name, prompt, aliases=aliases):
+            kept.append((label, path, approved))
+        else:
+            omitted.append(name)
+    if kept:
+        return kept, omitted
+    if strict:
+        all_names = [
+            (label.split("/")[0].strip() or label).strip() for label, _p, _a in panels
+        ]
+        return [], [n for n in all_names if n]
+    return panels, []
+
+
+def cast_sheet_for_named_characters(
+    project_id: int,
+    frame_id: int,
+    names: list[str],
+) -> str:
+    """Cast-sheet text limited to the given character names (case-insensitive)."""
+    want = {n.strip().lower() for n in names if (n or "").strip()}
+    if not want:
+        return ""
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+        selection = list(getattr(f, "cast", None) or [])
+    entries = cast_entries_for_sheet(
+        project_id, cast_selection=selection if selection else None
+    )
+    filtered = [e for e in entries if (e.get("name") or "").strip().lower() in want]
+    return llm.format_cast_sheet(filtered)
 
 
 def _normalize_outfit(
@@ -321,15 +440,16 @@ def build_identity_pair_sheet(
     *,
     width: int = 1024,
     height: int = 576,
-    character_ratio: float = 0.58,
+    character_ratio: float = 0.34,
 ) -> Path:
-    """Left = current scene, right = character lock (iterative Flux ReferenceLatent).
+    """Left = current scene, right = narrow character lock (Flux ReferenceLatent).
 
-    Right panel is slightly wider so ReferenceLatent weights the identity/wardrobe lock.
+    Keep the right strip slim so the model weights the scene layout and is less likely
+    to emit a literal split-screen copy of the guide.
     """
     from PIL import Image
 
-    right_w = max(width // 3, min(width - width // 4, int(width * character_ratio)))
+    right_w = max(width // 5, min(width // 3, int(width * character_ratio)))
     left_w = width - right_w
     canvas = Image.new("RGB", (width, height), (20, 20, 24))
     left = _fit_cover(Image.open(scene), left_w, height, prefer_upper=False)
@@ -416,9 +536,7 @@ def pick_cast_reference_path(
     return None
 
 
-def pick_character_reference_path(
-    project_id: int, prompt: str = ""
-) -> Path | None:
+def pick_character_reference_path(project_id: int, prompt: str = "") -> Path | None:
     """Best character reference still for locking identity in a keyframe/still render.
 
     Prefers a name/alias mentioned in the prompt; otherwise a sole cast member with a
@@ -682,9 +800,7 @@ def build_character_edit_prompt(
     ]
     look = _truncate((appearance or "").strip(), 280)
     if look:
-        parts.append(
-            f"Base look (override anything the instruction changes): {look}."
-        )
+        parts.append(f"Base look (override anything the instruction changes): {look}.")
     return " ".join(parts)
 
 
