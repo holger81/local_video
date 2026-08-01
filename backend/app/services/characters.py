@@ -111,6 +111,39 @@ def filter_cast_panels_by_prompt(
     return panels, []
 
 
+def new_cast_panels_vs_prompt(
+    project_id: int,
+    panels: list[tuple[str, Path, bool]],
+    current_prompt: str,
+    previous_prompt: str | None,
+) -> list[tuple[str, Path, bool]]:
+    """Panels named in ``current_prompt`` that were not named in ``previous_prompt``.
+
+    Used when a mid/last keyframe introduces someone new (e.g. \"Jo enters\") so we
+    can cast-lock that identity into the previous still instead of inventing them.
+    """
+    current, _omitted = filter_cast_panels_by_prompt(
+        project_id, panels, current_prompt, strict=True
+    )
+    if not current:
+        return []
+    prev_text = (previous_prompt or "").strip()
+    if not prev_text:
+        return current
+    previous, _ = filter_cast_panels_by_prompt(
+        project_id, panels, prev_text, strict=True
+    )
+    prev_names = {
+        (lab.split("/")[0].strip() or lab).strip().lower() for lab, _p, _a in previous
+    }
+    return [
+        panel
+        for panel in current
+        if (panel[0].split("/")[0].strip() or panel[0]).strip().lower()
+        not in prev_names
+    ]
+
+
 def cast_sheet_for_named_characters(
     project_id: int,
     frame_id: int,

@@ -707,6 +707,7 @@ async def _iterative_cast_lock_render(
     wardrobe_by_name: dict[str, str],
     wardrobe_prompt_by_name: dict[str, str],
     continuity_base: Path | None = None,
+    insert_into_scene: bool = False,
     width: int = 1024,
     height: int = 576,
     steps: int = 30,
@@ -716,6 +717,8 @@ async def _iterative_cast_lock_render(
 
     Pass 0 places the first cast member; later passes INSERT the next person from a
     scene-dominant LEFT / narrow RIGHT ref pair (not a full contact sheet).
+    When ``insert_into_scene`` is set with ``continuity_base``, pass 0 inserts a
+    newcomer into the previous still (mid-keyframe entrances).
     """
     from app.services.characters import (
         build_identity_pair_sheet,
@@ -810,17 +813,31 @@ async def _iterative_cast_lock_render(
             ref = build_identity_pair_sheet(
                 continuity_base, path, media / "cast_lock_0.png"
             )
-            instruction = (
-                "Guide layout (do not copy as output): LEFT is the continuity still; "
-                f"RIGHT strip is the ground-truth look for {label}. "
-                f"Output ONE continuous shot of the LEFT scene with {name} replaced so "
-                f"face, hair, eyes, proportions, art style, AND wardrobe match the RIGHT "
-                f"strip. {ward_must}"
-                f"People in this pass: exactly {len(people_so_far)} — {people_list}. "
-                "No split screen, no second panel, no vertical seam. "
-                + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
-                + f"Scene beat: {beat_bit}"
-            )
+            if insert_into_scene:
+                instruction = (
+                    "Guide layout (do not copy as output): LEFT is the current scene; "
+                    f"RIGHT strip is the ground-truth look for {label} who is ENTERING. "
+                    f"INSERT {name} into the LEFT scene in the same continuous space — "
+                    f"same face, hair, body, art style, and wardrobe as the RIGHT strip. "
+                    "Keep every person already on the LEFT unchanged (faces, outfits). "
+                    f"{ward_must}"
+                    f"After insert, people added from cast refs this pass: {people_list}. "
+                    "ONE full-frame shot — no split screen, diptych, or vertical seam. "
+                    + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
+                    + f"Scene beat: {beat_bit}"
+                )
+            else:
+                instruction = (
+                    "Guide layout (do not copy as output): LEFT is the continuity still; "
+                    f"RIGHT strip is the ground-truth look for {label}. "
+                    f"Output ONE continuous shot of the LEFT scene with {name} replaced so "
+                    f"face, hair, eyes, proportions, art style, AND wardrobe match the RIGHT "
+                    f"strip. {ward_must}"
+                    f"People in this pass: exactly {len(people_so_far)} — {people_list}. "
+                    "No split screen, no second panel, no vertical seam. "
+                    + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
+                    + f"Scene beat: {beat_bit}"
+                )
         elif i == 0:
             ref = prepare_single_ref_canvas(path, media / "cast_lock_0.png")
             only = (
@@ -1659,11 +1676,14 @@ async def _render_keyframe_image(
     source_path: str | Path | None,
     seed: int,
     force_edit: bool = False,
+    previous_prompt: str | None = None,
 ) -> Path:
     """T2I when no source; otherwise edit-from-previous (preferred for continuity).
 
     Fresh start frames use the same iterative single-identity cast locks as hero
     stills — Flux ReferenceLatent cannot lock a multi-panel contact sheet in one pass.
+    When a mid/last prompt names someone new (e.g. \"Jo enters\"), insert that cast
+    panel into the previous still instead of inventing them from text alone.
     """
     from app.services.characters import (
         cast_reference_for_frame,
@@ -1671,6 +1691,7 @@ async def _render_keyframe_image(
         cast_sheet_for_named_characters,
         filter_cast_panels_by_prompt,
         list_cast_reference_panels,
+        new_cast_panels_vs_prompt,
     )
     from app.services.llm import strip_positive_anti_prompts, style_negatives
 
@@ -1733,6 +1754,56 @@ async def _render_keyframe_image(
 
     if source_path:
         src = _resolve_media_file(str(source_path))
+        entrants = new_cast_panels_vs_prompt(
+            project_id, panels_all, prompt, previous_prompt
+        )
+        # Someone new enters → cast-lock insert from outfit/portrait refs.
+        if entrants:
+            entrant_names = [
+                (lab.split("/")[0].strip() or lab).strip() for lab, _p, _a in entrants
+            ]
+            keep_e = {n.lower() for n in entrant_names}
+            ward_e = {k: v for k, v in wardrobe_by_name.items() if k in keep_e}
+            ward_pe = {k: v for k, v in wardrobe_prompt_by_name.items() if k in keep_e}
+            try:
+                cast_reference_for_frame(
+                    project_id,
+                    frame_id,
+                    dest=media / f"cast_ref_sheet_kf_{label}.png",
+                )
+            except KeyError:
+                pass
+            insert_neg = (
+                neg
+                + ", collage, contact sheet, multi-panel, split screen, grid layout, "
+                "side by side panels, extra child, crowd, duplicate character"
+            )
+            names_bit = ", ".join(entrant_names)
+            beat = (
+                f"INSERT {names_bit} into the existing scene using their cast reference. "
+                f"Keep everyone already in the previous frame unchanged except pose/"
+                f"camera as needed. {prompt}"
+            )
+            current, _pid = await _iterative_cast_lock_render(
+                comfy=comfy,
+                media=media,
+                panels=entrants,
+                beat_prompt=beat,
+                cast_sheet=cast_sheet,
+                genre=genre,
+                neg=insert_neg,
+                seed=seed,
+                filename_prefix=f"local_video/p{project_id}_f{frame_id}_kf_{label}",
+                wardrobe_by_name=ward_e,
+                wardrobe_prompt_by_name=ward_pe,
+                continuity_base=src,
+                insert_into_scene=True,
+            )
+            dest = media / f"keyframe_{label}_{current.name}"
+            if current.resolve() != dest.resolve():
+                current.replace(dest)
+            return dest
+
         uploaded = await comfy.upload_image(src)
         wardrobe_block = (
             " Keep exact wardrobe from the cast lock — "
@@ -1750,7 +1821,8 @@ async def _render_keyframe_image(
             "Edit only pose, expression, and camera as needed for this beat. "
             "Do NOT change clothing, shoes, accessories, hair length/style, or body type — "
             "copy wardrobe pixel-identically from the previous keyframe (same dress/shirt/"
-            "shorts/footwear/colors). No new sneakers, jackets, gloves, or outfit swaps."
+            "shorts/footwear/colors). No new sneakers, jackets, gloves, or outfit swaps. "
+            "Do NOT invent new characters who are not already in the previous image."
             if role in ("middle", "last")
             else (
                 "Edit only pose/camera/expression as needed for this beat; "
@@ -1923,12 +1995,14 @@ async def generate_frame_keyframes(
 
         if i == 0:
             source = None  # new shot → T2I
+            prev_prompt = None
         else:
             if not last_path:
                 raise ValueError(
                     f"frame {frame_id} keyframe {i} needs previous keyframe image"
                 )
             source = last_path
+            prev_prompt = (keyframes[i - 1].get("image_prompt") or "").strip() or None
 
         dest = await _render_keyframe_image(
             project_id=project_id,
@@ -1938,6 +2012,7 @@ async def generate_frame_keyframes(
             prompt=prompt,
             source_path=source,
             seed=frame_id * 31 + i * 97,
+            previous_prompt=prev_prompt,
         )
         keyframes[i]["path"] = str(dest)
         last_path = str(dest)
@@ -2008,6 +2083,11 @@ async def generate_one_keyframe(
         prompt = (keyframes[ki].get("image_prompt") or "").strip()
         old_path = keyframes[ki].get("path")
         prev_path = keyframes[ki - 1].get("path") if ki > 0 else None
+        prev_prompt = (
+            (keyframes[ki - 1].get("image_prompt") or "").strip() or None
+            if ki > 0
+            else None
+        )
         prev_shot_last = None
         if ki == 0 and not is_new and idx > 0:
             prev_kfs = _keyframes_list(frames[idx - 1])
@@ -2043,6 +2123,7 @@ async def generate_one_keyframe(
         prompt=prompt,
         source_path=source,
         seed=seed if seed is not None else (frame_id * 31 + ki * 97),
+        previous_prompt=prev_prompt,
     )
     if old_path and old_path != prev_shot_last:
         try:
@@ -2081,6 +2162,12 @@ async def edit_frame_keyframe(
         ki = _resolve_keyframe_index(keyframes, phase)
         keyframe_stored = keyframes[ki].get("path")
         prev_path = keyframes[ki - 1].get("path") if ki > 0 else None
+        # Compare entrants against the prior keyframe (who was already on screen).
+        prev_prompt = (
+            (keyframes[ki - 1].get("image_prompt") or "").strip() or None
+            if ki > 0
+            else None
+        )
         source_stored = keyframe_stored or prev_path or f.still_path
         if not source_stored:
             raise ValueError(
@@ -2100,6 +2187,7 @@ async def edit_frame_keyframe(
         source_path=source_stored,
         seed=seed if seed is not None else (frame_id * 31 + 53 + ki),
         force_edit=True,
+        previous_prompt=prev_prompt,
     )
     if keyframe_stored:
         try:
