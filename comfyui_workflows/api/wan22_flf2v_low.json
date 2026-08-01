@@ -12,7 +12,10 @@
   "92": {
     "class_type": "LoraLoaderModelOnly",
     "inputs": {
-      "model": ["56", 0],
+      "model": [
+        "56",
+        0
+      ],
       "lora_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors",
       "strength_model": 1.0
     },
@@ -43,7 +46,10 @@
   "6": {
     "class_type": "CLIPTextEncode",
     "inputs": {
-      "clip": ["38", 0],
+      "clip": [
+        "38",
+        0
+      ],
       "text": "smooth cinematic transition between two keyframes"
     },
     "_meta": {
@@ -53,7 +59,10 @@
   "7": {
     "class_type": "CLIPTextEncode",
     "inputs": {
-      "clip": ["38", 0],
+      "clip": [
+        "38",
+        0
+      ],
       "text": "blurry, watermark, text, static, jump cut, morphing face, flickering, collage, comic, storyboard, panels, grid, split screen, montage"
     },
     "_meta": {
@@ -81,11 +90,26 @@
   "67": {
     "class_type": "WanFirstLastFrameToVideo",
     "inputs": {
-      "positive": ["6", 0],
-      "negative": ["7", 0],
-      "vae": ["39", 0],
-      "start_image": ["62", 0],
-      "end_image": ["68", 0],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "vae": [
+        "39",
+        0
+      ],
+      "start_image": [
+        "62",
+        0
+      ],
+      "end_image": [
+        "68",
+        0
+      ],
       "width": 1280,
       "height": 704,
       "length": 33,
@@ -107,7 +131,10 @@
   "55": {
     "class_type": "ModelSamplingSD3",
     "inputs": {
-      "model": ["92", 0],
+      "model": [
+        "92",
+        0
+      ],
       "shift": 5.0
     },
     "_meta": {
@@ -117,10 +144,22 @@
   "58": {
     "class_type": "KSamplerAdvanced",
     "inputs": {
-      "model": ["55", 0],
-      "positive": ["67", 0],
-      "negative": ["67", 1],
-      "latent_image": ["100", 0],
+      "model": [
+        "55",
+        0
+      ],
+      "positive": [
+        "67",
+        0
+      ],
+      "negative": [
+        "67",
+        1
+      ],
+      "latent_image": [
+        "100",
+        0
+      ],
       "add_noise": "disable",
       "noise_seed": 0,
       "steps": 4,
@@ -138,12 +177,18 @@
   "8": {
     "class_type": "VAEDecodeTiled",
     "inputs": {
-      "samples": ["58", 0],
-      "vae": ["39", 0],
-      "tile_size": 512,
-      "overlap": 64,
-      "temporal_size": 64,
-      "temporal_overlap": 8
+      "samples": [
+        "58",
+        0
+      ],
+      "vae": [
+        "39",
+        0
+      ],
+      "tile_size": 256,
+      "overlap": 32,
+      "temporal_size": 8,
+      "temporal_overlap": 4
     },
     "_meta": {
       "title": "VAE Decode (Tiled)"
@@ -152,7 +197,10 @@
   "60": {
     "class_type": "CreateVideo",
     "inputs": {
-      "images": ["8", 0],
+      "images": [
+        "8",
+        0
+      ],
       "fps": 24
     },
     "_meta": {
@@ -162,7 +210,10 @@
   "61": {
     "class_type": "SaveVideo",
     "inputs": {
-      "video": ["60", 0],
+      "video": [
+        "60",
+        0
+      ],
       "filename_prefix": "video/ComfyUI",
       "format": "auto",
       "codec": "auto"

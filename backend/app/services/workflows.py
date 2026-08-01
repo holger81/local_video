@@ -86,7 +86,28 @@ def apply_params(
 
     # CreateVideo.fps is FLOAT in current Comfy; PrimitiveInt links fail validation.
     _fix_create_video_fps(graph, params.get("fps"))
+    # ROCm: large temporal windows (incl. defaults ≥ clip length) hard-crash decode.
+    _clamp_vae_decode_tiled(graph)
     return graph
+
+
+# Keep temporal_size under typical step-clip length so tiling actually chunks.
+_SAFE_VAE_TILED = {
+    "tile_size": 256,
+    "overlap": 32,
+    "temporal_size": 8,
+    "temporal_overlap": 4,
+}
+
+
+def _clamp_vae_decode_tiled(graph: dict[str, Any]) -> None:
+    """Force conservative VAEDecodeTiled settings on every queued graph."""
+    for node in graph.values():
+        if not isinstance(node, dict) or node.get("class_type") != "VAEDecodeTiled":
+            continue
+        inputs = node.setdefault("inputs", {})
+        for key, value in _SAFE_VAE_TILED.items():
+            inputs[key] = value
 
 
 def _coerce_value_for_node(graph: dict[str, Any], node_id: str, input_name: str, value: Any) -> Any:

@@ -40,10 +40,10 @@
         "39",
         0
       ],
-      "tile_size": 512,
-      "overlap": 64,
-      "temporal_size": 64,
-      "temporal_overlap": 8
+      "tile_size": 256,
+      "overlap": 32,
+      "temporal_size": 8,
+      "temporal_overlap": 4
     },
     "_meta": {
       "title": "VAE Decode (Tiled)"
