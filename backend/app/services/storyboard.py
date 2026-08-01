@@ -1462,17 +1462,81 @@ async def _render_keyframe_image(
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         genre = (p.genre or "") if p else ""
+    from app.services.llm import (
+        strip_positive_anti_prompts,
+        style_negatives,
+        wardrobe_conflict_negatives,
+        wardrobe_gap_negatives,
+    )
+
+    prompt = strip_positive_anti_prompts(prompt)
     composed = compose_keyframe_prompt(prompt, cast_sheet=cast_sheet, genre=genre)
     neg = still_negative_prompt(prompt)
     label = f"{index:02d}_{role}"
 
+    wardrobe_neg = ""
+    wardrobe_lines: list[str] = []
+    bare_hands = False
+    try:
+        from app.services.characters import cast_entries_for_sheet
+
+        with SessionLocal() as db:
+            fr = db.get(StoryboardFrame, frame_id)
+            selection = list(getattr(fr, "cast", None) or []) if fr else []
+        for e in cast_entries_for_sheet(
+            project_id, cast_selection=selection if selection else None
+        ):
+            name = (e.get("name") or "").strip() or "Character"
+            oname = (e.get("outfit_name") or "").strip()
+            ward = (e.get("wardrobe_prompt") or "").strip()
+            if ward:
+                wlabel = f"{name} / {oname}" if oname else name
+                wardrobe_lines.append(f"{wlabel}: {ward}")
+                if not re.search(r"(?i)glove|mitten", ward):
+                    bare_hands = True
+            wardrobe_neg = ", ".join(
+                x
+                for x in (
+                    wardrobe_neg,
+                    wardrobe_conflict_negatives(
+                        e.get("appearance_prompt") or "",
+                        ward,
+                    ),
+                    wardrobe_gap_negatives(ward),
+                )
+                if x
+            )
+    except KeyError:
+        pass
+    style_neg = style_negatives(genre)
+    extra_neg = ", ".join(x for x in (wardrobe_neg, style_neg) if x)
+    if extra_neg:
+        neg = f"{neg}, {extra_neg}"
+
     if source_path:
         src = _resolve_media_file(str(source_path))
         uploaded = await comfy.upload_image(src)
+        wardrobe_block = (
+            " Keep exact wardrobe from the cast lock — "
+            + "; ".join(wardrobe_lines)
+            + "."
+            if wardrobe_lines
+            else ""
+        )
+        hands_block = (
+            " Hands stay bare skin matching the previous frame and cast wardrobe."
+            if bare_hands
+            else ""
+        )
         edit_prompt = build_edit_prompt(
-            instruction=prompt,
+            instruction=(
+                "Edit only pose/camera/expression as needed for this beat; "
+                "preserve faces, art style, and clothing from the previous keyframe."
+                f"{wardrobe_block}{hands_block} Instruction: {prompt}"
+            ),
             frame_prompt=prompt,
             cast_sheet=cast_sheet,
+            genre=genre,
         )
         graph = apply_params(
             "still_edit",
@@ -1498,44 +1562,16 @@ async def _render_keyframe_image(
         )
         if cast_ref is not None:
             uploaded = await comfy.upload_image(cast_ref)
-            from app.services.characters import cast_entries_for_sheet
-            from app.services.llm import wardrobe_conflict_negatives
-
-            wardrobe_neg = ""
-            panel_lines: list[str] = []
-            try:
-                with SessionLocal() as db:
-                    fr = db.get(StoryboardFrame, frame_id)
-                    selection = list(getattr(fr, "cast", None) or []) if fr else []
-                for e in cast_entries_for_sheet(
-                    project_id, cast_selection=selection if selection else None
-                ):
-                    name = (e.get("name") or "").strip() or "Character"
-                    oname = (e.get("outfit_name") or "").strip()
-                    ward = (e.get("wardrobe_prompt") or "").strip()
-                    if ward:
-                        label = f"{name} / {oname}" if oname else name
-                        panel_lines.append(f"{label}: {ward}")
-                    wardrobe_neg = ", ".join(
-                        x
-                        for x in (
-                            wardrobe_neg,
-                            wardrobe_conflict_negatives(
-                                e.get("appearance_prompt") or "",
-                                ward,
-                            ),
-                        )
-                        if x
-                    )
-            except KeyError:
-                pass
-            if wardrobe_neg:
-                neg = f"{neg}, {wardrobe_neg}"
             wardrobe_block = (
                 " Required clothing from each labeled panel — match exactly: "
-                + "; ".join(panel_lines)
+                + "; ".join(wardrobe_lines)
                 + "."
-                if panel_lines
+                if wardrobe_lines
+                else ""
+            )
+            hands_block = (
+                " Bare hands only, matching the wardrobe panels."
+                if bare_hands
                 else ""
             )
             edit_prompt = build_edit_prompt(
@@ -1545,24 +1581,18 @@ async def _render_keyframe_image(
                     "and this beat's wardrobe). Restage those SAME characters into ONE "
                     "continuous shot matching the instruction — keep faces and stylized "
                     "look from the panels."
-                    f"{wardrobe_block} Instruction: {prompt}"
+                    f"{wardrobe_block}{hands_block} Instruction: {prompt}"
                 ),
                 frame_prompt=prompt,
                 cast_sheet=cast_sheet,
                 genre=genre,
                 from_cast_sheet=True,
             )
-            from app.services.llm import style_negatives
-
-            style_neg = style_negatives(genre)
-            kf_neg = neg
-            if style_neg:
-                kf_neg = f"{kf_neg}, {style_neg}"
             graph = apply_params(
                 "still_edit",
                 {
                     "positive_prompt": edit_prompt,
-                    "negative_prompt": kf_neg
+                    "negative_prompt": neg
                     + ", collage, contact sheet, multi-panel, split screen, grid layout",
                     "seed": seed,
                     "filename_prefix": f"local_video/p{project_id}_f{frame_id}_kf_{label}",

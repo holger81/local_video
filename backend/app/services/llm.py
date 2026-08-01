@@ -109,7 +109,8 @@ async def extend_story(story: str, instruction: str) -> str:
 _CLOTHING_LINE_RE = re.compile(
     r"(?i)\b("
     r"space\s*suit|spacesuit|astronaut|eva\s*suit|helmet|wardrobe|outfit|"
-    r"dress|shirt|shorts|pants|jacket|coat|gloves|boots|sneakers|shoes|"
+    r"dress|shirt|shorts|pants|jacket|coat|gloves?|mittens?|gauntlets?|"
+    r"boots|sneakers|shoes|"
     r"clothing|clothes|garment|suit\b"
     r")\b"
 )
@@ -117,10 +118,27 @@ _FACE_LINE_RE = re.compile(
     r"(?i)\b(face|hair|eye|eyes|smile|skin|age|years?\s*old|blonde|brunette|"
     r"rectangular|skinnier|thinner|teeth|expression|nose|cheek)\b"
 )
+_GLOVE_HAND_RE = re.compile(
+    r"(?i)\b(glove|mitten|gauntlet|fingers?\s+on\s+each\s+hand|space\s*glove)\b"
+)
 _ANIMATED_GENRE_RE = re.compile(
     r"(?i)(animated|animation|puppet|cgi|3\s*d|pixar|cartoon|stylized|"
     r"illustration|render|stop[\s-]?motion)"
 )
+
+
+def _scrub_glove_hand_clauses(line: str) -> str:
+    """Drop glove/finger-count crumbs that bleed from spacesuit appearance edits."""
+    text = re.sub(r"(?i)\([^)]*\b(glove|mitten|gauntlet)[^)]*\)", "", line)
+    text = re.sub(
+        r"(?i)\b(?:and\s+)?\d+\s*fingers?\s+on\s+each\s+hand\b",
+        "",
+        text,
+    )
+    text = _GLOVE_HAND_RE.sub("", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r",\s*,+", ",", text)
+    return text.strip(" ,.;-")
 
 
 def face_body_lock(appearance: str, *, has_wardrobe: bool) -> str:
@@ -149,14 +167,22 @@ def face_body_lock(appearance: str, *, has_wardrobe: bool) -> str:
             if has_clothes and not has_face:
                 continue
             if has_clothes and has_face:
+                line = _scrub_glove_hand_clauses(line)
                 line = _CLOTHING_LINE_RE.sub("", line)
                 line = re.sub(r"\s{2,}", " ", line).strip(" ,.;-")
-                # Drop leftover connective crumbs like "also, it should be a"
                 line = re.sub(
                     r"(?i)\b(also,?\s*)?(it should be a|make (him|her|them)|put cool stuff on the)\b.*$",
                     "",
                     line,
                 ).strip(" ,.;-")
+                # Drop empty leftover parentheses after scrubbing.
+                line = re.sub(r"\(\s*\)", "", line)
+                line = re.sub(r"\s{2,}", " ", line).strip(" ,.;-")
+            elif _GLOVE_HAND_RE.search(line) and not has_face:
+                continue
+            elif _GLOVE_HAND_RE.search(line):
+                line = _scrub_glove_hand_clauses(line)
+                line = re.sub(r"\(\s*\)", "", line).strip(" ,.;-")
             if line:
                 edit_lines.append(line)
         text = before
@@ -170,6 +196,7 @@ def face_body_lock(appearance: str, *, has_wardrobe: bool) -> str:
             continue
         if _CLOTHING_LINE_RE.search(line):
             line = _CLOTHING_LINE_RE.sub("", line)
+            line = _scrub_glove_hand_clauses(line)
             line = re.sub(r"\s{2,}", " ", line).strip(" ,.;-")
             if not line:
                 continue
@@ -192,6 +219,10 @@ def wardrobe_conflict_negatives(appearance: str, wardrobe: str) -> str:
             "astronaut suit, spacesuit, space suit, EVA suit, helmet, NASA suit, "
             "pressure suit, white space suit"
         )
+    if re.search(r"(?i)glove|mitten|gauntlet", app) and not re.search(
+        r"(?i)glove|mitten|gauntlet", ward
+    ):
+        bits.append("gloves, mittens, gauntlets, space gloves, cartoon gloves")
     return ", ".join(bits)
 
 
@@ -205,10 +236,30 @@ def wardrobe_gap_negatives(wardrobe: str) -> str:
         return ""
     bits: list[str] = []
     if not re.search(r"glove|mitten", ward):
-        bits.append("gloves, mittens, gauntlets")
+        bits.append(
+            "gloves, mittens, gauntlets, space gloves, cartoon gloves, "
+            "white gloves, black gloves, oversized gloves"
+        )
     if not re.search(r"helmet", ward):
         bits.append("helmet")
     return ", ".join(bits)
+
+
+def strip_positive_anti_prompts(prompt: str) -> str:
+    """Remove 'NO GLOVES'-style bans from positives (they often summon the item)."""
+    text = (prompt or "").strip()
+    if not text:
+        return ""
+    # Explicit all-caps bans and "no gloves" / "without gloves" phrasing.
+    text = re.sub(r"(?i)\bno\s+gloves\.?", "bare hands", text)
+    text = re.sub(r"(?i)\bwithout\s+gloves\.?", "bare hands", text)
+    text = re.sub(
+        r"\bNO\s+(?:GLOVES|MITTENS|GAUNTLETS|HELMETS?)(?:\s+(?:OR|AND)\s+"
+        r"(?:GLOVES|MITTENS|GAUNTLETS|HELMETS?))*\.?",
+        "",
+        text,
+    )
+    return re.sub(r"\s{2,}", " ", text).strip(" ,.;")
 
 
 def is_stylized_genre(genre: str = "") -> bool:
@@ -258,8 +309,13 @@ def format_cast_sheet(characters: list[dict[str, Any]]) -> str:
             bits.append(f"Face/body: {look}")
         if wardrobe:
             label = f"Wardrobe ({outfit_name})" if outfit_name else "Wardrobe"
+            hand_note = (
+                "; bare hands"
+                if not re.search(r"(?i)glove|mitten", wardrobe)
+                else ""
+            )
             bits.append(
-                f"{label}: {wardrobe} "
+                f"{label}: {wardrobe}{hand_note} "
                 "(MUST wear exactly this clothing; ignore any other outfit notes)"
             )
         elif look_raw and not look:
@@ -405,6 +461,9 @@ async def plan_keyframe_image_prompt(
         "no whole-film dump; never invent subjects not in the beat; do not say the word keyframe. "
         "If a cast lock is provided, you MUST name those characters and weave their exact visual "
         "looks (face, hair, wardrobe) into the image_prompt — do not drop or rewrite the look. "
+        "Never invent gloves, mittens, helmets, or accessories not listed in wardrobe. "
+        "If hands are visible and wardrobe has no gloves, say 'bare hands' — never write "
+        "'NO GLOVES' or other all-caps bans (those often cause the forbidden item). "
         "If CONTINUATION: do not say new shot; keep identity from context. "
         "If NEW SHOT and role is first: establish a fresh camera/composition."
     )
@@ -440,7 +499,7 @@ async def plan_keyframe_image_prompt(
     prompt = str(data.get("image_prompt") or data.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("empty keyframe image_prompt")
-    return prompt
+    return strip_positive_anti_prompts(prompt)
 
 
 async def plan_keyframe_series(
