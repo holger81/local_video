@@ -2201,6 +2201,41 @@ async def generate_step_clips(
     settings = get_settings()
     media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
     media.mkdir(parents=True, exist_ok=True)
+    preview = media / f"step_preview_f{frame_id}.mp4"
+
+    def _write_partial_preview(paths: list[Path], dirs: list[Path]) -> Path:
+        """Encode whatever clips we have so far and publish preview_path."""
+        # Unique name per stage so the UI cache-busts as clips land.
+        out = media / f"step_preview_f{frame_id}_{len(paths)}.mp4"
+        if dirs and all(any(d.glob("*.png")) for d in dirs):
+            from app.services.frames import discard_overlap, write_kept_frames
+
+            kept_dirs: list[Path] = []
+            for i, raw in enumerate(dirs):
+                frames_list = sorted(raw.glob("*.png"))
+                if i > 0:
+                    frames_list = discard_overlap(frames_list, 1)
+                kept = media / f"_clip_{i:02d}_kept"
+                write_kept_frames(frames_list, kept)
+                kept_dirs.append(kept)
+            seq = media / "_step_seq"
+            concat_frame_dirs(kept_dirs, seq)
+            encode_frames_to_mp4(seq, out, fps=settings.default_fps)
+        elif paths:
+            concat_videos(paths, out)
+        else:
+            return preview
+        # Stable final alias for the latest partial.
+        try:
+            preview.write_bytes(out.read_bytes())
+        except OSError:
+            pass
+        with SessionLocal() as db:
+            fr = db.get(StoryboardFrame, frame_id)
+            assert fr
+            fr.preview_path = str(out)
+            db.commit()
+        return out
 
     clip_paths: list[Path] = []
     frame_dirs: list[Path] = []
@@ -2230,31 +2265,8 @@ async def generate_step_clips(
         raw = media / f"_clip_{i:02d}_frames"
         extract_frames_from_video(clip, raw)
         frame_dirs.append(raw)
-
-    preview = media / f"step_preview_f{frame_id}.mp4"
-    if frame_dirs and all(any(d.glob("*.png")) for d in frame_dirs):
-        from app.services.frames import discard_overlap, write_kept_frames
-
-        # Drop the shared boundary frame between consecutive FLF clips.
-        kept_dirs: list[Path] = []
-        for i, raw in enumerate(frame_dirs):
-            frames_list = sorted(raw.glob("*.png"))
-            if i > 0:
-                frames_list = discard_overlap(frames_list, 1)
-            kept = media / f"_clip_{i:02d}_kept"
-            write_kept_frames(frames_list, kept)
-            kept_dirs.append(kept)
-        seq = media / "_step_seq"
-        concat_frame_dirs(kept_dirs, seq)
-        encode_frames_to_mp4(seq, preview, fps=settings.default_fps)
-    else:
-        concat_videos(clip_paths, preview)
-
-    with SessionLocal() as db:
-        fr = db.get(StoryboardFrame, frame_id)
-        assert fr
-        fr.preview_path = str(preview)
-        db.commit()
+        # Publish growing preview so the UI can refresh mid-beat.
+        preview = _write_partial_preview(clip_paths, frame_dirs)
 
     return {
         "frame_id": frame_id,

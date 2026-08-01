@@ -538,6 +538,34 @@ function ProjectPage() {
     return p;
   }, [id, loadAssets]);
 
+  /** Refresh frames/media without clobbering in-progress story edits. */
+  const refreshProject = useCallback(async () => {
+    const p = await api(`/projects/${id}`);
+    setProject(p);
+    return p;
+  }, [id]);
+
+  /** Poll project while a long request runs so mid-commit media shows up live. */
+  const withLiveRefresh = useCallback(
+    async (work, { intervalMs = 2000 } = {}) => {
+      const tick = () => {
+        refreshProject().catch(() => {});
+      };
+      tick();
+      const timer = setInterval(tick, intervalMs);
+      try {
+        return await work();
+      } finally {
+        clearInterval(timer);
+        await refreshProject().catch(() => {});
+      }
+    },
+    [refreshProject]
+  );
+
+  const yieldToUi = () =>
+    new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
   useEffect(() => {
     load().catch((e) => setErr(String(e.message || e)));
   }, [load]);
@@ -708,9 +736,11 @@ function ProjectPage() {
     setVisualBusy({ frameId, kind });
     setErr("");
     try {
-      await api(`/projects/${id}/storyboard/frames/${frameId}/visual`, {
-        method: "POST",
-        body: JSON.stringify({ kind, num_frames: 33, fresh }),
+      await withLiveRefresh(async () => {
+        await api(`/projects/${id}/storyboard/frames/${frameId}/visual`, {
+          method: "POST",
+          body: JSON.stringify({ kind, num_frames: 33, fresh }),
+        });
       });
       await load();
     } catch (e) {
@@ -807,10 +837,12 @@ function ProjectPage() {
     setErr("");
     try {
       await patchEditorFields();
-      await api(
-        `/projects/${id}/storyboard/frames/${keyframeEditorId}/keyframes/${phaseOrIndex}`,
-        { method: "POST", body: JSON.stringify({}) }
-      );
+      await withLiveRefresh(async () => {
+        await api(
+          `/projects/${id}/storyboard/frames/${keyframeEditorId}/keyframes/${phaseOrIndex}`,
+          { method: "POST", body: JSON.stringify({}) }
+        );
+      });
       await load();
     } catch (e) {
       setErr(String(e.message || e));
@@ -831,11 +863,65 @@ function ProjectPage() {
     setVisualBusy({ frameId: keyframeEditorId, kind: `keyframe_${phaseOrIndex}` });
     setErr("");
     try {
-      await api(
-        `/projects/${id}/storyboard/frames/${keyframeEditorId}/keyframes/${phaseOrIndex}/edit`,
-        { method: "POST", body: JSON.stringify({ instruction }) }
-      );
+      await withLiveRefresh(async () => {
+        await api(
+          `/projects/${id}/storyboard/frames/${keyframeEditorId}/keyframes/${phaseOrIndex}/edit`,
+          { method: "POST", body: JSON.stringify({ instruction }) }
+        );
+      });
       setKfEditDrafts((prev) => ({ ...prev, [phaseOrIndex]: "" }));
+      await load();
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setVisualBusy(null);
+      setBusy("");
+    }
+  };
+
+  const regenerateAllKeyframeImages = async (
+    frameId,
+    { skipExisting = false } = {}
+  ) => {
+    setBusy(`keyframes ${frameId}`);
+    setErr("");
+    try {
+      await patchEditorFields();
+      let p = await refreshProject();
+      let frame = (p.frames || []).find((x) => x.id === frameId);
+      let kfs = frameKeyframes(frame || {});
+      if (!kfs.length) {
+        await api(
+          `/projects/${id}/storyboard/frames/${frameId}/keyframes/rebuild-prompts`,
+          { method: "POST" }
+        );
+        p = await refreshProject();
+        frame = (p.frames || []).find((x) => x.id === frameId);
+        kfs = frameKeyframes(frame || {});
+      }
+      const total = kfs.length;
+      let done = 0;
+      for (let ki = 0; ki < kfs.length; ki++) {
+        if (skipExisting && (kfs[ki].path || "").trim()) {
+          done += 1;
+          continue;
+        }
+        setBusy(`keyframe ${ki + 1}/${total}`);
+        setVisualBusy({ frameId, kind: `keyframe_${ki}` });
+        await yieldToUi();
+        await api(`/projects/${id}/storyboard/frames/${frameId}/keyframes/${ki}`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        done += 1;
+        p = await refreshProject();
+        frame = (p.frames || []).find((x) => x.id === frameId);
+        kfs = frameKeyframes(frame || {});
+        await yieldToUi();
+      }
+      if (skipExisting && done === 0) {
+        /* nothing to do */
+      }
       await load();
     } catch (e) {
       setErr(String(e.message || e));
@@ -848,7 +934,8 @@ function ProjectPage() {
   const createMissingVisuals = async (kind) => {
     const pathKey = kind === "preview" ? "preview_path" : "still_path";
     const label = kind === "preview" ? "previews" : "stills";
-    const frames = [...(project.frames || [])]
+    let projectSnap = project;
+    const frames = [...(projectSnap.frames || [])]
       .sort((a, b) => a.position - b.position)
       .filter((f) => !f[pathKey]);
     if (!frames.length) {
@@ -863,15 +950,18 @@ function ProjectPage() {
         const f = frames[i];
         setBusy(`create missing ${label} (${i + 1}/${frames.length})`);
         setVisualBusy({ frameId: f.id, kind });
-        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-        await api(`/projects/${id}/storyboard/frames/${f.id}/visual`, {
-          method: "POST",
-          body: JSON.stringify({ kind, num_frames: 33 }),
+        await yieldToUi();
+        await withLiveRefresh(async () => {
+          await api(`/projects/${id}/storyboard/frames/${f.id}/visual`, {
+            method: "POST",
+            body: JSON.stringify({ kind, num_frames: 33 }),
+          });
         });
         setVisualBusy(null);
-        await load();
-        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        await refreshProject();
+        await yieldToUi();
       }
+      await load();
     } catch (e) {
       setErr(String(e.message || e));
     } finally {
@@ -900,15 +990,18 @@ function ProjectPage() {
         const f = pairs[i];
         setBusy(`create between-stills (${i + 1}/${pairs.length})`);
         setVisualBusy({ frameId: f.id, kind: "between" });
-        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-        await api(`/projects/${id}/storyboard/frames/${f.id}/between-stills`, {
-          method: "POST",
-          body: JSON.stringify({ num_frames: 33 }),
+        await yieldToUi();
+        await withLiveRefresh(async () => {
+          await api(`/projects/${id}/storyboard/frames/${f.id}/between-stills`, {
+            method: "POST",
+            body: JSON.stringify({ num_frames: 33 }),
+          });
         });
         setVisualBusy(null);
-        await load();
-        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        await refreshProject();
+        await yieldToUi();
       }
+      await load();
     } catch (e) {
       setErr(String(e.message || e));
     } finally {
@@ -918,25 +1011,50 @@ function ProjectPage() {
   };
 
   const createMissingKeyframes = async () => {
-    const frames = [...(project.frames || [])]
+    let p = project;
+    const targetIds = [...(p.frames || [])]
       .sort((a, b) => a.position - b.position)
-      .filter((f) => !keyframesReady(f));
-    if (!frames.length) return;
+      .filter((f) => !keyframesReady(f))
+      .map((f) => f.id);
+    if (!targetIds.length) return;
     setBusy("create keyframes");
     setErr("");
     try {
-      for (let i = 0; i < frames.length; i++) {
-        const f = frames[i];
-        setBusy(`create keyframes (${i + 1}/${frames.length})`);
-        setVisualBusy({ frameId: f.id, kind: "keyframes" });
-        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-        await api(`/projects/${id}/storyboard/frames/${f.id}/keyframes`, {
-          method: "POST",
-          body: JSON.stringify({ skip_existing: true }),
-        });
+      for (let fi = 0; fi < targetIds.length; fi++) {
+        const frameId = targetIds[fi];
+        p = await refreshProject();
+        let frame = (p.frames || []).find((x) => x.id === frameId);
+        let kfs = frameKeyframes(frame || {});
+        if (!kfs.length || !kfs.every((k) => (k.image_prompt || "").trim())) {
+          setBusy(`prompts ${fi + 1}/${targetIds.length}`);
+          setVisualBusy({ frameId, kind: "keyframes" });
+          await api(
+            `/projects/${id}/storyboard/frames/${frameId}/keyframes/rebuild-prompts`,
+            { method: "POST" }
+          );
+          p = await refreshProject();
+          frame = (p.frames || []).find((x) => x.id === frameId);
+          kfs = frameKeyframes(frame || {});
+        }
+        for (let ki = 0; ki < kfs.length; ki++) {
+          if ((kfs[ki].path || "").trim()) continue;
+          setBusy(
+            `keyframes beat ${fi + 1}/${targetIds.length} · slot ${ki + 1}/${kfs.length}`
+          );
+          setVisualBusy({ frameId, kind: `keyframe_${ki}` });
+          await yieldToUi();
+          await api(`/projects/${id}/storyboard/frames/${frameId}/keyframes/${ki}`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
+          p = await refreshProject();
+          frame = (p.frames || []).find((x) => x.id === frameId);
+          kfs = frameKeyframes(frame || {});
+          await yieldToUi();
+        }
         setVisualBusy(null);
-        await load();
       }
+      await load();
     } catch (e) {
       setErr(String(e.message || e));
     } finally {
@@ -957,14 +1075,18 @@ function ProjectPage() {
         const f = frames[i];
         setBusy(`create step clips (${i + 1}/${frames.length})`);
         setVisualBusy({ frameId: f.id, kind: "step_clips" });
-        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-        await api(`/projects/${id}/storyboard/frames/${f.id}/step-clips`, {
-          method: "POST",
-          body: JSON.stringify({ num_frames: 33 }),
+        await yieldToUi();
+        await withLiveRefresh(async () => {
+          await api(`/projects/${id}/storyboard/frames/${f.id}/step-clips`, {
+            method: "POST",
+            body: JSON.stringify({ num_frames: 33 }),
+          });
         });
         setVisualBusy(null);
-        await load();
+        await refreshProject();
+        await yieldToUi();
       }
+      await load();
     } catch (e) {
       setErr(String(e.message || e));
     } finally {
@@ -2302,20 +2424,7 @@ function ProjectPage() {
                 <button
                   type="button"
                   disabled={!!busy}
-                  onClick={() =>
-                    run(`keyframes ${f.id}`, async () => {
-                      setVisualBusy({ frameId: f.id, kind: "keyframes" });
-                      try {
-                        await patchEditorFields();
-                        await api(`/projects/${id}/storyboard/frames/${f.id}/keyframes`, {
-                          method: "POST",
-                          body: JSON.stringify({ skip_existing: false }),
-                        });
-                      } finally {
-                        setVisualBusy(null);
-                      }
-                    })
-                  }
+                  onClick={() => regenerateAllKeyframeImages(f.id)}
                 >
                   Regenerate all keyframe images
                 </button>
@@ -2633,9 +2742,14 @@ function ProjectPage() {
                       run(`step clips ${f.id}`, async () => {
                         setVisualBusy({ frameId: f.id, kind: "step_clips" });
                         try {
-                          await api(`/projects/${id}/storyboard/frames/${f.id}/step-clips`, {
-                            method: "POST",
-                            body: JSON.stringify({ num_frames: 33 }),
+                          await withLiveRefresh(async () => {
+                            await api(
+                              `/projects/${id}/storyboard/frames/${f.id}/step-clips`,
+                              {
+                                method: "POST",
+                                body: JSON.stringify({ num_frames: 33 }),
+                              }
+                            );
                           });
                         } finally {
                           setVisualBusy(null);
@@ -2671,13 +2785,15 @@ function ProjectPage() {
                           run(`between stills ${f.id}`, async () => {
                             setVisualBusy({ frameId: f.id, kind: "between" });
                             try {
-                              await api(
-                                `/projects/${id}/storyboard/frames/${f.id}/between-stills`,
-                                {
-                                  method: "POST",
-                                  body: JSON.stringify({ num_frames: 33 }),
-                                }
-                              );
+                              await withLiveRefresh(async () => {
+                                await api(
+                                  `/projects/${id}/storyboard/frames/${f.id}/between-stills`,
+                                  {
+                                    method: "POST",
+                                    body: JSON.stringify({ num_frames: 33 }),
+                                  }
+                                );
+                              });
                             } finally {
                               setVisualBusy(null);
                             }
@@ -2698,20 +2814,9 @@ function ProjectPage() {
                     className="btn-secondary"
                     disabled={!!busy}
                     onClick={() =>
-                      run(`keyframes ${f.id}`, async () => {
-                        setVisualBusy({ frameId: f.id, kind: "keyframes" });
-                        try {
-                          await patchEditorFields();
-                          await api(`/projects/${id}/storyboard/frames/${f.id}/keyframes`, {
-                            method: "POST",
-                            body: JSON.stringify({ skip_existing: true }),
-                          });
-                        } finally {
-                          setVisualBusy(null);
-                        }
-                      })
+                      regenerateAllKeyframeImages(f.id, { skipExisting: true })
                     }
-                    title="Create any missing images in this beat’s keyframe series"
+                    title="Create any missing images in this beat’s keyframe series (updates live per slot)"
                   >
                     Create missing keyframe images
                   </button>
