@@ -122,6 +122,45 @@ def _cast_ref_sheet_path(project_id: int, frame_id: int) -> str | None:
     return str(path) if path.is_file() else None
 
 
+def _clear_cast_ref_sheet(project_id: int, frame_id: int) -> None:
+    """Remove stale cast contact sheet when beat cast is empty (no people)."""
+    settings = get_settings()
+    path = (
+        settings.media_dir
+        / "projects"
+        / str(project_id)
+        / "frames"
+        / str(frame_id)
+        / "cast_ref_sheet.png"
+    )
+    try:
+        if path.is_file():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def _cast_count_lock(names: list[str]) -> str:
+    """Hard-cap on-screen cast count to reduce duplicate/triplicate identities."""
+    clean = [(n or "").strip() for n in names if (n or "").strip()]
+    if not clean:
+        return ""
+    n = len(clean)
+    ones = ", ".join(f"exactly one {name}" for name in clean)
+    return (
+        f" Exactly {n} {'person' if n == 1 else 'people'} in frame ({ones}); "
+        "no duplicate instances, no triplets, no clones of the same character."
+    )
+
+
+def _empty_scene_edit_clause() -> str:
+    """Positive instruction for empty-cast continuity edits (parity with still edits)."""
+    return (
+        " Output an empty scene with NO people, NO faces, NO characters — "
+        "landscape/environment only."
+    )
+
+
 def generate_cast_ref_sheet(project_id: int, frame_id: int) -> dict[str, Any]:
     """Build (or refresh) the labeled cast/outfit contact sheet for a beat."""
     from app.services.characters import cast_reference_for_frame
@@ -188,9 +227,9 @@ def _keyframes_ready(keyframes: list[dict[str, Any]]) -> bool:
 
 
 async def rebuild_frame_keyframe_prompts(
-    project_id: int, frame_id: int
+    project_id: int, frame_id: int, *, spacing_sec: float = 5.0
 ) -> dict[str, Any]:
-    """LLM-plan a variable keyframe series (≤2s spacing). Keeps existing paths when prompts only."""
+    """LLM-plan a variable keyframe series (~5s spacing by default). Keeps existing paths when prompts only."""
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
@@ -230,6 +269,7 @@ async def rebuild_frame_keyframe_prompts(
         cast_sheet=cast_sheet,
         share_first_from_prev=share_first,
         empty_cast=empty_cast,
+        spacing_sec=spacing_sec,
     )
     keyframes = planned["keyframes"]
     for kf in keyframes:
@@ -781,6 +821,8 @@ def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any
                         }
                     )
                 f.cast = normalized
+                if not normalized:
+                    _clear_cast_ref_sheet(project_id, frame_id)
             elif k == "scenery":
                 if not isinstance(v, list):
                     raise ValueError("scenery must be a list")
@@ -1130,6 +1172,67 @@ def _frame_scenery_assets(
         return "", None
 
 
+async def _scenery_dual_ref_rewrite(
+    *,
+    comfy: ComfyUIClient,
+    media: Path,
+    current: Path,
+    scenery_ref: Path,
+    beat_prompt: str,
+    neg: str,
+    seed: int,
+    filename_prefix: str,
+    empty_cast: bool = False,
+) -> Path:
+    """Re-lock location geometry from a scenery reference via still_edit_dual."""
+    pose = _truncate((beat_prompt or "").strip(), 160)
+    body = (
+        "Using image 1 as the scene and image 2 as the location reference: "
+        "REWRITE the environment and architecture in image 1 to match image 2 "
+        "exactly (same buildings, doors, windows, roof details, weather vanes, "
+        "porch, and layout). Keep people poses if present; only adjust camera "
+        "slightly if the beat requires it."
+    )
+    if empty_cast:
+        body = (
+            f"{body} Empty scene — no people, no characters, no faces; "
+            "environment and landscape only."
+        )
+    if pose:
+        body = f"{body} Beat cue: {pose}"
+    positive = f"{body} {_EDIT_CLOSE}"
+    dual_neg = (
+        (neg or "").strip()
+        + ", split screen, side by side, diptych, contact sheet, collage, "
+        "studio backdrop, redesigned building, different barn, extra weather vane"
+    ).strip(", ")
+    if empty_cast:
+        dual_neg = f"{dual_neg}, {empty_scene_negatives()}"
+    scene_up = await comfy.upload_image(current)
+    loc_up = await comfy.upload_image(scenery_ref)
+    graph = apply_params(
+        "still_edit_dual",
+        {
+            "positive_prompt": positive,
+            "negative_prompt": dual_neg,
+            "seed": seed,
+            "steps": 4,
+            "cfg": 5.0,
+            "filename_prefix": f"{filename_prefix}_scenery",
+        },
+        uploaded_images={"start_image": scene_up, "ref_image": loc_up},
+    )
+    prompt_id = await comfy.queue_prompt(graph)
+    history = await comfy.wait_for_prompt(prompt_id)
+    outs = comfy.collect_outputs(history)
+    if not outs:
+        raise RuntimeError("ComfyUI produced no outputs for scenery lock")
+    out = outs[0]
+    dest = media / f"scenery_lock_{out['filename']}"
+    await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+    return dest
+
+
 def build_visual_prompt(
     *,
     story: str,
@@ -1169,7 +1272,11 @@ def build_visual_prompt(
 def _cast_wardrobe_maps(
     project_id: int, frame_id: int
 ) -> tuple[dict[str, str], dict[str, str], str, bool]:
-    """Return wardrobe_by_name, wardrobe_prompt_by_name, wardrobe_neg, bare_hands."""
+    """Return wardrobe_by_name, wardrobe_prompt_by_name, wardrobe_neg, bare_hands.
+
+    ``wardrobe_prompt_by_name`` includes appearance identity bullets (eyes, hair,
+    body) plus outfit text so cast-lock refresh re-applies face cues, not only clothes.
+    """
     from app.services.characters import cast_entries_for_sheet
     from app.services.llm import wardrobe_conflict_negatives, wardrobe_gap_negatives
 
@@ -1188,12 +1295,14 @@ def _cast_wardrobe_maps(
             name = (e.get("name") or "").strip() or "Character"
             oname = (e.get("outfit_name") or "").strip()
             ward = (e.get("wardrobe_prompt") or "").strip()
-            if ward:
-                wardrobe_prompt_by_name[name.lower()] = ward
-                wardrobe_by_name[name.lower()] = (
-                    f"{name} / {oname}: {ward}" if oname else f"{name}: {ward}"
-                )
-                if not re.search(r"(?i)glove|mitten", ward):
+            appearance = (e.get("appearance_prompt") or "").strip()
+            identity_bits = [b for b in (appearance, ward) if b]
+            if identity_bits:
+                combined = "; ".join(identity_bits)
+                wardrobe_prompt_by_name[name.lower()] = combined
+                label = f"{name} / {oname}" if oname else name
+                wardrobe_by_name[name.lower()] = f"{label}: {combined}"
+                if ward and not re.search(r"(?i)glove|mitten", ward):
                     bare_hands = True
             wardrobe_neg = ", ".join(
                 x
@@ -1414,11 +1523,11 @@ async def _iterative_cast_lock_render(
         positive = _dual_prompt(name=name, mode=mode)
         # Optional wardrobe hint before the close — re-append close after.
         ward = (wardrobe_prompt_by_name.get(name.lower()) or "").strip()
-        if ward and mode == "insert":
-            # Keep close last: splice before final sentence.
+        if ward:
+            # Keep close last: splice before final sentence (insert + identity refresh).
             stem = positive[: -len(_EDIT_CLOSE)].rstrip()
             positive = (
-                f"{stem} {name} must wear exactly: {ward}. {_EDIT_CLOSE}"
+                f"{stem} {name} must match exactly: {ward}. {_EDIT_CLOSE}"
             )
         scene_up = await comfy.upload_image(current)
         cast_up = await comfy.upload_image(path)
@@ -1512,12 +1621,15 @@ async def generate_frame_visual(
         from app.services.llm import style_negatives
 
         # UI contact sheet (labeled); generation uses iterative single-ID locks instead.
-        try:
-            cast_reference_for_frame(
-                project_id, frame_id, dest=media / "cast_ref_sheet.png"
-            )
-        except KeyError:
-            pass
+        if empty_cast:
+            _clear_cast_ref_sheet(project_id, frame_id)
+        else:
+            try:
+                cast_reference_for_frame(
+                    project_id, frame_id, dest=media / "cast_ref_sheet.png"
+                )
+            except KeyError:
+                pass
 
         panels: list[tuple[str, Path, bool]] = []
         try:
@@ -2554,6 +2666,7 @@ async def _render_keyframe_image(
     # match) must not strip people from a casted beat's continuity edits.
     if empty_cast:
         neg = f"{neg}, {empty_scene_negatives()}"
+        _clear_cast_ref_sheet(project_id, frame_id)
     composed = compose_keyframe_prompt(prompt, cast_sheet=cast_sheet, genre=genre)
     if empty_cast:
         composed = (
@@ -2564,6 +2677,8 @@ async def _render_keyframe_image(
     extra_neg = ", ".join(x for x in (wardrobe_neg, style_neg) if x)
     if extra_neg:
         neg = f"{neg}, {extra_neg}"
+    count_lock = _cast_count_lock(on_screen)
+    scenery_sheet, scenery_ref = _frame_scenery_assets(project_id, frame_id)
 
     if source_path:
         src = _resolve_media_file(str(source_path))
@@ -2571,7 +2686,7 @@ async def _render_keyframe_image(
             project_id, panels_all, prompt, previous_prompt
         )
         # Someone new enters → cast-lock insert from outfit/portrait refs.
-        if entrants:
+        if entrants and not empty_cast:
             entrant_names = [
                 (lab.split("/")[0].strip() or lab).strip() for lab, _p, _a in entrants
             ]
@@ -2595,7 +2710,7 @@ async def _render_keyframe_image(
             beat = (
                 f"INSERT {names_bit} into the existing scene using their cast reference. "
                 f"Keep everyone already in the previous frame unchanged except pose/"
-                f"camera as needed. {prompt}"
+                f"camera as needed. {_cast_count_lock(entrant_names)} {prompt}"
             )
             current, _pid = await _iterative_cast_lock_render(
                 comfy=comfy,
@@ -2611,10 +2726,46 @@ async def _render_keyframe_image(
                 wardrobe_prompt_by_name=ward_pe,
                 continuity_base=src,
                 insert_into_scene=True,
+                scenery_ref=scenery_ref,
+                scenery_sheet=scenery_sheet,
             )
             dest = media / f"keyframe_{label}_{current.name}"
             if current.resolve() != dest.resolve():
                 current.replace(dest)
+            if scenery_ref is not None and scenery_ref.is_file():
+                locked = await _scenery_dual_ref_rewrite(
+                    comfy=comfy,
+                    media=media,
+                    current=dest,
+                    scenery_ref=scenery_ref,
+                    beat_prompt=prompt,
+                    neg=neg,
+                    seed=seed + 5,
+                    filename_prefix=f"local_video/p{project_id}_f{frame_id}_kf_{label}",
+                    empty_cast=False,
+                )
+                final = media / f"keyframe_{label}_{locked.name}"
+                if locked.resolve() != final.resolve():
+                    locked.replace(final)
+                return final
+            return dest
+
+        # Empty cast + scenery ref: lock location via dual-ref (no free invent-prone edit).
+        if empty_cast and scenery_ref is not None and scenery_ref.is_file():
+            locked = await _scenery_dual_ref_rewrite(
+                comfy=comfy,
+                media=media,
+                current=src,
+                scenery_ref=scenery_ref,
+                beat_prompt=prompt,
+                neg=neg,
+                seed=seed,
+                filename_prefix=f"local_video/p{project_id}_f{frame_id}_kf_{label}",
+                empty_cast=True,
+            )
+            dest = media / f"keyframe_{label}_{locked.name}"
+            if locked.resolve() != dest.resolve():
+                locked.replace(dest)
             return dest
 
         uploaded = await comfy.upload_image(src)
@@ -2636,19 +2787,25 @@ async def _render_keyframe_image(
                 f" Keep every named cast member visible unless the beat removes them: "
                 f"{', '.join(on_screen)}. Do not drop people who are already in the "
                 f"previous keyframe and still named in this beat."
+                f"{count_lock}"
             )
+        empty_clause = _empty_scene_edit_clause() if empty_cast else ""
+        prop_lock = (
+            " Keep props from the previous keyframe (bags, tools); do not duplicate "
+            "identical props or invent extras."
+        )
         continuity = (
             "Edit only pose, expression, and camera as needed for this beat. "
             "Do NOT change clothing, shoes, accessories, hair length/style, or body type — "
             "copy wardrobe pixel-identically from the previous keyframe (same dress/shirt/"
             "shorts/footwear/colors). No new sneakers, jackets, gloves, or outfit swaps. "
             "Do NOT invent new characters who are not already in the previous image."
-            f"{keep_cast}"
+            f"{keep_cast}{empty_clause}{prop_lock}"
             if role in ("middle", "last")
             else (
                 "Edit only pose/camera/expression as needed for this beat; "
                 "preserve faces, art style, and clothing from the previous keyframe."
-                f"{keep_cast}"
+                f"{keep_cast}{empty_clause}{prop_lock}"
             )
         )
         edit_prompt = build_edit_prompt(
@@ -2656,7 +2813,7 @@ async def _render_keyframe_image(
                 f"{continuity}{wardrobe_block}{hands_block} Beat: {prompt}"
             ),
             frame_prompt="",
-            cast_sheet=cast_sheet,
+            cast_sheet=cast_sheet if not empty_cast else "",
             genre=genre,
         )
         graph = apply_params(
@@ -2682,7 +2839,7 @@ async def _render_keyframe_image(
         dest = media / f"keyframe_{label}_{out['filename']}"
         await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
         # Re-lock faces/wardrobe from cast refs — plain still_edit drifts off sheet.
-        if panels:
+        if panels and not empty_cast:
             refresh_neg = (
                 neg
                 + ", collage, contact sheet, multi-panel, split screen, grid layout, "
@@ -2692,7 +2849,7 @@ async def _render_keyframe_image(
                 comfy=comfy,
                 media=media,
                 panels=panels,
-                beat_prompt=prompt,
+                beat_prompt=f"{prompt}{count_lock}",
                 cast_sheet=cast_sheet,
                 genre=genre,
                 neg=refresh_neg,
@@ -2705,9 +2862,29 @@ async def _render_keyframe_image(
                 continuity_base=dest,
                 identity_refresh=True,
             )
-            final = media / f"keyframe_{label}_{current.name}"
-            if current.resolve() != final.resolve():
-                current.replace(final)
+            dest = media / f"keyframe_{label}_{current.name}"
+            if current.resolve() != dest.resolve():
+                current.replace(dest)
+        # Re-lock location geometry when scenery is assigned.
+        if (
+            not empty_cast
+            and scenery_ref is not None
+            and scenery_ref.is_file()
+        ):
+            locked = await _scenery_dual_ref_rewrite(
+                comfy=comfy,
+                media=media,
+                current=dest,
+                scenery_ref=scenery_ref,
+                beat_prompt=prompt,
+                neg=neg,
+                seed=seed + 7,
+                filename_prefix=f"local_video/p{project_id}_f{frame_id}_kf_{label}",
+                empty_cast=False,
+            )
+            final = media / f"keyframe_{label}_{locked.name}"
+            if locked.resolve() != final.resolve():
+                locked.replace(final)
             return final
         return dest
 
@@ -2715,12 +2892,18 @@ async def _render_keyframe_image(
         raise ValueError("edit source required")
 
     # Refresh UI contact sheet (full beat cast); generate only named characters.
-    try:
-        cast_reference_for_frame(
-            project_id, frame_id, dest=media / f"cast_ref_sheet_kf_{label}.png"
-        )
-    except KeyError:
-        pass
+    if empty_cast:
+        _clear_cast_ref_sheet(project_id, frame_id)
+    else:
+        try:
+            cast_reference_for_frame(
+                project_id, frame_id, dest=media / f"cast_ref_sheet_kf_{label}.png"
+            )
+            cast_reference_for_frame(
+                project_id, frame_id, dest=media / "cast_ref_sheet.png"
+            )
+        except KeyError:
+            pass
 
     if panels:
         only_bit = (
@@ -2751,7 +2934,7 @@ async def _render_keyframe_image(
             comfy=comfy,
             media=media,
             panels=panels,
-            beat_prompt=f"{only_bit}{prompt}",
+            beat_prompt=f"{only_bit}{prompt}{count_lock}",
             cast_sheet=cast_sheet,
             genre=genre,
             neg=neg,
@@ -2770,7 +2953,6 @@ async def _render_keyframe_image(
         return dest
 
     # No cast panels: prefer scenery plate as the keyframe when available.
-    scenery_sheet, scenery_ref = _frame_scenery_assets(project_id, frame_id)
     if scenery_ref is not None:
         env = await _render_environment_plate(
             comfy=comfy,

@@ -420,6 +420,7 @@ def create_frame(
     is_new_shot: bool = True,
     position: int | None = None,
     cast: list[dict[str, Any]] | None = None,
+    scenery: list[dict[str, Any]] | None = None,
 ) -> dict:
     """Append or insert one storyboard frame without calling the LLM."""
     return sb_svc.create_frame(
@@ -432,6 +433,7 @@ def create_frame(
         is_new_shot=is_new_shot,
         position=position,
         cast=cast,
+        scenery=scenery,
     )
 
 
@@ -457,10 +459,12 @@ def update_frame(
     keyframe_last_prompt: str | None = None,
     keyframes: list[dict[str, Any]] | None = None,
     cast: list[dict[str, Any]] | None = None,
+    scenery: list[dict[str, Any]] | None = None,
 ) -> dict:
-    """Update a storyboard frame (beat text, dialog, audio_notes, cast, keyframes).
+    """Update a storyboard frame (beat text, dialog, audio_notes, cast, scenery, keyframes).
 
     cast items: {character_id, outfit_id?}.
+    scenery items: {scenery_id, variant_id?}.
     keyframes items: {role?, t_sec?, image_prompt|prompt?, path?}.
     """
     fields = {
@@ -476,6 +480,7 @@ def update_frame(
         "keyframe_last_prompt": keyframe_last_prompt,
         "keyframes": keyframes,
         "cast": cast,
+        "scenery": scenery,
     }
     return sb_svc.update_frame(
         project_id, frame_id, **{k: v for k, v in fields.items() if v is not None}
@@ -573,9 +578,15 @@ async def create_all_stills(
 
 
 @mcp.tool()
-async def rebuild_frame_keyframe_prompts(project_id: int, frame_id: int) -> dict:
-    """LLM-plan first/middle(s)/last keyframe image prompts (≤2s spacing)."""
-    return await sb_svc.rebuild_frame_keyframe_prompts(project_id, frame_id)
+async def rebuild_frame_keyframe_prompts(
+    project_id: int,
+    frame_id: int,
+    spacing_sec: float = 5.0,
+) -> dict:
+    """LLM-plan first/middle(s)/last keyframe image prompts (~5s spacing; pass 2 for denser)."""
+    return await sb_svc.rebuild_frame_keyframe_prompts(
+        project_id, frame_id, spacing_sec=spacing_sec
+    )
 
 
 @mcp.tool()

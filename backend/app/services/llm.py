@@ -665,15 +665,24 @@ async def prompt_delta_for_continue(
     return await chat(system, user, temperature=0.3)
 
 
-def keyframe_plan_times(duration_sec: float) -> list[float]:
-    """Keyframe times so consecutive spacing is at most ~2s; always include 0 and D."""
+def keyframe_plan_times(
+    duration_sec: float, *, spacing_sec: float = 5.0
+) -> list[float]:
+    """Keyframe times with ~spacing_sec gaps; always include 0 and D.
+
+    Default spacing is ~5s (episode boards). Pass ``spacing_sec=2`` for denser
+    FLF2V-critical beats. When duration ≥ ~4s, emit at least 3 slots.
+    """
     import math
 
     d = max(0.5, float(duration_sec or 4.0))
-    n_middle = max(0, math.ceil(d / 2.0) - 1)
-    total = n_middle + 2
-    if total == 2:
-        return [0.0, round(d, 3)]
+    spacing = max(0.5, float(spacing_sec or 5.0))
+    if d < 4.0:
+        if d <= spacing:
+            return [0.0, round(d, 3)]
+        return [0.0, round(d / 2.0, 3), round(d, 3)]
+    n_intervals = max(2, math.ceil(d / spacing))
+    total = n_intervals + 1
     step = d / (total - 1)
     return [round(i * step, 3) for i in range(total)]
 
@@ -777,13 +786,15 @@ async def plan_keyframe_series(
     cast_sheet: str = "",
     share_first_from_prev: bool = False,
     empty_cast: bool = False,
+    spacing_sec: float = 5.0,
 ) -> dict[str, Any]:
-    """Plan first + optional ≤2s middles + last via per-slot LLM calls.
+    """Plan first + optional middles + last via per-slot LLM calls.
 
+    Default spacing ~5s (override with spacing_sec=2 for denser beats).
     When share_first_from_prev is True, the first slot reuses prev_last_prompt
     exactly so the opening keyframe matches the prior ending.
     """
-    times = keyframe_plan_times(duration_sec)
+    times = keyframe_plan_times(duration_sec, spacing_sec=spacing_sec)
     roles = []
     for i, _t in enumerate(times):
         if i == 0:

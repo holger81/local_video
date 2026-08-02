@@ -136,7 +136,7 @@ class StoryboardFrame(Base):
     keyframe_first_prompt: Mapped[str] = mapped_column(Text, default="")
     keyframe_mid_prompt: Mapped[str] = mapped_column(Text, default="")
     keyframe_last_prompt: Mapped[str] = mapped_column(Text, default="")
-    # Variable series: [{index, t_sec, role, image_prompt, path}] — first/last + ≤2s middles
+    # Variable series: [{index, t_sec, role, image_prompt, path}] — first/last + ~5s middles
     keyframes: Mapped[list] = mapped_column(JSON, default=list)
     # Characters in this beat: [{character_id, outfit_id|null}]
     cast: Mapped[list] = mapped_column(JSON, default=list)

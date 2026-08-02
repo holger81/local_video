@@ -343,10 +343,19 @@ async def frame_keyframes(project_id: int, frame_id: int, body: KeyframesIn | No
         raise HTTPException(500, str(e)) from e
 
 
+class RebuildPromptsIn(BaseModel):
+    spacing_sec: float = 5.0
+
+
 @router.post("/frames/{frame_id}/keyframes/rebuild-prompts")
-async def rebuild_keyframe_prompts(project_id: int, frame_id: int):
+async def rebuild_keyframe_prompts(
+    project_id: int, frame_id: int, body: RebuildPromptsIn | None = None
+):
+    body = body or RebuildPromptsIn()
     try:
-        return await sb_svc.rebuild_frame_keyframe_prompts(project_id, frame_id)
+        return await sb_svc.rebuild_frame_keyframe_prompts(
+            project_id, frame_id, spacing_sec=body.spacing_sec
+        )
     except KeyError as e:
         raise HTTPException(404, str(e)) from e
     except Exception as e:
