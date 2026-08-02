@@ -226,6 +226,141 @@ def set_outfit_reference_from_media(
     )
 
 
+# --- Scenery / locations ------------------------------------------------------
+
+
+@mcp.tool()
+def list_scenery(project_id: int) -> list:
+    """List scenery/locations for a project (appearance, variants, reference paths)."""
+    from app.services import scenery as scenery_svc
+
+    return scenery_svc.list_scenery(project_id)
+
+
+@mcp.tool()
+def create_scenery(
+    project_id: int,
+    name: str,
+    description: str = "",
+    appearance_prompt: str = "",
+    aliases: list[str] | None = None,
+    variants: list[dict[str, Any]] | None = None,
+    approved: bool = False,
+) -> dict:
+    """Create a location (e.g. 'the farm', 'inside the barn'). variants: {id?, name, prompt, reference_image_path?, is_default?}."""
+    from app.services import scenery as scenery_svc
+
+    return scenery_svc.create_scenery(
+        project_id,
+        name=name,
+        description=description,
+        appearance_prompt=appearance_prompt,
+        aliases=aliases,
+        variants=variants,
+        approved=approved,
+    )
+
+
+@mcp.tool()
+def update_scenery(
+    project_id: int,
+    scenery_id: int,
+    name: str | None = None,
+    description: str | None = None,
+    appearance_prompt: str | None = None,
+    aliases: list[str] | None = None,
+    variants: list[dict[str, Any]] | None = None,
+    position: int | None = None,
+    approved: bool | None = None,
+    reference_image_path: str | None = None,
+) -> dict:
+    """Patch a scenery row (including variants or reference_image_path)."""
+    from app.services import scenery as scenery_svc
+
+    fields = {
+        "name": name,
+        "description": description,
+        "appearance_prompt": appearance_prompt,
+        "aliases": aliases,
+        "variants": variants,
+        "position": position,
+        "approved": approved,
+        "reference_image_path": reference_image_path,
+    }
+    return scenery_svc.update_scenery(
+        project_id, scenery_id, **{k: v for k, v in fields.items() if v is not None}
+    )
+
+
+@mcp.tool()
+def delete_scenery(project_id: int, scenery_id: int) -> dict:
+    """Delete a scenery location and its reference media."""
+    from app.services import scenery as scenery_svc
+
+    return scenery_svc.delete_scenery(project_id, scenery_id)
+
+
+@mcp.tool()
+async def generate_scenery_reference(
+    project_id: int,
+    scenery_id: int,
+    instruction: str | None = None,
+) -> dict:
+    """Generate or edit the empty establishing still for a location."""
+    from app.services import scenery as scenery_svc
+
+    return await scenery_svc.generate_reference(
+        project_id, scenery_id, instruction=instruction
+    )
+
+
+@mcp.tool()
+def delete_scenery_reference(project_id: int, scenery_id: int) -> dict:
+    """Clear the scenery establishing reference image."""
+    from app.services import scenery as scenery_svc
+
+    return scenery_svc.delete_reference(project_id, scenery_id)
+
+
+@mcp.tool()
+def set_scenery_reference_from_media(
+    project_id: int, scenery_id: int, media_path: str
+) -> dict:
+    """Copy a library/media image onto a scenery as its establishing reference."""
+    from app.services import scenery as scenery_svc
+
+    return scenery_svc.set_scenery_reference_from_media(
+        project_id, scenery_id, media_path
+    )
+
+
+@mcp.tool()
+async def generate_scenery_variant_reference(
+    project_id: int,
+    scenery_id: int,
+    variant_id: str,
+    instruction: str | None = None,
+) -> dict:
+    """Generate or edit a scenery variant still (night, interior, etc.)."""
+    from app.services import scenery as scenery_svc
+
+    return await scenery_svc.generate_variant_reference(
+        project_id, scenery_id, variant_id, instruction=instruction
+    )
+
+
+@mcp.tool()
+def set_scenery_variant_reference_from_media(
+    project_id: int, scenery_id: int, variant_id: str, media_path: str
+) -> dict:
+    """Copy a library/media image onto a scenery variant reference."""
+    from app.services import scenery as scenery_svc
+
+    return scenery_svc.set_variant_reference_from_media(
+        project_id, scenery_id, variant_id, media_path
+    )
+
+
 # --- Storyboard ---------------------------------------------------------------
 
 

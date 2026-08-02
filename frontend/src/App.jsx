@@ -781,10 +781,15 @@ function ProjectPage() {
   const [charDraft, setCharDraft] = useState(null);
   const [charEditInstr, setCharEditInstr] = useState("");
   const [outfitEditInstr, setOutfitEditInstr] = useState({});
+  const [sceneryEditorId, setSceneryEditorId] = useState(null);
+  const [sceneryDraft, setSceneryDraft] = useState(null);
+  const [sceneryEditInstr, setSceneryEditInstr] = useState("");
   const [visualStyleDraft, setVisualStyleDraft] = useState("");
   const [libraryAssets, setLibraryAssets] = useState([]);
   const [libPickChar, setLibPickChar] = useState("");
   const [libPickOutfit, setLibPickOutfit] = useState({});
+  const [libPickScenery, setLibPickScenery] = useState("");
+  const [libPickVariant, setLibPickVariant] = useState({});
   const [err, setErr] = useState("");
   const [job, setJob] = useState(null);
   const [movies, setMovies] = useState([]);
@@ -939,6 +944,12 @@ function ProjectPage() {
             outfit_id: x.outfit_id || null,
           }))
         : [],
+      scenery: Array.isArray(f.scenery)
+        ? f.scenery.map((x) => ({
+            scenery_id: x.scenery_id,
+            variant_id: x.variant_id || null,
+          }))
+        : [],
       keyframes: frameKeyframes(f).map((k, i) => ({
         index: i,
         t_sec: k.t_sec,
@@ -992,6 +1003,34 @@ function ProjectPage() {
   }, [characterEditorId, project]);
 
   useEffect(() => {
+    if (!sceneryEditorId || !project) return;
+    const s = (project.scenery || []).find((x) => x.id === sceneryEditorId);
+    if (!s) {
+      setSceneryEditorId(null);
+      setSceneryDraft(null);
+      return;
+    }
+    setSceneryDraft({
+      name: s.name || "",
+      description: s.description || "",
+      appearance_prompt: s.appearance_prompt || "",
+      aliases: Array.isArray(s.aliases) ? s.aliases.join(", ") : "",
+      approved: !!s.approved,
+      reference_image_path: s.reference_image_path || null,
+      variants: Array.isArray(s.variants)
+        ? s.variants.map((v) => ({
+            id: v.id,
+            name: v.name || "",
+            prompt: v.prompt || "",
+            reference_image_path: v.reference_image_path || null,
+            is_default: !!v.is_default,
+          }))
+        : [],
+    });
+  }, [sceneryEditorId, project]);
+
+
+  useEffect(() => {
     setCharEditInstr("");
     setOutfitEditInstr({});
   }, [characterEditorId]);
@@ -1009,6 +1048,25 @@ function ProjectPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [characterEditorId, lightbox]);
+
+  useEffect(() => {
+    setSceneryEditInstr("");
+    setLibPickVariant({});
+    setLibPickScenery("");
+  }, [sceneryEditorId]);
+
+  useEffect(() => {
+    if (!sceneryEditorId) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape" && !lightbox) {
+        setSceneryEditorId(null);
+        setSceneryDraft(null);
+        setSceneryEditInstr("");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sceneryEditorId, lightbox]);
 
   if (!project) {
     return (
@@ -1093,6 +1151,10 @@ function ProjectPage() {
         cast: (editorDraft.cast || []).map((x) => ({
           character_id: x.character_id,
           outfit_id: x.outfit_id || null,
+        })),
+        scenery: (editorDraft.scenery || []).map((x) => ({
+          scenery_id: x.scenery_id,
+          variant_id: x.variant_id || null,
         })),
         keyframes: (editorDraft.keyframes || []).map((k, i) => ({
           index: i,
@@ -1606,6 +1668,72 @@ function ProjectPage() {
           })}
           {!(project.characters || []).length && (
             <p className="muted tiny">No characters yet — generate/approve a story or detect.</p>
+          )}
+        </div>
+      </section>
+
+      <section className="card-like">
+        <h2>2b. Scenery</h2>
+        <p className="muted">
+          Location ground truth for keyframes and video — e.g. &ldquo;the farm&rdquo;,
+          &ldquo;inside the barn&rdquo;. Assign to beats; refs seed environment plates.
+        </p>
+        <div className="row">
+          <button
+            type="button"
+            disabled={!!busy}
+            onClick={async () => {
+              setErr("");
+              try {
+                const s = await api(`/projects/${id}/scenery`, {
+                  method: "POST",
+                  body: JSON.stringify({
+                    name: "New location",
+                    description: "",
+                    appearance_prompt: "",
+                  }),
+                });
+                await load();
+                setSceneryEditorId(s.id);
+              } catch (ex) {
+                setErr(String(ex.message || ex));
+              }
+            }}
+          >
+            Add scenery
+          </button>
+        </div>
+        <div className="characters-grid">
+          {(project.scenery || []).map((s) => {
+            const src = mediaUrl(s.reference_image_path);
+            return (
+              <button
+                key={s.id}
+                type="button"
+                className="character-card"
+                onClick={() => setSceneryEditorId(s.id)}
+              >
+                {src ? (
+                  <img src={`${src}?t=${encodeURIComponent(s.reference_image_path)}`} alt="" />
+                ) : (
+                  <div className="character-card-placeholder">No ref</div>
+                )}
+                <div className="character-card-meta">
+                  <strong>{s.name || "Unnamed"}</strong>
+                  <span className="tiny muted">
+                    {s.approved ? "approved" : "draft"}
+                    {(s.variants || []).length
+                      ? ` · ${s.variants.length} variant${s.variants.length === 1 ? "" : "s"}`
+                      : ""}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+          {!(project.scenery || []).length && (
+            <p className="muted tiny">
+              No scenery yet — add locations like the farmhouse exterior or barn interior.
+            </p>
           )}
         </div>
       </section>
@@ -2740,6 +2868,563 @@ function ProjectPage() {
           </div>
         );
       })()}
+
+      {sceneryEditorId && sceneryDraft && (() => {
+        const s = (project.scenery || []).find((x) => x.id === sceneryEditorId);
+        if (!s) return null;
+        const refSrc = mediaUrl(sceneryDraft.reference_image_path);
+        const saveScenery = async () => {
+          setErr("");
+          try {
+            await api(`/projects/${id}/scenery/${s.id}`, {
+              method: "PATCH",
+              body: JSON.stringify({
+                name: sceneryDraft.name,
+                description: sceneryDraft.description,
+                appearance_prompt: sceneryDraft.appearance_prompt,
+                aliases: sceneryDraft.aliases
+                  .split(",")
+                  .map((t) => t.trim())
+                  .filter(Boolean),
+                approved: !!sceneryDraft.approved,
+                variants: (sceneryDraft.variants || []).map((v) => ({
+                  id: v.id,
+                  name: v.name,
+                  prompt: v.prompt,
+                  reference_image_path: v.reference_image_path || null,
+                  is_default: !!v.is_default,
+                })),
+              }),
+            });
+            await load();
+          } catch (ex) {
+            setErr(String(ex.message || ex));
+          }
+        };
+        return (
+          <div
+            className="kf-editor"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Scenery editor ${sceneryDraft.name || s.id}`}
+            onClick={() => {
+              if (!busy) {
+                setSceneryEditorId(null);
+                setSceneryDraft(null);
+                setSceneryEditInstr("");
+              }
+            }}
+          >
+            <div className="kf-editor-inner" onClick={(e) => e.stopPropagation()}>
+              <header className="kf-editor-head">
+                <div>
+                  <h2>{sceneryDraft.name || "Scenery"}</h2>
+                  <p className="muted tiny">
+                    Location ground truth for environment plates, keyframes, and video.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={!!busy}
+                  onClick={() => {
+                    setSceneryEditorId(null);
+                    setSceneryDraft(null);
+                    setSceneryEditInstr("");
+                  }}
+                >
+                  Close
+                </button>
+              </header>
+              {err && <p className="error kf-editor-status">{err}</p>}
+              {busy && !err && (
+                <p className="muted kf-editor-status">Working: {busy}…</p>
+              )}
+              <div className="kf-editor-fields">
+                <label>
+                  Name
+                  <input
+                    value={sceneryDraft.name}
+                    onChange={(e) =>
+                      setSceneryDraft((d) => ({ ...d, name: e.target.value }))
+                    }
+                    placeholder="e.g. The farm, Inside the barn"
+                  />
+                </label>
+                <label>
+                  Aliases (comma-separated)
+                  <input
+                    value={sceneryDraft.aliases}
+                    onChange={(e) =>
+                      setSceneryDraft((d) => ({ ...d, aliases: e.target.value }))
+                    }
+                    placeholder="nicknames used in the story…"
+                  />
+                </label>
+                <label>
+                  Description
+                  <textarea
+                    rows={3}
+                    value={sceneryDraft.description}
+                    onChange={(e) =>
+                      setSceneryDraft((d) => ({ ...d, description: e.target.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  Appearance prompt (ground truth)
+                  <textarea
+                    rows={4}
+                    value={sceneryDraft.appearance_prompt}
+                    onChange={(e) =>
+                      setSceneryDraft((d) => ({
+                        ...d,
+                        appearance_prompt: e.target.value,
+                      }))
+                    }
+                    placeholder="Architecture, materials, lighting, layout — keep time-of-day variants below"
+                  />
+                </label>
+                <div className="character-outfits">
+                  <div className="row" style={{ justifyContent: "space-between" }}>
+                    <h3 style={{ margin: 0 }}>Variants</h3>
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={!!busy}
+                      onClick={() =>
+                        setSceneryDraft((d) => ({
+                          ...d,
+                          variants: [
+                            ...(d.variants || []),
+                            {
+                              id: newId(),
+                              name: "New variant",
+                              prompt: "",
+                              reference_image_path: null,
+                              is_default: !(d.variants || []).length,
+                            },
+                          ],
+                        }))
+                      }
+                    >
+                      Add variant
+                    </button>
+                  </div>
+                  <p className="muted tiny">
+                    Optional looks of the same place (dusk, interior lights on, storm).
+                    Pick a variant per storyboard beat.
+                  </p>
+                  {(sceneryDraft.variants || []).map((v, vi) => {
+                    const vRef = mediaUrl(v.reference_image_path);
+                    return (
+                      <div key={v.id || vi} className="outfit-card">
+                        <div className="row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+                          <input
+                            value={v.name}
+                            disabled={!!busy}
+                            onChange={(e) =>
+                              setSceneryDraft((d) => {
+                                const variants = [...(d.variants || [])];
+                                variants[vi] = { ...variants[vi], name: e.target.value };
+                                return { ...d, variants };
+                              })
+                            }
+                            placeholder="Variant name"
+                            style={{ flex: "1 1 8rem" }}
+                          />
+                          <label className="row" style={{ alignItems: "center", gap: "0.35rem" }}>
+                            <input
+                              type="radio"
+                              name={`default-variant-${s.id}`}
+                              checked={!!v.is_default}
+                              disabled={!!busy}
+                              onChange={() =>
+                                setSceneryDraft((d) => ({
+                                  ...d,
+                                  variants: (d.variants || []).map((x, i) => ({
+                                    ...x,
+                                    is_default: i === vi,
+                                  })),
+                                }))
+                              }
+                            />
+                            Default
+                          </label>
+                          <button
+                            type="button"
+                            className="ghost danger"
+                            disabled={!!busy}
+                            onClick={() =>
+                              setSceneryDraft((d) => {
+                                const variants = (d.variants || []).filter((_, i) => i !== vi);
+                                if (variants.length && !variants.some((x) => x.is_default)) {
+                                  variants[0] = { ...variants[0], is_default: true };
+                                }
+                                return { ...d, variants };
+                              })
+                            }
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <textarea
+                          rows={2}
+                          value={v.prompt}
+                          disabled={!!busy}
+                          onChange={(e) =>
+                            setSceneryDraft((d) => {
+                              const variants = [...(d.variants || [])];
+                              variants[vi] = { ...variants[vi], prompt: e.target.value };
+                              return { ...d, variants };
+                            })
+                          }
+                          placeholder="What changes vs base: lighting, weather, interior props…"
+                        />
+                        {vRef && (
+                          <div className="media-item">
+                            <img
+                              src={`${vRef}?t=${encodeURIComponent(v.reference_image_path)}`}
+                              alt=""
+                            />
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          disabled={!!busy || !v.prompt.trim() || visualBusy === `variant-${v.id}`}
+                          onClick={async () => {
+                            setVisualBusy(`variant-${v.id}`);
+                            setErr("");
+                            try {
+                              await saveScenery();
+                              await api(
+                                `/projects/${id}/scenery/${s.id}/variants/${v.id}/reference`,
+                                { method: "POST", body: "{}" }
+                              );
+                              await load();
+                            } catch (ex) {
+                              setErr(String(ex.message || ex));
+                            } finally {
+                              setVisualBusy(null);
+                            }
+                          }}
+                        >
+                          {vRef ? "Regenerate variant look" : "Generate variant look"}
+                        </button>
+                        <label>
+                          Use library for variant
+                          <select
+                            value={libPickVariant[v.id] || ""}
+                            disabled={!!busy}
+                            onChange={(e) =>
+                              setLibPickVariant((prev) => ({
+                                ...prev,
+                                [v.id]: e.target.value,
+                              }))
+                            }
+                          >
+                            <option value="">Pick from library…</option>
+                            {libraryAssets.map((a) => (
+                              <option key={a.id} value={a.media_path}>
+                                {a.label || a.id}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <div className="row">
+                          <button
+                            type="button"
+                            className="ghost"
+                            disabled={!!busy || !(libPickVariant[v.id] || "")}
+                            onClick={async () => {
+                              const media_path = libPickVariant[v.id];
+                              if (!media_path) return;
+                              setBusy("attach variant");
+                              setErr("");
+                              try {
+                                await saveScenery();
+                                await api(
+                                  `/projects/${id}/scenery/${s.id}/variants/${v.id}/reference/from-media`,
+                                  {
+                                    method: "POST",
+                                    body: JSON.stringify({ media_path }),
+                                  }
+                                );
+                                setLibPickVariant((prev) => {
+                                  const next = { ...prev };
+                                  delete next[v.id];
+                                  return next;
+                                });
+                                await load();
+                              } catch (ex) {
+                                setErr(String(ex.message || ex));
+                              } finally {
+                                setBusy("");
+                              }
+                            }}
+                          >
+                            Set variant from library
+                          </button>
+                          <label className="ghost" style={{ cursor: "pointer" }}>
+                            Upload…
+                            <input
+                              type="file"
+                              accept="image/*"
+                              hidden
+                              disabled={!!busy}
+                              onChange={async (e) => {
+                                const file = e.target.files?.[0];
+                                e.target.value = "";
+                                if (!file) return;
+                                setBusy("upload variant");
+                                setErr("");
+                                try {
+                                  await saveScenery();
+                                  const fd = new FormData();
+                                  fd.append("file", file);
+                                  fd.append(
+                                    "label",
+                                    `${sceneryDraft.name || "scenery"} ${v.name || "variant"}`
+                                  );
+                                  const asset = await apiUpload("/library/upload", fd);
+                                  await api(
+                                    `/projects/${id}/scenery/${s.id}/variants/${v.id}/reference/from-media`,
+                                    {
+                                      method: "POST",
+                                      body: JSON.stringify({
+                                        media_path: asset.media_path,
+                                      }),
+                                    }
+                                  );
+                                  await load();
+                                } catch (ex) {
+                                  setErr(String(ex.message || ex));
+                                } finally {
+                                  setBusy("");
+                                }
+                              }}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {!(sceneryDraft.variants || []).length && (
+                    <p className="muted tiny">No variants yet — optional alternate looks.</p>
+                  )}
+                </div>
+                <label className="row" style={{ alignItems: "center", gap: "0.5rem" }}>
+                  <input
+                    type="checkbox"
+                    checked={!!sceneryDraft.approved}
+                    onChange={(e) =>
+                      setSceneryDraft((d) => ({ ...d, approved: e.target.checked }))
+                    }
+                  />
+                  Approved look
+                </label>
+                <div className="row">
+                  <button type="button" disabled={!!busy} onClick={saveScenery}>
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost danger"
+                    disabled={!!busy}
+                    onClick={async () => {
+                      if (!window.confirm(`Delete scenery “${sceneryDraft.name}”?`)) return;
+                      try {
+                        await api(`/projects/${id}/scenery/${s.id}`, {
+                          method: "DELETE",
+                        });
+                        setSceneryEditorId(null);
+                        setSceneryDraft(null);
+                        await load();
+                      } catch (ex) {
+                        setErr(String(ex.message || ex));
+                      }
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+              <div className="character-ref-block">
+                <h3>Reference still</h3>
+                {refSrc ? (
+                  <div className="media-item">
+                    <img
+                      src={`${refSrc}?t=${encodeURIComponent(sceneryDraft.reference_image_path)}`}
+                      alt=""
+                      onClick={() =>
+                        setLightbox({
+                          frameId: null,
+                          kind: "scenery",
+                          src: `${refSrc}?t=${encodeURIComponent(sceneryDraft.reference_image_path)}`,
+                          label: sceneryDraft.name,
+                        })
+                      }
+                    />
+                  </div>
+                ) : (
+                  <p className="muted tiny">No reference image yet.</p>
+                )}
+                <div className="row">
+                  <button
+                    type="button"
+                    disabled={!!busy || visualBusy === `scenery-${s.id}`}
+                    onClick={async () => {
+                      setVisualBusy(`scenery-${s.id}`);
+                      setErr("");
+                      try {
+                        await saveScenery();
+                        await api(`/projects/${id}/scenery/${s.id}/reference`, {
+                          method: "POST",
+                          body: JSON.stringify({}),
+                        });
+                        await load();
+                      } catch (ex) {
+                        setErr(String(ex.message || ex));
+                      } finally {
+                        setVisualBusy(null);
+                      }
+                    }}
+                  >
+                    {refSrc ? "Regenerate reference" : "Generate reference"}
+                  </button>
+                  {refSrc && (
+                    <button
+                      type="button"
+                      className="ghost danger"
+                      disabled={!!busy}
+                      onClick={async () => {
+                        try {
+                          await api(`/projects/${id}/scenery/${s.id}/reference`, {
+                            method: "DELETE",
+                          });
+                          await load();
+                        } catch (ex) {
+                          setErr(String(ex.message || ex));
+                        }
+                      }}
+                    >
+                      Clear reference
+                    </button>
+                  )}
+                </div>
+                <label>
+                  Use library image
+                  <select
+                    value={libPickScenery}
+                    disabled={!!busy}
+                    onChange={(e) => setLibPickScenery(e.target.value)}
+                  >
+                    <option value="">Pick from library…</option>
+                    {libraryAssets.map((a) => (
+                      <option key={a.id} value={a.media_path}>
+                        {a.label || a.id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="row">
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={!!busy || !libPickScenery}
+                    onClick={async () => {
+                      setBusy("attach library scenery");
+                      setErr("");
+                      try {
+                        await api(
+                          `/projects/${id}/scenery/${s.id}/reference/from-media`,
+                          {
+                            method: "POST",
+                            body: JSON.stringify({ media_path: libPickScenery }),
+                          }
+                        );
+                        setLibPickScenery("");
+                        await load();
+                      } catch (ex) {
+                        setErr(String(ex.message || ex));
+                      } finally {
+                        setBusy("");
+                      }
+                    }}
+                  >
+                    Set as reference
+                  </button>
+                  <label className="ghost" style={{ cursor: "pointer" }}>
+                    Upload…
+                    <input
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      disabled={!!busy}
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (!file) return;
+                        setBusy("upload scenery");
+                        setErr("");
+                        try {
+                          const fd = new FormData();
+                          fd.append("file", file);
+                          fd.append("label", `${sceneryDraft.name || "scenery"} ref`);
+                          const asset = await apiUpload("/library/upload", fd);
+                          await api(
+                            `/projects/${id}/scenery/${s.id}/reference/from-media`,
+                            {
+                              method: "POST",
+                              body: JSON.stringify({ media_path: asset.media_path }),
+                            }
+                          );
+                          await load();
+                        } catch (ex) {
+                          setErr(String(ex.message || ex));
+                        } finally {
+                          setBusy("");
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
+                <label>
+                  Edit instruction
+                  <input
+                    value={sceneryEditInstr}
+                    onChange={(e) => setSceneryEditInstr(e.target.value)}
+                    placeholder="e.g. add a porch light, clearer barn doors…"
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={!!busy || !sceneryEditInstr.trim() || !refSrc}
+                  onClick={async () => {
+                    setVisualBusy(`scenery-${s.id}`);
+                    setErr("");
+                    try {
+                      await api(`/projects/${id}/scenery/${s.id}/reference`, {
+                        method: "POST",
+                        body: JSON.stringify({ instruction: sceneryEditInstr.trim() }),
+                      });
+                      setSceneryEditInstr("");
+                      await load();
+                    } catch (ex) {
+                      setErr(String(ex.message || ex));
+                    } finally {
+                      setVisualBusy(null);
+                    }
+                  }}
+                >
+                  Apply edit to reference
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {keyframeEditorId && editorDraft && (() => {
         const f = (project.frames || []).find((x) => x.id === keyframeEditorId);
         if (!f) return null;
@@ -2880,10 +3565,85 @@ function ProjectPage() {
                 </div>
 
                 <div className="scene-cast">
+                  <h3>Scenery</h3>
+                  <p className="muted tiny">
+                    Location reference for this beat (environment plate / video lock).
+                    Empty = no scenery lock.
+                  </p>
+                  {(project.scenery || []).length === 0 ? (
+                    <p className="muted tiny">No scenery yet — add locations in Scenery.</p>
+                  ) : (
+                    (project.scenery || []).map((loc) => {
+                      const entry = (editorDraft.scenery || []).find(
+                        (x) => x.scenery_id === loc.id
+                      );
+                      const on = !!entry;
+                      const variants = Array.isArray(loc.variants) ? loc.variants : [];
+                      return (
+                        <div key={loc.id} className="scene-cast-row">
+                          <label className="row" style={{ alignItems: "center", gap: "0.4rem" }}>
+                            <input
+                              type="checkbox"
+                              checked={on}
+                              disabled={!!busy}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setEditorDraft((d) => {
+                                  let scenery = [...(d.scenery || [])].filter(
+                                    (x) => x.scenery_id !== loc.id
+                                  );
+                                  if (checked) {
+                                    // Prefer a single location per beat
+                                    scenery = [];
+                                    const def =
+                                      variants.find((v) => v.is_default) || variants[0];
+                                    scenery.push({
+                                      scenery_id: loc.id,
+                                      variant_id: def?.id || null,
+                                    });
+                                  }
+                                  return { ...d, scenery };
+                                });
+                              }}
+                            />
+                            <strong>{loc.name}</strong>
+                          </label>
+                          {on && variants.length > 0 && (
+                            <select
+                              disabled={!!busy}
+                              value={entry?.variant_id || ""}
+                              onChange={(e) => {
+                                const vid = e.target.value || null;
+                                setEditorDraft((d) => ({
+                                  ...d,
+                                  scenery: (d.scenery || []).map((x) =>
+                                    x.scenery_id === loc.id
+                                      ? { ...x, variant_id: vid }
+                                      : x
+                                  ),
+                                }));
+                              }}
+                            >
+                              <option value="">Base location look</option>
+                              {variants.map((v) => (
+                                <option key={v.id} value={v.id}>
+                                  {v.name}
+                                  {v.is_default ? " (default)" : ""}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                <div className="scene-cast">
                   <h3>Cast &amp; wardrobe</h3>
                   <p className="muted tiny">
-                    Select who appears in this beat and which outfit. Empty = full cast
-                    defaults.
+                    Select who appears in this beat and which outfit. Empty = no people
+                    (establishing / environment-only).
                   </p>
                   {(project.characters || []).length === 0 ? (
                     <p className="muted tiny">No characters yet — add them in the cast board.</p>

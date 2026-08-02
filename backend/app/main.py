@@ -5,7 +5,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import characters, images, jobs, library, projects, story, storyboard
+from app.api import (
+    characters,
+    images,
+    jobs,
+    library,
+    projects,
+    scenery,
+    story,
+    storyboard,
+)
 from app.api import settings as settings_api
 from app.config import get_settings
 from app.db.models import init_db
@@ -25,6 +34,7 @@ app.include_router(projects.router, prefix="/api")
 app.include_router(story.router, prefix="/api")
 app.include_router(storyboard.router, prefix="/api")
 app.include_router(characters.router, prefix="/api")
+app.include_router(scenery.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
 app.include_router(settings_api.router, prefix="/api")
 app.include_router(library.router, prefix="/api")

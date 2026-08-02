@@ -55,6 +55,9 @@ class Project(Base):
     characters: Mapped[list["Character"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="Character.position"
     )
+    scenery: Mapped[list["Scenery"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", order_by="Scenery.position"
+    )
     jobs: Mapped[list["RenderJob"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
@@ -86,6 +89,32 @@ class Character(Base):
     project: Mapped[Project] = relationship(back_populates="characters")
 
 
+class Scenery(Base):
+    """Ground-truth location / set used as visual reference for beats and video."""
+
+    __tablename__ = "scenery"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    name: Mapped[str] = mapped_column(String(128), default="")
+    aliases: Mapped[list] = mapped_column(JSON, default=list)
+    description: Mapped[str] = mapped_column(Text, default="")
+    # Look of the place (architecture, props, lighting, time of day)
+    appearance_prompt: Mapped[str] = mapped_column(Text, default="")
+    # Optional variants: [{id, name, prompt, reference_image_path, is_default}]
+    # e.g. "golden hour exterior", "night", "interior wide"
+    variants: Mapped[list] = mapped_column(JSON, default=list)
+    reference_image_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    project: Mapped[Project] = relationship(back_populates="scenery")
+
+
 class StoryboardFrame(Base):
     __tablename__ = "storyboard_frames"
 
@@ -111,6 +140,8 @@ class StoryboardFrame(Base):
     keyframes: Mapped[list] = mapped_column(JSON, default=list)
     # Characters in this beat: [{character_id, outfit_id|null}]
     cast: Mapped[list] = mapped_column(JSON, default=list)
+    # Locations in this beat: [{scenery_id, variant_id|null}] — usually 0–1
+    scenery: Mapped[list] = mapped_column(JSON, default=list)
     preview_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     duration_hint_sec: Mapped[float] = mapped_column(Float, default=4.0)
     is_new_shot: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -235,6 +266,7 @@ def _migrate_sqlite(engine) -> None:
             "keyframe_last_prompt": "ALTER TABLE storyboard_frames ADD COLUMN keyframe_last_prompt TEXT DEFAULT ''",
             "keyframes": "ALTER TABLE storyboard_frames ADD COLUMN keyframes JSON",
             "cast": "ALTER TABLE storyboard_frames ADD COLUMN cast JSON",
+            "scenery": "ALTER TABLE storyboard_frames ADD COLUMN scenery JSON",
             "dialog": "ALTER TABLE storyboard_frames ADD COLUMN dialog TEXT DEFAULT ''",
             "audio_notes": "ALTER TABLE storyboard_frames ADD COLUMN audio_notes TEXT DEFAULT ''",
         }
@@ -305,6 +337,25 @@ def _migrate_sqlite(engine) -> None:
                 reference_image_path VARCHAR(512),
                 intro_frame_id INTEGER,
                 auto_detected BOOLEAN DEFAULT 0,
+                approved BOOLEAN DEFAULT 0,
+                created_at DATETIME,
+                updated_at DATETIME,
+                FOREIGN KEY(project_id) REFERENCES projects (id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS scenery (
+                id INTEGER NOT NULL PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                position INTEGER DEFAULT 0,
+                name VARCHAR(128) DEFAULT '',
+                aliases JSON,
+                description TEXT DEFAULT '',
+                appearance_prompt TEXT DEFAULT '',
+                variants JSON,
+                reference_image_path VARCHAR(512),
                 approved BOOLEAN DEFAULT 0,
                 created_at DATETIME,
                 updated_at DATETIME,

@@ -75,9 +75,13 @@ def get_project(project_id: int) -> dict[str, Any]:
         data = _project_dict(p)
         data["frames"] = [_frame_dict_from_orm(f) for f in p.frames]
         from app.services.characters import _character_dict
+        from app.services.scenery import _scenery_dict
 
         data["characters"] = [
             _character_dict(c) for c in sorted(p.characters, key=lambda x: x.position)
+        ]
+        data["scenery"] = [
+            _scenery_dict(s) for s in sorted(p.scenery, key=lambda x: x.position)
         ]
         return data
 

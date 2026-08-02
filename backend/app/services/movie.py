@@ -133,10 +133,14 @@ async def start_movie(
         base = prompt_base or p.premise or ""
         try:
             from app.services.characters import cast_sheet_for_project
+            from app.services.scenery import scenery_sheet_for_project
 
             cast = cast_sheet_for_project(project_id)
             if cast:
                 base = f"{base}\n{cast}".strip() if base else cast
+            scenery = scenery_sheet_for_project(project_id)
+            if scenery:
+                base = f"{base}\n{scenery}".strip() if base else scenery
         except Exception:
             pass
         neg = negative_prompt or (

@@ -175,6 +175,7 @@ def _frame_dict(f: StoryboardFrame) -> dict[str, Any]:
         "duration_hint_sec": f.duration_hint_sec,
         "is_new_shot": f.is_new_shot,
         "cast": list(getattr(f, "cast", None) or []),
+        "scenery": list(getattr(f, "scenery", None) or []),
     }
 
 
@@ -536,6 +537,7 @@ def create_frame(
     is_new_shot: bool = True,
     position: int | None = None,
     cast: list[dict[str, Any]] | None = None,
+    scenery: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Append (or insert) one storyboard frame without calling the LLM."""
     with SessionLocal() as db:
@@ -566,6 +568,22 @@ def create_frame(
                         "outfit_id": str(oid) if oid else None,
                     }
                 )
+        scenery_val: list[dict[str, Any]] = []
+        if scenery:
+            for item in scenery:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    sid = int(item.get("scenery_id"))
+                except (TypeError, ValueError):
+                    continue
+                vid = item.get("variant_id")
+                scenery_val.append(
+                    {
+                        "scenery_id": sid,
+                        "variant_id": str(vid) if vid else None,
+                    }
+                )
         f = StoryboardFrame(
             project_id=project_id,
             position=pos,
@@ -576,6 +594,7 @@ def create_frame(
             duration_hint_sec=float(duration_hint_sec or 4.0),
             is_new_shot=bool(is_new_shot),
             cast=cast_val,
+            scenery=scenery_val,
             keyframes=[],
         )
         p.storyboard_approved = False
@@ -611,6 +630,21 @@ def replace_storyboard(
                     "outfit_id": str(oid) if oid else None,
                 }
             )
+        scenery_val: list[dict[str, Any]] = []
+        for loc in item.get("scenery") or []:
+            if not isinstance(loc, dict):
+                continue
+            try:
+                sid = int(loc.get("scenery_id"))
+            except (TypeError, ValueError):
+                continue
+            vid = loc.get("variant_id")
+            scenery_val.append(
+                {
+                    "scenery_id": sid,
+                    "variant_id": str(vid) if vid else None,
+                }
+            )
         normalized.append(
             {
                 "position": i,
@@ -623,6 +657,7 @@ def replace_storyboard(
                 "duration_hint_sec": float(item.get("duration_hint_sec") or 4.0),
                 "is_new_shot": bool(item.get("is_new_shot", True)),
                 "cast": cast_val,
+                "scenery": scenery_val,
             }
         )
     with SessionLocal() as db:
@@ -645,6 +680,7 @@ def replace_storyboard(
                     duration_hint_sec=item["duration_hint_sec"],
                     is_new_shot=item["is_new_shot"],
                     cast=item["cast"],
+                    scenery=item["scenery"],
                     keyframes=[],
                 )
             )
@@ -717,6 +753,7 @@ def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any
         "keyframe_last_prompt",
         "keyframes",
         "cast",
+        "scenery",
     }
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
@@ -744,6 +781,25 @@ def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any
                         }
                     )
                 f.cast = normalized
+            elif k == "scenery":
+                if not isinstance(v, list):
+                    raise ValueError("scenery must be a list")
+                normalized = []
+                for item in v:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        sid = int(item.get("scenery_id"))
+                    except (TypeError, ValueError):
+                        continue
+                    vid = item.get("variant_id")
+                    normalized.append(
+                        {
+                            "scenery_id": sid,
+                            "variant_id": str(vid) if vid else None,
+                        }
+                    )
+                f.scenery = normalized
             elif k == "keyframes":
                 if not isinstance(v, list):
                     raise ValueError("keyframes must be a list")
@@ -1001,15 +1057,28 @@ async def _render_environment_plate(
     neg: str,
     seed: int,
     filename_prefix: str,
+    scenery_ref: Path | None = None,
+    scenery_sheet: str = "",
 ) -> Path:
-    """People-free still matching the beat's setting — base for cast inserts."""
+    """People-free still matching the beat's setting — base for cast inserts.
+
+    When ``scenery_ref`` is set, scale that location still onto the canvas (ground
+    truth for farm / barn / etc.). Otherwise T2I an empty establishing plate.
+    """
+    from app.services.characters import prepare_single_ref_canvas
     from app.services.llm import style_lock_phrase, style_negatives
+
+    if scenery_ref is not None and scenery_ref.is_file():
+        dest = media / f"env_plate_scenery_{scenery_ref.stem}.png"
+        return prepare_single_ref_canvas(scenery_ref, dest, width=1024, height=576)
 
     env_body = _environment_scene_prompt(prompt, cast_names)
     # Avoid compose_keyframe_prompt here — genre "Animated puppets" + leftover
     # wardrobe cues invent mascots/figures. Keep it a pure establishing plate.
+    scenery_bit = f" {(scenery_sheet or '').strip()}" if (scenery_sheet or "").strip() else ""
     composed = (
-        f"{style_lock_phrase(genre)}. Establishing location plate only: {env_body}. "
+        f"{style_lock_phrase(genre)}. Establishing location plate only: {env_body}."
+        f"{scenery_bit} "
         "Empty scene — no people, no children, no characters, no faces, no silhouettes, "
         "no animals, no teddy bears, no mascots, no anthropomorphic creatures; "
         "architecture, porch, barn, sunflowers, and landscape only."
@@ -1042,6 +1111,23 @@ async def _render_environment_plate(
     dest = media / f"env_plate_{out['filename']}"
     await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
     return dest
+
+
+def _frame_scenery_assets(
+    project_id: int, frame_id: int
+) -> tuple[str, Path | None]:
+    """Return (scenery_sheet_text, scenery_reference_path) for a beat."""
+    try:
+        from app.services.scenery import (
+            resolve_scenery_reference_for_frame,
+            scenery_sheet_for_frame,
+        )
+
+        sheet = scenery_sheet_for_frame(project_id, frame_id)
+        ref = resolve_scenery_reference_for_frame(project_id, frame_id)
+        return sheet, ref
+    except KeyError:
+        return "", None
 
 
 def build_visual_prompt(
@@ -1255,6 +1341,8 @@ async def _iterative_cast_lock_render(
     height: int = 576,
     steps: int = 4,
     cfg: float = 5.0,
+    scenery_ref: Path | None = None,
+    scenery_sheet: str = "",
 ) -> tuple[Path, str]:
     """Lock cast one identity at a time via dual ReferenceLatent (still_edit_dual).
 
@@ -1279,6 +1367,8 @@ async def _iterative_cast_lock_render(
             neg=neg,
             seed=seed,
             filename_prefix=f"{filename_prefix}_env",
+            scenery_ref=scenery_ref,
+            scenery_sheet=scenery_sheet,
         )
 
     dual_neg = (
@@ -1532,6 +1622,9 @@ async def generate_frame_visual(
             if continuity_base is None:
                 # Fresh casted still: environment plate + insert each ref (stronger
                 # identity than restaging from a portrait alone).
+                scenery_sheet, scenery_ref = _frame_scenery_assets(
+                    project_id, frame_id
+                )
                 insert_base = await _render_environment_plate(
                     comfy=comfy,
                     media=media,
@@ -1541,8 +1634,12 @@ async def generate_frame_visual(
                     neg=neg,
                     seed=seed,
                     filename_prefix=prefix,
+                    scenery_ref=scenery_ref,
+                    scenery_sheet=scenery_sheet,
                 )
                 insert_mode = True
+            else:
+                scenery_sheet, scenery_ref = "", None
             current, prompt_id = await _iterative_cast_lock_render(
                 comfy=comfy,
                 media=media,
@@ -1557,6 +1654,8 @@ async def generate_frame_visual(
                 wardrobe_prompt_by_name=wardrobe_prompt_by_name,
                 continuity_base=insert_base,
                 insert_into_scene=insert_mode,
+                scenery_ref=scenery_ref,
+                scenery_sheet=scenery_sheet,
             )
             with SessionLocal() as db:
                 fr = db.get(StoryboardFrame, frame_id)
@@ -1579,6 +1678,45 @@ async def generate_frame_visual(
                 "prompt_id": prompt_id,
                 "cast_lock_passes": len(panels),
             }
+
+        # No cast panels: lock location from scenery ref when present.
+        scenery_sheet, scenery_ref = _frame_scenery_assets(project_id, frame_id)
+        if scenery_ref is not None and (fresh or continuity_base is None):
+            current = await _render_environment_plate(
+                comfy=comfy,
+                media=media,
+                prompt=frame_prompt,
+                cast_names=[],
+                genre=genre,
+                neg=neg,
+                seed=seed,
+                filename_prefix=prefix,
+                scenery_ref=scenery_ref,
+                scenery_sheet=scenery_sheet,
+            )
+            with SessionLocal() as db:
+                fr = db.get(StoryboardFrame, frame_id)
+                assert fr
+                old = fr.still_path
+                fr.still_path = str(current)
+                db.commit()
+            if old:
+                try:
+                    prev = _resolve_media_file(str(old))
+                    if prev.resolve() != current.resolve() and prev.is_file():
+                        prev.unlink()
+                except (FileNotFoundError, ValueError, OSError):
+                    pass
+            return {
+                "frame_id": frame_id,
+                "kind": kind,
+                "still_path": str(current),
+                "preview_path": None,
+                "prompt_id": None,
+                "scenery_locked": True,
+            }
+        if scenery_sheet:
+            prompt = f"{prompt} {scenery_sheet}"
 
         workflow_id = workflow_id or "still_hero"
         graph = apply_params(
@@ -2596,6 +2734,7 @@ async def _render_keyframe_image(
         )
         # Fresh multi/single cast: build an empty environment plate, then INSERT
         # each cast ref. Restaging from a portrait alone loses eye color / wardrobe.
+        scenery_sheet, scenery_ref = _frame_scenery_assets(project_id, frame_id)
         env = await _render_environment_plate(
             comfy=comfy,
             media=media,
@@ -2605,6 +2744,8 @@ async def _render_keyframe_image(
             neg=neg,
             seed=seed,
             filename_prefix=f"local_video/p{project_id}_f{frame_id}_kf_{label}",
+            scenery_ref=scenery_ref,
+            scenery_sheet=scenery_sheet,
         )
         current, _pid = await _iterative_cast_lock_render(
             comfy=comfy,
@@ -2620,11 +2761,35 @@ async def _render_keyframe_image(
             wardrobe_prompt_by_name=wardrobe_prompt_by_name,
             continuity_base=env,
             insert_into_scene=True,
+            scenery_ref=scenery_ref,
+            scenery_sheet=scenery_sheet,
         )
         dest = media / f"keyframe_{label}_{current.name}"
         if current.resolve() != dest.resolve():
             current.replace(dest)
         return dest
+
+    # No cast panels: prefer scenery plate as the keyframe when available.
+    scenery_sheet, scenery_ref = _frame_scenery_assets(project_id, frame_id)
+    if scenery_ref is not None:
+        env = await _render_environment_plate(
+            comfy=comfy,
+            media=media,
+            prompt=prompt,
+            cast_names=[],
+            genre=genre,
+            neg=neg,
+            seed=seed,
+            filename_prefix=f"local_video/p{project_id}_f{frame_id}_kf_{label}",
+            scenery_ref=scenery_ref,
+            scenery_sheet=scenery_sheet,
+        )
+        dest = media / f"keyframe_{label}_{env.name}"
+        if env.resolve() != dest.resolve():
+            env.replace(dest)
+        return dest
+    if scenery_sheet:
+        composed = f"{composed} {scenery_sheet}"
 
     graph = apply_params(
         "still_hero",

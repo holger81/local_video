@@ -22,6 +22,7 @@ class FrameCreate(BaseModel):
     is_new_shot: bool = True
     position: int | None = None
     cast: list | None = None
+    scenery: list | None = None
 
 
 class FrameUpdate(BaseModel):
@@ -37,6 +38,7 @@ class FrameUpdate(BaseModel):
     keyframe_last_prompt: str | None = None
     keyframes: list | None = None
     cast: list | None = None
+    scenery: list | None = None
 
 
 class ReplaceBoardIn(BaseModel):
