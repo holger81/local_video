@@ -68,13 +68,12 @@
     }
   },
   "32": {
-    "class_type": "UNETLoader",
+    "class_type": "UnetLoaderGGUF",
     "inputs": {
-      "unet_name": "flux2_dev_fp8mixed.safetensors",
-      "weight_dtype": "default"
+      "unet_name": "flux2-dev-Q6_K.gguf"
     },
     "_meta": {
-      "title": "Load Diffusion Model (UNET)"
+      "title": "UNet Loader (GGUF)"
     }
   },
   "40": {
@@ -282,7 +281,7 @@
   "78": {
     "class_type": "SaveImage",
     "inputs": {
-      "filename_prefix": "local_video/still_edit_dual",
+      "filename_prefix": "local_video/still_edit_flux2_gguf",
       "images": [
         "77",
         0

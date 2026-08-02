@@ -1,0 +1,17 @@
+workflow: still_edit_dual_klein.json
+description: >
+  ARCHIVED: Dual ReferenceLatent edit (Flux.2 Klein 9B): image 1 = scene, image 2 = cast/character.
+  Prefer short positives that end with "Do not change anything else in the image."
+model_files:
+  - models/diffusion_models/flux-2-klein-base-9b-fp8.safetensors
+  - models/text_encoders/qwen_3_8b_fp8mixed.safetensors
+  - models/vae/full_encoder_small_decoder.safetensors
+fields:
+  start_image: {node: "76", input: image}
+  ref_image: {node: "81", input: image}
+  positive_prompt: {node: "92:113", input: text}
+  negative_prompt: {node: "92:87", input: text}
+  seed: {node: "92:105", input: noise_seed}
+  steps: {node: "92:115", input: steps}
+  cfg: {node: "92:114", input: cfg}
+  filename_prefix: {node: "94", input: filename_prefix}

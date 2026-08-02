@@ -1,10 +1,9 @@
-workflow: still_edit_dual.json
+workflow: still_edit_flux2_gguf.json
 description: >
-  Dual ReferenceLatent edit (Flux.2 Dev FP8): image 1 = scene, image 2 = cast/location.
-  Uses UNETLoader + flux2_dev_fp8mixed (not GGUF). Prefer short positives that end with
-  "Do not change anything else in the image." Negative prompts are ignored (BasicGuider).
+  Dual ReferenceLatent edit (Flux.2 Dev GGUF): same topology as still_edit_dual but
+  UnetLoaderGGUF + flux2-dev-Q6_K.gguf. Requires ComfyUI-GGUF custom node.
 model_files:
-  - models/diffusion_models/flux2_dev_fp8mixed.safetensors
+  - models/unet/flux2-dev-Q6_K.gguf
   - models/text_encoders/mistral_3_small_flux2_fp8.safetensors
   - models/vae/flux2-vae.safetensors
 fields:
@@ -13,7 +12,6 @@ fields:
   positive_prompt: {node: "40", input: text}
   seed: {node: "74", input: noise_seed}
   steps: {node: "72", input: steps}
-  # Legacy callers pass cfg; Flux.2 Dev uses FluxGuidance.guidance
   guidance: {node: "41", input: guidance}
   cfg: {node: "41", input: guidance}
   width: {node: "68", input: value}

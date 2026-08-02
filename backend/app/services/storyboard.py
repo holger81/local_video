@@ -1214,10 +1214,9 @@ async def _scenery_dual_ref_rewrite(
         "still_edit_dual",
         {
             "positive_prompt": positive,
-            "negative_prompt": dual_neg,
             "seed": seed,
-            "steps": 4,
-            "cfg": 5.0,
+            "steps": 20,
+            "cfg": 4.0,
             "filename_prefix": f"{filename_prefix}_scenery",
         },
         uploaded_images={"start_image": scene_up, "ref_image": loc_up},
@@ -1430,6 +1429,91 @@ def _salvage_pair_sheet_leak(
     return dest
 
 
+_MULTI_REF_MAX_CAST = 3  # start_image + up to 3 cast refs on still_edit_flux2_multi
+
+
+async def _multi_ref_cast_lock_render(
+    *,
+    comfy: ComfyUIClient,
+    media: Path,
+    panels: list[tuple[str, Path, bool]],
+    beat_prompt: str,
+    seed: int,
+    filename_prefix: str,
+    wardrobe_prompt_by_name: dict[str, str],
+    continuity_base: Path,
+    identity_refresh: bool = False,
+    steps: int = 20,
+    guidance: float = 4.0,
+) -> tuple[Path, str]:
+    """One-shot Flux.2 Dev multi-ref lock: scene + up to 3 cast reference images."""
+    use = panels[:_MULTI_REF_MAX_CAST]
+    if not use:
+        raise ValueError("multi-ref cast lock requires at least one cast panel")
+
+    names: list[str] = []
+    bits: list[str] = []
+    for i, (label, _path, _approved) in enumerate(use):
+        name = (label.split("/")[0].strip() or label).strip()
+        names.append(name)
+        img_n = i + 2  # image 1 = scene
+        ward = (wardrobe_prompt_by_name.get(name.lower()) or "").strip()
+        look = f" {name} must match exactly: {ward}." if ward else ""
+        if identity_refresh:
+            bits.append(
+                f"REWRITE {name} in image 1 to match image {img_n} exactly for all "
+                f"features of {name}.{look}"
+            )
+        else:
+            bits.append(
+                f"INSERT {name} from image {img_n} into the scene in image 1. "
+                f"Match image {img_n} exactly for all features of {name}.{look}"
+            )
+
+    pose = _truncate((beat_prompt or "").strip(), 200)
+    count = _cast_count_lock(names)
+    verb = "REWRITE" if identity_refresh else "INSERT"
+    body = (
+        f"Using image 1 as the scene. {verb} the named cast from their reference "
+        f"images into one coherent frame. {' '.join(bits)}"
+    )
+    if pose:
+        body = f"{body} Beat cue: {pose}."
+    if count:
+        body = f"{body}{count}"
+    positive = f"{body} {_EDIT_CLOSE}"
+
+    scene_up = await comfy.upload_image(continuity_base)
+    uploads: dict[str, str] = {"start_image": scene_up}
+    for i, (_label, path, _approved) in enumerate(use):
+        key = f"ref_image_{i + 2}"
+        uploads[key] = await comfy.upload_image(path)
+    # Fill unused multi slots with the scene so ReferenceLatent chain stays valid.
+    for i in range(len(use), _MULTI_REF_MAX_CAST):
+        uploads[f"ref_image_{i + 2}"] = scene_up
+
+    graph = apply_params(
+        "still_edit_flux2_multi",
+        {
+            "positive_prompt": positive,
+            "seed": seed,
+            "steps": steps,
+            "cfg": guidance,
+            "filename_prefix": f"{filename_prefix}_multi",
+        },
+        uploaded_images=uploads,
+    )
+    prompt_id = await comfy.queue_prompt(graph)
+    history = await comfy.wait_for_prompt(prompt_id)
+    outs = comfy.collect_outputs(history)
+    if not outs:
+        raise RuntimeError("ComfyUI produced no outputs for multi-ref cast lock")
+    out = outs[0]
+    dest = media / f"cast_lock_multi_{out['filename']}"
+    await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+    return dest, prompt_id
+
+
 async def _iterative_cast_lock_render(
     *,
     comfy: ComfyUIClient,
@@ -1448,19 +1532,21 @@ async def _iterative_cast_lock_render(
     identity_refresh: bool = False,
     width: int = 1024,
     height: int = 576,
-    steps: int = 4,
-    cfg: float = 5.0,
+    steps: int = 20,
+    cfg: float = 4.0,
     scenery_ref: Path | None = None,
     scenery_sheet: str = "",
 ) -> tuple[Path, str]:
-    """Lock cast one identity at a time via dual ReferenceLatent (still_edit_dual).
+    """Lock cast via Flux.2 Dev ReferenceLatent (still_edit_dual / multi).
 
-    Image 1 = scene, image 2 = character outfit/portrait. Flux.2 Klein 9B with short
-    positives that end with ``Do not change anything else in the image.``
-    Pair-sheet / leak-salvage path is no longer used for cast lock.
+    Image 1 = scene, further images = character outfit/portrait refs. Prefer a
+    one-shot multi-ref pass when 2+ cast panels fit; otherwise dual-ref per identity.
+    Positives end with ``Do not change anything else in the image.``
     """
+    from app.services.workflows import WorkflowError
+
     # Dual-ref scales from the scene image; cast_sheet text is optional (image 2 locks look).
-    _ = width, height, wardrobe_by_name, cast_sheet, insert_into_scene
+    _ = width, height, wardrobe_by_name, cast_sheet, insert_into_scene, neg
     cast_names = [(lab.split("/")[0].strip() or lab).strip() for lab, _p, _a in panels]
     cast_count = len(cast_names)
     current: Path | None = continuity_base
@@ -1480,11 +1566,26 @@ async def _iterative_cast_lock_render(
             scenery_sheet=scenery_sheet,
         )
 
-    dual_neg = (
-        (neg or "").strip()
-        + ", split screen, side by side, diptych, contact sheet, collage, "
-        "studio backdrop, extra person, crowd, comic panel"
-    ).strip(", ")
+    # Prefer one-shot multi-ref when locking several identities together.
+    if cast_count >= 2 and cast_count <= _MULTI_REF_MAX_CAST:
+        try:
+            assert current is not None
+            return await _multi_ref_cast_lock_render(
+                comfy=comfy,
+                media=media,
+                panels=panels,
+                beat_prompt=beat_prompt,
+                seed=seed,
+                filename_prefix=filename_prefix,
+                wardrobe_prompt_by_name=wardrobe_prompt_by_name,
+                continuity_base=current,
+                identity_refresh=identity_refresh,
+                steps=steps,
+                guidance=cfg,
+            )
+        except (WorkflowError, FileNotFoundError, KeyError, RuntimeError):
+            # Fall back to iterative dual-ref if multi graph/models unavailable.
+            pass
 
     def _pose_bit(name: str) -> str:
         bit = _truncate((beat_prompt or "").strip(), 160)
@@ -1535,7 +1636,6 @@ async def _iterative_cast_lock_render(
             "still_edit_dual",
             {
                 "positive_prompt": positive,
-                "negative_prompt": dual_neg,
                 "seed": seed + i * 17,
                 "steps": steps,
                 "cfg": cfg,

@@ -1,19 +1,22 @@
-workflow: still_edit_dual.json
+workflow: still_edit_flux2_multi.json
 description: >
-  Dual ReferenceLatent edit (Flux.2 Dev FP8): image 1 = scene, image 2 = cast/location.
-  Uses UNETLoader + flux2_dev_fp8mixed (not GGUF). Prefer short positives that end with
-  "Do not change anything else in the image." Negative prompts are ignored (BasicGuider).
+  Flux.2 Dev FP8 multi-reference edit (up to 4 images). Image 1 = scene/start;
+  images 2–4 = additional refs (cast, props, etc.). Unused ref slots should be
+  filled with the start image. Negative prompts ignored (BasicGuider).
 model_files:
   - models/diffusion_models/flux2_dev_fp8mixed.safetensors
   - models/text_encoders/mistral_3_small_flux2_fp8.safetensors
   - models/vae/flux2-vae.safetensors
 fields:
   start_image: {node: "10", input: image}
+  ref_image_2: {node: "11", input: image}
+  ref_image_3: {node: "12", input: image}
+  ref_image_4: {node: "13", input: image}
+  # Aliases for dual-style callers
   ref_image: {node: "11", input: image}
   positive_prompt: {node: "40", input: text}
   seed: {node: "74", input: noise_seed}
   steps: {node: "72", input: steps}
-  # Legacy callers pass cfg; Flux.2 Dev uses FluxGuidance.guidance
   guidance: {node: "41", input: guidance}
   cfg: {node: "41", input: guidance}
   width: {node: "68", input: value}

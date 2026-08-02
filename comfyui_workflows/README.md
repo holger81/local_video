@@ -67,6 +67,8 @@ Trained bucket: **768×448**, **121** frames, **24** fps. Studio movie/agent doe
    - `import/ltx2_*.json` — LTX-2 (19B) UI blueprints
    - `import/ltx23_*.json` — LTX-2.3 UI blueprints (+ `ltx23_ic_lora`)
    - `import/still_hero.json` — simple SD1.5-style still (change checkpoint to yours)
+   - `import/flux2_dev_edit_fp8_dual.json` — Flux.2 Dev dual-ref product-mockup style (enable UNET FP8)
+   - `import/flux2_dev_edit_gguf.json` — Flux.2 Dev edit with UnetLoaderGGUF
 3. Confirm model filenames match your `ComfyUI/models/` tree.
 4. Run a test prompt once.
 
@@ -117,7 +119,31 @@ UNET loaders use `weight_dtype: default` (explicit `fp8_e4m3fn` was less stable 
 | `ltx2_flf2v` / `ltx23_flf2v` | **Keyframe / beat bridges** |
 | `ltx23_ic_lora` | Reference-sheet Ingredients clips (not auto-routed yet) |
 | `still_hero` | Storyboard stills (text → image) |
-| `still_edit` | Prompt-edit an existing still (single ReferenceLatent) |
-| `still_edit_dual` | **Cast lock** — dual ReferenceLatent (image 1 = scene, image 2 = cast); Flux.2 Klein 9B; positives end with “Do not change anything else in the image.” |
+| `still_edit` | Prompt-edit an existing still (single ReferenceLatent; Flux.2 Klein 9B) |
+| `still_edit_dual` | **Cast / scenery lock (default)** — Flux.2 Dev FP8 dual ReferenceLatent (image 1 = scene, image 2 = cast/location); `UNETLoader` + `flux2_dev_fp8mixed` |
+| `still_edit_flux2_multi` | Multi-ref cast lock (scene + up to 3 cast refs in one pass) |
+| `still_edit_flux2_gguf` | Same dual-ref topology with `UnetLoaderGGUF` + `flux2-dev-Q6_K.gguf` |
+| `still_edit_dual_klein` | Archived Klein 9B dual-ref (rollback) |
 
 No Wan Video Extender / chunk helper nodes required.
+
+## Flux.2 Dev stills / multi-reference
+
+Cast lock and scenery rewrite default to **Flux.2 Dev FP8** multi-reference (not Klein). Official pattern: chain `LoadImage → ImageScaleToTotalPixels → VAEEncode → ReferenceLatent` (up to 10 refs). See [ComfyUI Flux.2 Dev](https://docs.comfy.org/tutorials/flux/flux-2-dev#multi-image-reference-workflow).
+
+Studio API graphs keep outputs **small**: canvas fixed at **1024×576**, and each reference is scaled to **0.5 MP** (not Flux’s 1–4 MP preview/default).
+
+| Import (UI) | API / map | Loader |
+|-------------|-----------|--------|
+| `import/flux2_dev_edit_fp8_dual.json` | `still_edit_dual` / `still_edit_flux2` | **`UNETLoader`** `flux2_dev_fp8mixed.safetensors` (do not leave Load Diffusion Model bypassed) |
+| `import/flux2_dev_edit_gguf.json` | `still_edit_flux2_gguf` | **`UnetLoaderGGUF`** `flux2-dev-Q6_K.gguf` (requires ComfyUI-GGUF) |
+
+```
+ComfyUI/models/
+  diffusion_models/flux2_dev_fp8mixed.safetensors
+  text_encoders/mistral_3_small_flux2_fp8.safetensors
+  vae/flux2-vae.safetensors
+  unet/flux2-dev-Q6_K.gguf          # GGUF path only
+```
+
+UI import graphs may ship with GGUF active and FP8 UNET bypassed — for FP8, enable the UNET loader and bypass GGUF (or use the studio API graphs, which already use the correct loader).
