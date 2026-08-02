@@ -151,12 +151,17 @@ def generate_cast_ref_sheet(project_id: int, frame_id: int) -> dict[str, Any]:
 
 def _frame_dict(f: StoryboardFrame) -> dict[str, Any]:
     keyframes = _keyframes_list(f)
+    dialog = getattr(f, "dialog", None) or ""
+    audio_notes = getattr(f, "audio_notes", None) or ""
     return {
         "id": f.id,
         "position": f.position,
         "description": f.description,
         "visual_prompt": f.visual_prompt,
-        "dialog": getattr(f, "dialog", None) or "",
+        "dialog": dialog,
+        "audio_notes": audio_notes,
+        # Combined cue sheet for renderers that still expect one field.
+        "audio_prompt": "\n".join(x for x in (dialog, audio_notes) if x).strip(),
         "still_path": f.still_path,
         "cast_ref_sheet_path": _cast_ref_sheet_path(f.project_id, f.id),
         "keyframes": keyframes,
@@ -171,6 +176,10 @@ def _frame_dict(f: StoryboardFrame) -> dict[str, Any]:
         "is_new_shot": f.is_new_shot,
         "cast": list(getattr(f, "cast", None) or []),
     }
+
+
+def board_runtime_sec(frames: list[dict[str, Any]]) -> float:
+    return float(sum(float(f.get("duration_hint_sec") or 0.0) for f in frames))
 
 
 def _keyframes_ready(keyframes: list[dict[str, Any]]) -> bool:
@@ -236,8 +245,17 @@ async def rebuild_frame_keyframe_prompts(
         return _frame_dict(fr)
 
 
-async def generate_frame_dialog(project_id: int, frame_id: int) -> dict[str, Any]:
-    """LLM-write spoken dialog + SFX for this beat from the project story."""
+async def generate_frame_dialog(
+    project_id: int,
+    frame_id: int,
+    *,
+    enrich_only: bool | None = None,
+) -> dict[str, Any]:
+    """LLM-write spoken dialog and/or SFX notes for this beat.
+
+    When the beat already has dialog, defaults to enrich-only (add audio_notes
+    without replacing speech). Pass enrich_only=False to regenerate both.
+    """
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
@@ -251,6 +269,7 @@ async def generate_frame_dialog(project_id: int, frame_id: int) -> dict[str, Any
         visual = f.visual_prompt or ""
         duration = float(f.duration_hint_sec or 4.0)
         premise = p.premise or ""
+        existing_dialog = (getattr(f, "dialog", None) or "").strip()
         cast_sel = list(getattr(f, "cast", None) or [])
         cast_ids = {
             int(x.get("character_id"))
@@ -270,21 +289,77 @@ async def generate_frame_dialog(project_id: int, frame_id: int) -> dict[str, Any
                 if (c.name or "").strip()
             ]
 
-    audio = await llm.plan_beat_audio_prompt(
+    do_enrich = (
+        bool(existing_dialog)
+        if enrich_only is None
+        else bool(enrich_only)
+    )
+    parts = await llm.plan_beat_audio_prompt(
         story=story,
         description=description,
         visual=visual,
         duration_sec=duration,
         cast_names=names,
         premise=premise,
+        existing_dialog=existing_dialog,
+        enrich_only=do_enrich and bool(existing_dialog),
     )
     with SessionLocal() as db:
         fr = db.get(StoryboardFrame, frame_id)
         assert fr
-        fr.dialog = audio
+        if parts.get("dialog") is not None and not (
+            do_enrich and existing_dialog
+        ):
+            fr.dialog = parts.get("dialog") or ""
+        if parts.get("audio_notes") is not None:
+            fr.audio_notes = parts.get("audio_notes") or ""
+        # Legacy: if model returned only dialog blob into dialog and notes empty,
+        # keep dialog as written.
         db.commit()
         db.refresh(fr)
         return _frame_dict(fr)
+
+
+async def generate_all_dialogs(
+    project_id: int,
+    *,
+    enrich_only: bool | None = None,
+    skip_existing: bool = False,
+) -> dict[str, Any]:
+    """Batch dialog/audio generation for every beat."""
+    with SessionLocal() as db:
+        p = db.get(Project, project_id)
+        if not p:
+            raise KeyError(f"project {project_id} not found")
+        frame_ids = [f.id for f in sorted(p.frames, key=lambda x: x.position)]
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    skipped = 0
+    for fid in frame_ids:
+        try:
+            if skip_existing:
+                with SessionLocal() as db:
+                    fr = db.get(StoryboardFrame, fid)
+                    if fr and (fr.dialog or "").strip() and (
+                        getattr(fr, "audio_notes", None) or ""
+                    ).strip():
+                        skipped += 1
+                        continue
+            results.append(
+                await generate_frame_dialog(
+                    project_id, fid, enrich_only=enrich_only
+                )
+            )
+        except Exception as e:
+            errors.append({"frame_id": fid, "error": str(e)})
+    return {
+        "project_id": project_id,
+        "completed": len(results),
+        "skipped": skipped,
+        "failed": len(errors),
+        "results": results,
+        "errors": errors,
+    }
 
 
 def _frames_payload(project_id: int) -> list[dict[str, Any]]:
@@ -295,9 +370,58 @@ def _frames_payload(project_id: int) -> list[dict[str, Any]]:
         return [_frame_dict(f) for f in p.frames]
 
 
+def _desired_frame_count(
+    *,
+    max_frames: int,
+    target_duration_sec: float | None,
+    avg_beat_sec: float | None,
+) -> tuple[int, float]:
+    """Return (desired_count, default_beat_sec)."""
+    avg = float(avg_beat_sec) if avg_beat_sec and avg_beat_sec > 0 else 0.0
+    target = float(target_duration_sec) if target_duration_sec and target_duration_sec > 0 else 0.0
+    max_f = max(1, int(max_frames))
+    if target > 0:
+        if avg <= 0:
+            avg = 15.0
+        desired = int(round(target / avg))
+        desired = max(1, min(max_f, desired))
+        return desired, avg
+    if avg <= 0:
+        avg = 4.0
+    return max_f, avg
+
+
+def _runtime_warnings(
+    frames: list[dict[str, Any]],
+    *,
+    target_duration_sec: float | None,
+) -> list[str]:
+    warnings: list[str] = []
+    total = board_runtime_sec(frames)
+    if target_duration_sec and target_duration_sec > 0:
+        ratio = total / float(target_duration_sec)
+        if ratio < 0.7:
+            warnings.append(
+                f"Board runtime {total:.0f}s is well under target "
+                f"{target_duration_sec:.0f}s"
+            )
+        elif ratio > 1.35:
+            warnings.append(
+                f"Board runtime {total:.0f}s is well over target "
+                f"{target_duration_sec:.0f}s"
+            )
+    return warnings
+
+
 async def propose_storyboard(
-    project_id: int, max_frames: int = 8
-) -> list[dict[str, Any]]:
+    project_id: int,
+    max_frames: int = 8,
+    *,
+    target_duration_sec: float | None = None,
+    avg_beat_sec: float | None = None,
+    rebuild_prompts: bool = True,
+) -> dict[str, Any]:
+    """LLM-propose a board. Never deletes existing frames until propose succeeds."""
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         if not p:
@@ -305,10 +429,12 @@ async def propose_storyboard(
         story = p.story or p.premise
         if not story:
             raise ValueError("project has no story/premise")
-        # replace frames
-        for f in list(p.frames):
-            db.delete(f)
-        db.commit()
+
+    desired, default_dur = _desired_frame_count(
+        max_frames=max_frames,
+        target_duration_sec=target_duration_sec,
+        avg_beat_sec=avg_beat_sec,
+    )
 
     from app.services import characters as char_svc
 
@@ -327,12 +453,23 @@ async def propose_storyboard(
     except Exception:
         cast_sheet = ""
 
+    # Generate FIRST — only replace the board after a non-empty validated result.
     proposed = await llm.propose_storyboard(
-        story, max_frames=max_frames, cast_sheet=cast_sheet
+        story,
+        max_frames=desired,
+        cast_sheet=cast_sheet,
+        avg_beat_sec=default_dur,
+        target_duration_sec=target_duration_sec,
     )
+    if not proposed:
+        raise ValueError("propose returned no frames — existing board left unchanged")
+
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         assert p is not None
+        for f in list(p.frames):
+            db.delete(f)
+        db.flush()
         p.storyboard_approved = False
         for item in proposed:
             db.add(
@@ -351,17 +488,213 @@ async def propose_storyboard(
         await char_svc.sync_intro_frames(project_id)
     except Exception:
         pass
-    # Plan prompts per frame (LLM). Failures leave empty keyframes for later rebuild.
+    if rebuild_prompts:
+        with SessionLocal() as db:
+            p = db.get(Project, project_id)
+            assert p is not None
+            frame_ids = [f.id for f in sorted(p.frames, key=lambda x: x.position)]
+        for fid in frame_ids:
+            try:
+                await rebuild_frame_keyframe_prompts(project_id, fid)
+            except Exception:
+                continue
+    frames = _frames_payload(project_id)
+    warnings = _runtime_warnings(frames, target_duration_sec=target_duration_sec)
+    return {
+        "frames": frames,
+        "total_duration_sec": board_runtime_sec(frames),
+        "target_duration_sec": target_duration_sec,
+        "requested_frames": desired,
+        "warnings": warnings,
+    }
+
+
+def list_frames(project_id: int) -> list[dict[str, Any]]:
+    return _frames_payload(project_id)
+
+
+def get_frame(project_id: int, frame_id: int) -> dict[str, Any]:
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+        return _frame_dict(f)
+
+
+def create_frame(
+    project_id: int,
+    *,
+    description: str = "",
+    visual_prompt: str = "",
+    dialog: str = "",
+    audio_notes: str = "",
+    duration_hint_sec: float = 4.0,
+    is_new_shot: bool = True,
+    position: int | None = None,
+    cast: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Append (or insert) one storyboard frame without calling the LLM."""
     with SessionLocal() as db:
         p = db.get(Project, project_id)
-        assert p is not None
-        frame_ids = [f.id for f in sorted(p.frames, key=lambda x: x.position)]
-    for fid in frame_ids:
-        try:
-            await rebuild_frame_keyframe_prompts(project_id, fid)
-        except Exception:
-            continue
-    return _frames_payload(project_id)
+        if not p:
+            raise KeyError(f"project {project_id} not found")
+        frames = sorted(p.frames, key=lambda x: x.position)
+        if position is None:
+            pos = (frames[-1].position + 1) if frames else 0
+        else:
+            pos = int(position)
+            for fr in frames:
+                if fr.position >= pos:
+                    fr.position += 1
+        cast_val: list[dict[str, Any]] = []
+        if cast:
+            for item in cast:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    cid = int(item.get("character_id"))
+                except (TypeError, ValueError):
+                    continue
+                oid = item.get("outfit_id")
+                cast_val.append(
+                    {
+                        "character_id": cid,
+                        "outfit_id": str(oid) if oid else None,
+                    }
+                )
+        f = StoryboardFrame(
+            project_id=project_id,
+            position=pos,
+            description=description or "",
+            visual_prompt=visual_prompt or description or "",
+            dialog=dialog or "",
+            audio_notes=audio_notes or "",
+            duration_hint_sec=float(duration_hint_sec or 4.0),
+            is_new_shot=bool(is_new_shot),
+            cast=cast_val,
+            keyframes=[],
+        )
+        p.storyboard_approved = False
+        db.add(f)
+        db.commit()
+        db.refresh(f)
+        return _frame_dict(f)
+
+
+def replace_storyboard(
+    project_id: int,
+    frames: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Replace the board from a client-supplied JSON array (no LLM)."""
+    if not isinstance(frames, list) or not frames:
+        raise ValueError("frames must be a non-empty list")
+    normalized: list[dict[str, Any]] = []
+    for i, item in enumerate(frames):
+        if not isinstance(item, dict):
+            raise ValueError(f"frames[{i}] must be an object")
+        cast_val: list[dict[str, Any]] = []
+        for c in item.get("cast") or []:
+            if not isinstance(c, dict):
+                continue
+            try:
+                cid = int(c.get("character_id"))
+            except (TypeError, ValueError):
+                continue
+            oid = c.get("outfit_id")
+            cast_val.append(
+                {
+                    "character_id": cid,
+                    "outfit_id": str(oid) if oid else None,
+                }
+            )
+        normalized.append(
+            {
+                "position": i,
+                "description": str(item.get("description") or ""),
+                "visual_prompt": str(
+                    item.get("visual_prompt") or item.get("description") or ""
+                ),
+                "dialog": str(item.get("dialog") or ""),
+                "audio_notes": str(item.get("audio_notes") or ""),
+                "duration_hint_sec": float(item.get("duration_hint_sec") or 4.0),
+                "is_new_shot": bool(item.get("is_new_shot", True)),
+                "cast": cast_val,
+            }
+        )
+    with SessionLocal() as db:
+        p = db.get(Project, project_id)
+        if not p:
+            raise KeyError(f"project {project_id} not found")
+        for f in list(p.frames):
+            db.delete(f)
+        db.flush()
+        p.storyboard_approved = False
+        for item in normalized:
+            db.add(
+                StoryboardFrame(
+                    project_id=project_id,
+                    position=item["position"],
+                    description=item["description"],
+                    visual_prompt=item["visual_prompt"],
+                    dialog=item["dialog"],
+                    audio_notes=item["audio_notes"],
+                    duration_hint_sec=item["duration_hint_sec"],
+                    is_new_shot=item["is_new_shot"],
+                    cast=item["cast"],
+                    keyframes=[],
+                )
+            )
+        db.commit()
+    frames_out = _frames_payload(project_id)
+    return {
+        "frames": frames_out,
+        "total_duration_sec": board_runtime_sec(frames_out),
+        "warnings": [],
+    }
+
+
+async def replace_storyboard_async(
+    project_id: int,
+    frames: list[dict[str, Any]],
+    *,
+    rebuild_prompts: bool = False,
+) -> dict[str, Any]:
+    result = replace_storyboard(project_id, frames)
+    if rebuild_prompts:
+        with SessionLocal() as db:
+            p = db.get(Project, project_id)
+            assert p
+            frame_ids = [f.id for f in sorted(p.frames, key=lambda x: x.position)]
+        for fid in frame_ids:
+            try:
+                await rebuild_frame_keyframe_prompts(project_id, fid)
+            except Exception:
+                continue
+        frames_out = _frames_payload(project_id)
+        result = {
+            "frames": frames_out,
+            "total_duration_sec": board_runtime_sec(frames_out),
+            "warnings": [],
+        }
+    return result
+
+
+def delete_frame(project_id: int, frame_id: int) -> dict[str, Any]:
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+        pos = f.position
+        db.delete(f)
+        db.flush()
+        p = db.get(Project, project_id)
+        assert p
+        for fr in p.frames:
+            if fr.position > pos:
+                fr.position -= 1
+        p.storyboard_approved = False
+        db.commit()
+    return {"deleted": True, "frame_id": frame_id}
 
 
 def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any]:
@@ -369,6 +702,7 @@ def update_frame(project_id: int, frame_id: int, **fields: Any) -> dict[str, Any
         "description",
         "visual_prompt",
         "dialog",
+        "audio_notes",
         "duration_hint_sec",
         "is_new_shot",
         "position",

@@ -799,6 +799,10 @@ function ProjectPage() {
     video_backend: "wan",
   });
   const [shotBackends, setShotBackends] = useState({});
+  const [proposeMax, setProposeMax] = useState("40");
+  const [proposeTargetMin, setProposeTargetMin] = useState("10");
+  const [proposeAvgSec, setProposeAvgSec] = useState("15");
+  const [kfJob, setKfJob] = useState(null);
 
   const loadAssets = useCallback(async () => {
     const a = await api(`/projects/${id}/assets`);
@@ -1307,54 +1311,45 @@ function ProjectPage() {
   };
 
   const createMissingKeyframes = async () => {
-    let p = project;
-    const targetIds = [...(p.frames || [])]
+    const targetIds = [...(project.frames || [])]
       .sort((a, b) => a.position - b.position)
       .filter((f) => !keyframesReady(f))
       .map((f) => f.id);
     if (!targetIds.length) return;
-    setBusy("create keyframes");
+    setBusy("queue keyframes job");
     setErr("");
     try {
-      for (let fi = 0; fi < targetIds.length; fi++) {
-        const frameId = targetIds[fi];
-        p = await refreshProject();
-        let frame = (p.frames || []).find((x) => x.id === frameId);
-        let kfs = frameKeyframes(frame || {});
-        if (!kfs.length || !kfs.every((k) => (k.image_prompt || "").trim())) {
-          setBusy(`prompts ${fi + 1}/${targetIds.length}`);
-          setVisualBusy({ frameId, kind: "keyframes" });
-          await api(
-            `/projects/${id}/storyboard/frames/${frameId}/keyframes/rebuild-prompts`,
-            { method: "POST" }
-          );
-          p = await refreshProject();
-          frame = (p.frames || []).find((x) => x.id === frameId);
-          kfs = frameKeyframes(frame || {});
-        }
-        for (let ki = 0; ki < kfs.length; ki++) {
-          if ((kfs[ki].path || "").trim()) continue;
-          setBusy(
-            `keyframes beat ${fi + 1}/${targetIds.length} · slot ${ki + 1}/${kfs.length}`
-          );
-          setVisualBusy({ frameId, kind: `keyframe_${ki}` });
-          await yieldToUi();
-          await api(`/projects/${id}/storyboard/frames/${frameId}/keyframes/${ki}`, {
-            method: "POST",
-            body: JSON.stringify({}),
-          });
-          p = await refreshProject();
-          frame = (p.frames || []).find((x) => x.id === frameId);
-          kfs = frameKeyframes(frame || {});
-          await yieldToUi();
-        }
-        setVisualBusy(null);
+      const j = await api(`/projects/${id}/storyboard/keyframes/job`, {
+        method: "POST",
+        body: JSON.stringify({ skip_existing: true }),
+      });
+      setKfJob(j);
+      setBusy(`keyframes job #${j.id}`);
+      // Poll until done; worker resumes with skip_existing.
+      let status = j;
+      while (
+        status &&
+        !["completed", "failed", "cancelled", "paused"].includes(status.status)
+      ) {
+        await new Promise((r) => setTimeout(r, 4000));
+        status = await api(`/jobs/${j.id}`);
+        setKfJob(status);
+        const prog = status.progress || {};
+        setBusy(
+          `keyframes job #${j.id}: ${status.status}` +
+            (prog.done_slots != null
+              ? ` · ${prog.done_slots}/${prog.total_slots || "?"} slots`
+              : "")
+        );
+        await refreshProject();
       }
       await load();
+      if (status?.status === "failed") {
+        throw new Error(status.error || "keyframes job failed");
+      }
     } catch (e) {
       setErr(String(e.message || e));
     } finally {
-      setVisualBusy(null);
       setBusy("");
     }
   };
@@ -1621,17 +1616,85 @@ function ProjectPage() {
           One thumbnail per beat (first keyframe). Click a card to open the step editor for
           prompts, stills, the full keyframe series, and motion.
         </p>
+        {(() => {
+          const total = (project.frames || []).reduce(
+            (s, f) => s + (Number(f.duration_hint_sec) || 0),
+            0
+          );
+          const targetSec = (Number(proposeTargetMin) || 0) * 60;
+          const warn =
+            targetSec > 0 && total > 0 && (total < targetSec * 0.7 || total > targetSec * 1.35);
+          return (
+            <p className={warn ? "error" : "muted"}>
+              Board runtime ≈ {Math.round(total)}s
+              {total >= 60 ? ` (${(total / 60).toFixed(1)} min)` : ""}
+              {targetSec > 0 ? ` · target ${Math.round(targetSec)}s` : ""}
+              {" · "}
+              {(project.frames || []).length} beats
+              {warn ? " — far from target" : ""}
+            </p>
+          );
+        })()}
+        <div className="row" style={{ flexWrap: "wrap", gap: "0.5rem" }}>
+          <label className="tiny">
+            Max beats
+            <input
+              type="number"
+              min={1}
+              value={proposeMax}
+              disabled={!!busy}
+              onChange={(e) => setProposeMax(e.target.value)}
+              style={{ width: "4.5rem" }}
+            />
+          </label>
+          <label className="tiny">
+            Target minutes
+            <input
+              type="number"
+              min={0}
+              step={0.5}
+              value={proposeTargetMin}
+              disabled={!!busy}
+              onChange={(e) => setProposeTargetMin(e.target.value)}
+              style={{ width: "4.5rem" }}
+            />
+          </label>
+          <label className="tiny">
+            Avg beat sec
+            <input
+              type="number"
+              min={1}
+              value={proposeAvgSec}
+              disabled={!!busy}
+              onChange={(e) => setProposeAvgSec(e.target.value)}
+              style={{ width: "4.5rem" }}
+            />
+          </label>
+        </div>
         <div className="row">
           <button
             type="button"
             disabled={!!busy}
             onClick={() =>
-              run("propose storyboard", () =>
-                api(`/projects/${id}/storyboard/propose`, {
+              run("propose storyboard", async () => {
+                const max_frames = Math.max(1, Number(proposeMax) || 8);
+                const target_duration_sec =
+                  (Number(proposeTargetMin) || 0) > 0
+                    ? (Number(proposeTargetMin) || 0) * 60
+                    : null;
+                const avg_beat_sec = Math.max(1, Number(proposeAvgSec) || 15);
+                const result = await api(`/projects/${id}/storyboard/propose`, {
                   method: "POST",
-                  body: JSON.stringify({ max_frames: 8 }),
-                })
-              )
+                  body: JSON.stringify({
+                    max_frames,
+                    target_duration_sec,
+                    avg_beat_sec,
+                  }),
+                });
+                if (result?.warnings?.length) {
+                  setErr(result.warnings.join("; "));
+                }
+              })
             }
           >
             Propose storyboard beats
@@ -1713,10 +1776,32 @@ function ProjectPage() {
             type="button"
             disabled={!!busy || !(project.frames || []).some((f) => !keyframesReady(f))}
             onClick={() => createMissingKeyframes()}
-            title="Create missing images in each beat’s keyframe series"
+            title="Queue ARQ job (resume-friendly) for missing keyframe images"
           >
-            Create missing keyframe images
+            Create missing keyframe images (job)
           </button>
+          {kfJob && (
+            <span className="muted tiny">
+              Job #{kfJob.id}: {kfJob.status}
+              {kfJob.progress?.done_slots != null
+                ? ` · ${kfJob.progress.done_slots}/${kfJob.progress.total_slots || "?"} slots`
+                : ""}
+              {["running", "pending"].includes(kfJob.status) && (
+                <button
+                  type="button"
+                  className="ghost"
+                  style={{ marginLeft: "0.5rem" }}
+                  onClick={() =>
+                    run("cancel keyframes", () =>
+                      api(`/jobs/${kfJob.id}/cancel`, { method: "POST" }).then(setKfJob)
+                    )
+                  }
+                >
+                  Cancel
+                </button>
+              )}
+            </span>
+          )}
           <button
             type="button"
             disabled={

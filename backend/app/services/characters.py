@@ -696,6 +696,141 @@ def _norm_name(name: str) -> str:
     return " ".join((name or "").strip().lower().split())
 
 
+_SPACESUIT_RE = re.compile(
+    r"(?i)\b(spacesuit|space\s*suit|eva\s*suit|helmet|bubble\s*helmet|"
+    r"neck\s*ring|glass\s*dome|visor|oxygen)\b"
+)
+_CASUAL_OUTFIT_RE = re.compile(
+    r"(?i)\b(summer|play|everyday|casual|school|home|civilian|beach|"
+    r"garden|picnic|pajamas?|pyjamas?|t-?shirt|dress|shorts)\b"
+)
+
+
+def _is_spacesuit_text(*parts: str) -> bool:
+    return any(_SPACESUIT_RE.search(p or "") for p in parts)
+
+
+def _is_casual_outfit(name: str = "", prompt: str = "") -> bool:
+    blob = f"{name} {prompt}"
+    if _is_spacesuit_text(blob):
+        return False
+    return bool(_CASUAL_OUTFIT_RE.search(blob))
+
+
+def _helmet_free_negatives(*, casual: bool) -> str:
+    if not casual:
+        return ""
+    return (
+        "space helmet, bubble helmet, glass dome helmet, astronaut helmet, "
+        "neck ring, EVA suit, spacesuit, oxygen hose, visor down"
+    )
+
+
+def _strip_applied_edits(text: str) -> str:
+    """Keep face/body identity; drop Applied-edits clutter from appearance."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    marker = "Applied edits:"
+    idx = raw.find(marker)
+    if idx >= 0:
+        return raw[:idx].strip()
+    return raw
+
+
+def heuristic_cast_names(story: str) -> list[str]:
+    """Proper-name candidates from story text (fills LLM gaps)."""
+    text = story or ""
+    # Capitalized tokens (including multi-word like "Aunt Jo").
+    found = re.findall(
+        r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b",
+        text,
+    )
+    skip = {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "then",
+        "when",
+        "while",
+        "after",
+        "before",
+        "chapter",
+        "episode",
+        "scene",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+    }
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in found:
+        parts = name.split()
+        if any(p.lower() in skip or p.lower() in _TITLE_TOKENS for p in parts):
+            # Allow "Aunt Jo" style — keep if last token looks like a name.
+            if len(parts) < 2:
+                continue
+            name = parts[-1]
+        key = _norm_name(name)
+        if len(key) < 2 or key in seen:
+            continue
+        # Skip all-caps shouting and single letters.
+        if name.isupper() and len(name) > 3:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
+def audit_outfits(project_id: int) -> dict[str, Any]:
+    """Flag helmet/spacesuit tokens on outfits that look summer/everyday."""
+    with SessionLocal() as db:
+        p = db.get(Project, project_id)
+        if not p:
+            raise KeyError(f"project {project_id} not found")
+        flags: list[dict[str, Any]] = []
+        for c in sorted(p.characters, key=lambda x: x.position):
+            for o in _normalize_outfits(c.outfits or []):
+                oname = str(o.get("name") or "")
+                prompt = str(o.get("prompt") or "")
+                if _is_casual_outfit(oname, prompt) and _is_spacesuit_text(
+                    oname, prompt
+                ):
+                    flags.append(
+                        {
+                            "character_id": c.id,
+                            "character_name": c.name,
+                            "outfit_id": o.get("id"),
+                            "outfit_name": oname,
+                            "issue": "casual_outfit_has_spacesuit_tokens",
+                            "prompt": prompt,
+                        }
+                    )
+                elif _is_casual_outfit(oname, prompt) is False and _CASUAL_OUTFIT_RE.search(
+                    oname
+                ):
+                    # Name says summer but prompt is spacesuit-heavy.
+                    if _is_spacesuit_text(prompt):
+                        flags.append(
+                            {
+                                "character_id": c.id,
+                                "character_name": c.name,
+                                "outfit_id": o.get("id"),
+                                "outfit_name": oname,
+                                "issue": "named_casual_but_prompt_spacesuit",
+                                "prompt": prompt,
+                            }
+                        )
+        return {"project_id": project_id, "flags": flags, "count": len(flags)}
+
+
 def _find_intro_frame_id(
     frames: list[StoryboardFrame], name: str, aliases: list[str]
 ) -> int | None:
@@ -725,7 +860,26 @@ async def detect_characters(
                 "save or generate a story first"
             )
 
-    extracted = await llm.extract_cast(story)
+    try:
+        extracted = await llm.extract_cast(story)
+    except Exception:
+        extracted = []
+    # Heuristic pass fills names the small model missed.
+    known = {_norm_name(str(x.get("name") or "")) for x in extracted}
+    for name in heuristic_cast_names(story):
+        key = _norm_name(name)
+        if key in known:
+            continue
+        extracted.append(
+            {
+                "name": name,
+                "aliases": [],
+                "description": "",
+                "appearance_prompt": "",
+            }
+        )
+        known.add(key)
+
     created = 0
     updated = 0
     with SessionLocal() as db:
@@ -889,34 +1043,68 @@ async def generate_reference(
         / str(character_id)
     )
     media.mkdir(parents=True, exist_ok=True)
-    prompt = (
-        f"Photorealistic character reference portrait for film continuity. "
-        f"Subject: {name}. Look: {appearance}. "
-        f"Neutral three-quarter pose, clear face and wardrobe, single person, full frame."
+
+    # Prefer default outfit wardrobe for fresh portraits (avoid EVA helmet bleed).
+    default_outfit = None
+    with SessionLocal() as db:
+        ch0 = db.get(Character, character_id)
+        if ch0:
+            outfits0 = _normalize_outfits(ch0.outfits or [])
+            default_outfit = next(
+                (o for o in outfits0 if o.get("is_default")),
+                outfits0[0] if outfits0 else None,
+            )
+    wardrobe = ""
+    outfit_name = ""
+    if default_outfit:
+        wardrobe = str(default_outfit.get("prompt") or "").strip()
+        outfit_name = str(default_outfit.get("name") or "").strip()
+    appearance_clean = _strip_applied_edits(appearance)
+    casual = _is_casual_outfit(outfit_name, wardrobe) or not _is_spacesuit_text(
+        wardrobe, appearance_clean, premise
     )
+    # If default outfit is casual/summer, force helmet-free even when premise is space.
+    if default_outfit and _is_casual_outfit(outfit_name, wardrobe):
+        casual = True
+    elif default_outfit and _is_spacesuit_text(outfit_name, wardrobe):
+        casual = False
+
+    prompt = (
+        f"Character reference portrait for film continuity. "
+        f"Subject: {name}. Face/body: {appearance_clean}. "
+    )
+    if wardrobe:
+        prompt += f"Wearing ({outfit_name or 'default'}): {wardrobe}. "
+        if casual:
+            prompt += (
+                "No helmet, no neck ring, no glass dome, no spacesuit — "
+                "everyday clothes only. "
+            )
+    prompt += "Neutral three-quarter pose, clear face, single person, full frame."
     if genre:
         prompt = f"{genre} genre. {prompt}"
-    if premise:
-        prompt = f"Film continuity for: {premise[:200]}. {prompt}"
     if instruction and not old_ref:
         prompt = f"{prompt} Additional direction: {instruction.strip()}"
 
     comfy = ComfyUIClient()
     # Fresh seed on every edit so ReferenceLatent does not stick to one sample.
     seed = secrets.randbelow(2**31 - 1) ^ (int(time.time()) & 0xFFFF)
+    helmet_neg = _helmet_free_negatives(casual=casual)
     if old_ref and instruction:
         src = _resolve_media_file(old_ref)
         uploaded = await comfy.upload_image(src)
         edit_prompt = build_character_edit_prompt(
             instruction=instruction.strip(),
             name=name,
-            appearance=appearance,
+            appearance=appearance_clean,
         )
         neg = (
             still_negative_prompt(edit_prompt)
             + ", ignoring the edit instruction, identical copy of the reference, "
             "unchanged face shape"
         )
+        if helmet_neg:
+            neg = f"{neg}, {helmet_neg}"
         graph = apply_params(
             "still_edit",
             {
@@ -933,6 +1121,8 @@ async def generate_reference(
         )
     else:
         neg = still_negative_prompt(prompt)
+        if helmet_neg:
+            neg = f"{neg}, {helmet_neg}"
         graph = apply_params(
             "still_hero",
             {
@@ -966,12 +1156,10 @@ async def generate_reference(
         assert ch
         ch.reference_image_path = str(dest)
         ch.auto_detected = False
-        if instruction and (instruction or "").strip():
-            ch.appearance_prompt = _merge_appearance_with_edit(
-                ch.appearance_prompt or appearance or "",
-                instruction.strip(),
-            )
-        appearance_now = ch.appearance_prompt or appearance or ""
+        # Keep appearance_prompt as face/body only — do not append Applied edits.
+        if ch.appearance_prompt:
+            ch.appearance_prompt = _strip_applied_edits(ch.appearance_prompt)
+        appearance_now = ch.appearance_prompt or appearance_clean or appearance or ""
         name_now = ch.name or name
         db.commit()
 
@@ -1137,8 +1325,7 @@ async def generate_outfit_reference(
         outfit_name = outfit.get("name") or "Outfit"
         if not wardrobe and not edit_instr:
             raise ValueError("outfit prompt is empty — describe the clothing first")
-        if edit_instr and not outfit_ref:
-            raise ValueError("generate an outfit look before applying an edit")
+        # First generate: treat instruction as part of the create prompt (not an edit).
 
     from app.services.storyboard import still_negative_prompt
 
@@ -1154,6 +1341,15 @@ async def generate_outfit_reference(
     comfy = ComfyUIClient()
     seed = secrets.randbelow(2**31 - 1) ^ (int(time.time()) & 0xFFFF)
     prefix = f"local_video/p{project_id}_char{character_id}_outfit_{outfit_id}"
+    casual = _is_casual_outfit(outfit_name, wardrobe) or (
+        bool(edit_instr) and _is_casual_outfit(outfit_name, edit_instr)
+    )
+    helmet_neg = _helmet_free_negatives(casual=casual)
+    casual_instr = (
+        " No helmet, no neck ring, no glass dome, no spacesuit."
+        if casual
+        else ""
+    )
 
     if edit_instr and outfit_ref:
         src = _resolve_media_file(str(outfit_ref))
@@ -1165,13 +1361,18 @@ async def generate_outfit_reference(
             if wardrobe
             else appearance,
         )
+        neg = (
+            still_negative_prompt(edit_prompt)
+            + ", ignoring the edit instruction, identical copy of the reference, "
+            "naked, lingerie, wrong outfit"
+        )
+        if helmet_neg:
+            neg = f"{neg}, {helmet_neg}"
         graph = apply_params(
             "still_edit",
             {
-                "positive_prompt": edit_prompt,
-                "negative_prompt": still_negative_prompt(edit_prompt)
-                + ", ignoring the edit instruction, identical copy of the reference, "
-                "naked, lingerie, wrong outfit",
+                "positive_prompt": edit_prompt + casual_instr,
+                "negative_prompt": neg,
                 "seed": seed,
                 "filename_prefix": prefix,
                 "width": 1024,
@@ -1183,10 +1384,11 @@ async def generate_outfit_reference(
         )
     else:
         dress = (
-            f"Dress {name} in this outfit ({outfit_name}): {wardrobe}. "
+            f"Dress {name} in this outfit ({outfit_name}): {wardrobe or edit_instr}. "
             "Full body or three-quarter view so clothing is clear; keep the same person."
+            f"{casual_instr}"
         )
-        if edit_instr:
+        if edit_instr and wardrobe:
             dress = f"{dress} Additional direction: {edit_instr}"
         if char_ref:
             src = _resolve_media_file(char_ref)
@@ -1194,14 +1396,19 @@ async def generate_outfit_reference(
             edit_prompt = build_character_edit_prompt(
                 instruction=dress,
                 name=name,
-                appearance=appearance,
+                appearance=_strip_applied_edits(appearance),
             )
+            neg = (
+                still_negative_prompt(edit_prompt)
+                + ", naked, lingerie, wrong outfit, ignoring wardrobe instruction"
+            )
+            if helmet_neg:
+                neg = f"{neg}, {helmet_neg}"
             graph = apply_params(
                 "still_edit",
                 {
                     "positive_prompt": edit_prompt,
-                    "negative_prompt": still_negative_prompt(edit_prompt)
-                    + ", naked, lingerie, wrong outfit, ignoring wardrobe instruction",
+                    "negative_prompt": neg,
                     "seed": seed,
                     "filename_prefix": prefix,
                     "width": 1024,
@@ -1213,17 +1420,22 @@ async def generate_outfit_reference(
             )
         else:
             prompt = (
-                f"Photorealistic character wardrobe reference. Subject: {name}. "
-                f"Look: {appearance}. Outfit ({outfit_name}): {wardrobe}. "
-                "Clear full-body or three-quarter pose, plain background, single person."
+                f"Character wardrobe reference. Subject: {name}. "
+                f"Look: {_strip_applied_edits(appearance)}. "
+                f"Outfit ({outfit_name}): {wardrobe or edit_instr}. "
+                f"Clear full-body or three-quarter pose, plain background, single person."
+                f"{casual_instr}"
             )
-            if edit_instr:
+            if edit_instr and wardrobe:
                 prompt = f"{prompt} Additional direction: {edit_instr}"
+            neg = still_negative_prompt(prompt)
+            if helmet_neg:
+                neg = f"{neg}, {helmet_neg}"
             graph = apply_params(
                 "still_hero",
                 {
                     "positive_prompt": prompt,
-                    "negative_prompt": still_negative_prompt(prompt),
+                    "negative_prompt": neg,
                     "seed": seed,
                     "filename_prefix": prefix,
                 },
@@ -1247,11 +1459,14 @@ async def generate_outfit_reference(
             if o.get("id") == outfit_id:
                 old = o.get("reference_image_path")
                 o["reference_image_path"] = str(dest)
-                if edit_instr:
-                    o["prompt"] = _merge_appearance_with_edit(
-                        o.get("prompt") or wardrobe or "",
-                        edit_instr,
-                    )
+                # Clothing-only: merge instruction into outfit prompt, never appearance.
+                if edit_instr and not (o.get("prompt") or "").strip():
+                    o["prompt"] = edit_instr.strip()
+                elif edit_instr and outfit_ref:
+                    # Edits of existing looks can refine wardrobe text lightly.
+                    base_w = (o.get("prompt") or wardrobe or "").strip()
+                    if edit_instr.strip().lower() not in base_w.lower():
+                        o["prompt"] = f"{base_w}. {edit_instr.strip()}".strip(". ")
                 updated = True
                 if old:
                     try:

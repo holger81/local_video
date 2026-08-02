@@ -428,8 +428,148 @@ async def run_movie_job(ctx: dict, job_id: int) -> str:
         return "failed"
 
 
+async def run_keyframes_job(ctx: dict, job_id: int) -> str:
+    """Generate keyframe slots for a project with pause/cancel + skip_existing resume."""
+    from app.services.storyboard import (
+        _keyframes_list,
+        generate_frame_keyframes,
+        rebuild_frame_keyframe_prompts,
+    )
+
+    with SessionLocal() as db:
+        job = db.get(RenderJob, job_id)
+        if not job:
+            return "missing"
+        if (getattr(job, "kind", None) or "movie") != "keyframes":
+            _set_job(job_id, status="failed", error="not a keyframes job")
+            return "failed"
+        project_id = job.project_id
+        progress = dict(job.progress or {})
+        skip_existing = bool(progress.get("skip_existing", True))
+        frame_ids = list(progress.get("frame_ids") or [])
+        job.status = "running"
+        job.progress = {**progress, "phase": "running"}
+        db.commit()
+
+    if not frame_ids:
+        with SessionLocal() as db:
+            from app.db.models import Project
+
+            p = db.get(Project, project_id)
+            if not p:
+                _set_job(job_id, status="failed", error="project missing")
+                return "failed"
+            frame_ids = [f.id for f in sorted(p.frames, key=lambda x: x.position)]
+
+    done_slots = int((progress.get("done_slots") or 0))
+    errors: list[dict[str, Any]] = list(progress.get("errors") or [])
+
+    try:
+        for fid in frame_ids:
+            state = _job_cancelled_or_paused(job_id)
+            if state:
+                return state
+            # Ensure prompts exist; preserve paths by index.
+            with SessionLocal() as db:
+                from app.db.models import StoryboardFrame
+
+                fr = db.get(StoryboardFrame, fid)
+                if not fr:
+                    continue
+                kfs = _keyframes_list(fr)
+                needs_prompts = not kfs or any(
+                    not (k.get("image_prompt") or "").strip() for k in kfs
+                )
+            if needs_prompts:
+                try:
+                    await rebuild_frame_keyframe_prompts(project_id, fid)
+                except Exception as e:
+                    errors.append({"frame_id": fid, "error": f"rebuild prompts: {e}"})
+                    _set_job(
+                        job_id,
+                        progress={
+                            "phase": "running",
+                            "kind": "keyframes",
+                            "skip_existing": skip_existing,
+                            "frame_ids": frame_ids,
+                            "current_frame_id": fid,
+                            "done_slots": done_slots,
+                            "errors": errors[-20:],
+                        },
+                    )
+                    continue
+
+            _set_job(
+                job_id,
+                progress={
+                    "phase": "running",
+                    "kind": "keyframes",
+                    "skip_existing": skip_existing,
+                    "frame_ids": frame_ids,
+                    "current_frame_id": fid,
+                    "done_slots": done_slots,
+                    "errors": errors[-20:],
+                },
+            )
+            try:
+                await generate_frame_keyframes(
+                    project_id, fid, skip_existing=skip_existing
+                )
+                with SessionLocal() as db:
+                    from app.db.models import StoryboardFrame
+
+                    done_slots = 0
+                    for frame_id in frame_ids:
+                        row = db.get(StoryboardFrame, frame_id)
+                        if not row:
+                            continue
+                        done_slots += sum(
+                            1
+                            for k in _keyframes_list(row)
+                            if (k.get("path") or "").strip()
+                        )
+            except Exception as e:
+                logger.exception("keyframes frame %s failed", fid)
+                errors.append({"frame_id": fid, "error": str(e)})
+
+            state = _job_cancelled_or_paused(job_id)
+            if state:
+                _set_job(
+                    job_id,
+                    progress={
+                        "phase": state,
+                        "kind": "keyframes",
+                        "skip_existing": skip_existing,
+                        "frame_ids": frame_ids,
+                        "current_frame_id": fid,
+                        "done_slots": done_slots,
+                        "errors": errors[-20:],
+                    },
+                )
+                return state
+
+        _set_job(
+            job_id,
+            status="completed",
+            progress={
+                "phase": "done",
+                "kind": "keyframes",
+                "skip_existing": skip_existing,
+                "frame_ids": frame_ids,
+                "done_slots": done_slots,
+                "errors": errors[-20:],
+            },
+            error="; ".join(e["error"] for e in errors[:3]) if errors else None,
+        )
+        return "completed"
+    except Exception as e:
+        logger.exception("keyframes job failed")
+        _set_job(job_id, status="failed", error=str(e))
+        return "failed"
+
+
 class WorkerSettings:
-    functions = [run_movie_job]
+    functions = [run_movie_job, run_keyframes_job]
     redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
     max_jobs = 1
     job_timeout = 86400

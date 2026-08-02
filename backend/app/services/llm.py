@@ -76,18 +76,61 @@ async def chat(system: str, user: str, temperature: float = 0.4) -> str:
     return (resp.choices[0].message.content or "").strip()
 
 
+def _repair_json_text(text: str) -> str:
+    """Best-effort fixes for small-model JSON (trailing commas, fences)."""
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```(?:json)?\n?", "", t)
+        t = re.sub(r"\n?```$", "", t)
+    # Trailing commas before } or ]
+    t = re.sub(r",\s*([}\]])", r"\1", t)
+    return t.strip()
+
+
 def _extract_json(text: str) -> Any:
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\n?", "", text)
-        text = re.sub(r"\n?```$", "", text)
+    """Parse JSON from a model reply; prefer the first array/object; reject junk tails."""
+    cleaned = _repair_json_text(text)
     try:
-        return json.loads(text)
+        return json.loads(cleaned)
     except json.JSONDecodeError:
-        match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
-        if match:
-            return json.loads(match.group(1))
-        raise
+        pass
+
+    # Prefer first JSON array (storyboards), then first object.
+    for pattern in (r"\[[\s\S]*\]", r"\{[\s\S]*\}"):
+        match = re.search(pattern, cleaned)
+        if not match:
+            continue
+        chunk = _repair_json_text(match.group(0))
+        decoder = json.JSONDecoder()
+        try:
+            value, _end = decoder.raw_decode(chunk)
+            return value
+        except json.JSONDecodeError:
+            # Truncate to last closing bracket and retry.
+            if chunk.startswith("["):
+                end = chunk.rfind("]")
+            else:
+                end = chunk.rfind("}")
+            if end > 0:
+                try:
+                    return json.loads(_repair_json_text(chunk[: end + 1]))
+                except json.JSONDecodeError:
+                    continue
+    raise ValueError(f"could not parse JSON from model reply: {cleaned[:400]!r}")
+
+
+def _story_excerpt_for_structure(story: str, *, max_chars: int = 5500) -> str:
+    """Send a bounded excerpt for propose/cast — full novellas break small models."""
+    s = (story or "").strip()
+    if len(s) <= max_chars:
+        return s
+    head = int(max_chars * 0.65)
+    tail = max_chars - head - 60
+    return (
+        s[:head].rstrip()
+        + "\n\n[...middle of story omitted for length...]\n\n"
+        + s[-tail:].lstrip()
+    )
 
 
 async def generate_story(title: str, genre: str, premise: str) -> str:
@@ -382,7 +425,8 @@ async def extract_cast(story: str) -> list[dict[str, Any]]:
         "appearance_prompt must be a concrete visual look: age range, face, hair, wardrobe, "
         "distinctive details — suitable for image generation. Keep each field concise."
     )
-    user = f"Story:\n{story}\n\nExtract the cast as JSON."
+    excerpt = _story_excerpt_for_structure(story)
+    user = f"Story (may be excerpted):\n{excerpt}\n\nExtract the cast as JSON."
     raw = await chat(system, user, temperature=0.2)
     try:
         data = _extract_json(raw)
@@ -441,40 +485,167 @@ async def extract_cast(story: str) -> list[dict[str, Any]]:
     return out
 
 
-async def propose_storyboard(
-    story: str, max_frames: int = 8, cast_sheet: str = ""
+def _normalize_proposed_frames(
+    data: list[Any],
+    *,
+    max_frames: int,
+    default_duration: float = 4.0,
+    start_position: int = 0,
 ) -> list[dict[str, Any]]:
-    system = (
-        "You break stories into storyboard frames for video generation. "
-        "Return ONLY valid JSON array. Each item: "
-        '{"description": str, "visual_prompt": str, "duration_hint_sec": number, "is_new_shot": bool}. '
-        "is_new_shot true when camera/scene changes; false for continuous action. "
-        "Keep characters, wardrobe, setting, era, and visual style consistent across all frames. "
-        "Each visual_prompt should name recurring subjects with their canonical cast names. "
-        "When is_new_shot is false, the beat continues the previous shot's motion and camera."
-    )
-    user = f"Story:\n{story}\n\n"
-    if cast_sheet:
-        user += f"{cast_sheet}\n\n"
-    user += f"Create up to {max_frames} frames that form one coherent film."
-    raw = await chat(system, user, temperature=0.3)
-    data = _extract_json(raw)
-    if not isinstance(data, list):
-        raise ValueError("storyboard response was not a list")
-    frames = []
+    frames: list[dict[str, Any]] = []
     for i, item in enumerate(data[:max_frames]):
+        if not isinstance(item, dict):
+            continue
         frames.append(
             {
-                "position": i,
+                "position": start_position + i,
                 "description": str(item.get("description") or ""),
                 "visual_prompt": str(
                     item.get("visual_prompt") or item.get("description") or ""
                 ),
-                "duration_hint_sec": float(item.get("duration_hint_sec") or 4.0),
+                "duration_hint_sec": float(
+                    item.get("duration_hint_sec") or default_duration
+                ),
                 "is_new_shot": bool(item.get("is_new_shot", True)),
             }
         )
     return frames
+
+
+async def propose_storyboard(
+    story: str,
+    max_frames: int = 8,
+    cast_sheet: str = "",
+    *,
+    avg_beat_sec: float | None = None,
+    target_duration_sec: float | None = None,
+) -> list[dict[str, Any]]:
+    default_dur = float(avg_beat_sec) if avg_beat_sec and avg_beat_sec > 0 else 4.0
+    excerpt = _story_excerpt_for_structure(story)
+    system = (
+        "You break stories into storyboard frames for video generation. "
+        "Return ONLY a valid JSON array (no prose). Each item: "
+        '{"description": str, "visual_prompt": str, "duration_hint_sec": number, "is_new_shot": bool}. '
+        "is_new_shot true when camera/scene changes; false for continuous action. "
+        "Keep characters, wardrobe, setting, era, and visual style consistent across all frames. "
+        "Each visual_prompt should name recurring subjects with their canonical cast names. "
+        "When is_new_shot is false, the beat continues the previous shot's motion and camera. "
+        f"Aim for EXACTLY {max_frames} frames (not fewer)."
+    )
+    user = f"Story (may be excerpted):\n{excerpt}\n\n"
+    if cast_sheet:
+        user += f"{cast_sheet}\n\n"
+    if target_duration_sec and target_duration_sec > 0:
+        user += (
+            f"Target total runtime ≈ {float(target_duration_sec):.0f}s; "
+            f"prefer ~{default_dur:.0f}s per beat.\n"
+        )
+    user += f"Return a JSON array with exactly {max_frames} frames covering the full arc."
+    try:
+        raw = await chat(system, user, temperature=0.3)
+        data = _extract_json(raw)
+    except Exception as e:
+        raise ValueError(
+            f"storyboard propose failed to parse JSON: {e}. "
+            f"Raw reply starts: {(locals().get('raw') or '')[:500]!r}"
+        ) from e
+    if not isinstance(data, list):
+        raise ValueError(
+            f"storyboard response was not a list (got {type(data).__name__}). "
+            f"Raw reply starts: {raw[:500]!r}"
+        )
+    frames = _normalize_proposed_frames(
+        data, max_frames=max_frames, default_duration=default_dur
+    )
+    if not frames:
+        raise ValueError(
+            "storyboard propose returned an empty list — board left unchanged. "
+            f"Raw reply starts: {raw[:500]!r}"
+        )
+
+    # Continue-generation if the small model under-delivered.
+    retries = 0
+    while len(frames) < max_frames and retries < 2:
+        need = max_frames - len(frames)
+        more = await continue_storyboard(
+            story,
+            frames,
+            need=need,
+            cast_sheet=cast_sheet,
+            avg_beat_sec=default_dur,
+        )
+        if not more:
+            break
+        frames.extend(more)
+        retries += 1
+
+    # Pad placeholders so agents get the requested count (editable later).
+    while len(frames) < max_frames:
+        i = len(frames)
+        frames.append(
+            {
+                "position": i,
+                "description": f"[Placeholder beat {i + 1} — expand from story]",
+                "visual_prompt": (
+                    f"Continue the story visually for beat {i + 1}; "
+                    "same cast, wardrobe, and setting."
+                ),
+                "duration_hint_sec": default_dur,
+                "is_new_shot": True,
+            }
+        )
+    # Re-index after continues/pads.
+    for i, fr in enumerate(frames[:max_frames]):
+        fr["position"] = i
+    return frames[:max_frames]
+
+
+async def continue_storyboard(
+    story: str,
+    existing: list[dict[str, Any]],
+    *,
+    need: int,
+    cast_sheet: str = "",
+    avg_beat_sec: float = 4.0,
+) -> list[dict[str, Any]]:
+    """Ask the model for more beats after an under-count propose."""
+    if need <= 0:
+        return []
+    excerpt = _story_excerpt_for_structure(story)
+    prior = [
+        {
+            "description": f.get("description"),
+            "visual_prompt": f.get("visual_prompt"),
+            "duration_hint_sec": f.get("duration_hint_sec"),
+            "is_new_shot": f.get("is_new_shot"),
+        }
+        for f in existing[-8:]
+    ]
+    system = (
+        "You continue a storyboard. Return ONLY a valid JSON array of NEW frames "
+        '(same schema: description, visual_prompt, duration_hint_sec, is_new_shot). '
+        "Do not repeat prior beats; advance the story."
+    )
+    user = (
+        f"Story (may be excerpted):\n{excerpt}\n\n"
+        f"Existing beats (tail):\n{json.dumps(prior, ensure_ascii=False)}\n\n"
+    )
+    if cast_sheet:
+        user += f"{cast_sheet}\n\n"
+    user += f"Add exactly {need} more frames (~{avg_beat_sec:.0f}s each)."
+    try:
+        raw = await chat(system, user, temperature=0.3)
+        data = _extract_json(raw)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return _normalize_proposed_frames(
+        data,
+        max_frames=need,
+        default_duration=avg_beat_sec,
+        start_position=len(existing),
+    )
 
 
 async def prompt_delta_for_continue(
@@ -704,20 +875,64 @@ async def plan_beat_audio_prompt(
     duration_sec: float = 4.0,
     cast_names: list[str] | None = None,
     premise: str = "",
-) -> str:
-    """LLM: spoken lines + SFX notes for one storyboard beat (from the story)."""
-    system = (
-        "You write the AUDIO cue sheet for ONE short film beat. "
-        'Return ONLY valid JSON: {"audio_prompt": "..."}. '
-        'Include spoken dialogue (Character: "line") when the story implies speech, '
-        "plus brief ambient SFX / music notes that fit this moment only. "
-        "Use exact cast names when provided. Do not invent major plot events. "
-        "Keep it concise (2–6 short lines). No visual/camera description. "
-        "If the beat is silent, say so and list only ambient sound."
-    )
+    existing_dialog: str = "",
+    enrich_only: bool = False,
+) -> dict[str, str]:
+    """LLM: spoken dialog and/or SFX notes for one beat.
+
+    Returns ``{"dialog": ..., "audio_notes": ...}``. When ``enrich_only`` and
+    existing dialog is set, preserve speech and only add SFX/music notes.
+    """
+    dur = float(duration_sec or 4.0)
+    # Rough speech budget: ~2.5 words/sec for kids pacing, leave room for pauses.
+    speech_sec = max(2.0, min(dur * 0.55, dur - 1.0))
     names = [n for n in (cast_names or []) if (n or "").strip()]
+    story_ctx = _story_excerpt_for_structure(story, max_chars=4000)
+
+    if enrich_only and (existing_dialog or "").strip():
+        system = (
+            "You enrich AUDIO for ONE film beat. Return ONLY valid JSON: "
+            '{"audio_notes": "..."}. '
+            "Keep existing spoken dialog unchanged (do not rewrite it). "
+            "Add brief SFX / music / ambient notes that fit this moment. "
+            "No visual/camera description."
+        )
+        user = (
+            f"Beat duration ≈ {dur:.1f}s.\n"
+            f"Beat description: {description}\n"
+            f"Beat visual note: {visual}\n"
+            f"Existing spoken dialog (KEEP AS-IS):\n{existing_dialog.strip()}\n"
+        )
+        if premise:
+            user += f"Premise: {premise}\n"
+        if names:
+            user += "Cast names: " + ", ".join(names) + "\n"
+        user += "Write audio_notes (SFX/music only) for this beat."
+        raw = await chat(system, user, temperature=0.3)
+        data = _extract_json(raw)
+        notes = ""
+        if isinstance(data, dict):
+            notes = str(
+                data.get("audio_notes") or data.get("audio_prompt") or ""
+            ).strip()
+        elif isinstance(data, str):
+            notes = data.strip()
+        if not notes:
+            raise ValueError("empty audio_notes from model")
+        return {"dialog": existing_dialog.strip(), "audio_notes": notes}
+
+    system = (
+        "You write AUDIO for ONE short film beat. Return ONLY valid JSON: "
+        '{"dialog": "...", "audio_notes": "..."}. '
+        'dialog = spoken lines (Character: "line") sized for the beat duration; '
+        "audio_notes = brief ambient SFX / music only. "
+        "Use exact cast names when provided. Do not invent major plot events. "
+        "No visual/camera description. If silent, dialog may be empty and "
+        "audio_notes lists ambient sound."
+    )
     user = (
-        f"Beat duration ≈ {float(duration_sec or 4.0):.1f}s.\n"
+        f"Beat duration ≈ {dur:.1f}s — keep spoken dialog to roughly {speech_sec:.0f}s "
+        f"of speech (~{int(speech_sec * 2.5)} words max).\n"
         f"Beat description: {description}\n"
         f"Beat visual note: {visual}\n"
     )
@@ -725,21 +940,24 @@ async def plan_beat_audio_prompt(
         user += f"Premise: {premise}\n"
     if names:
         user += "Cast names: " + ", ".join(names) + "\n"
-    user += f"Full story (for dialog context):\n{story}\n\nWrite audio_prompt for this beat only."
+    user += f"Story context:\n{story_ctx}\n\nWrite dialog and audio_notes for this beat only."
     raw = await chat(system, user, temperature=0.3)
     data = _extract_json(raw)
+    dialog = ""
+    notes = ""
     if isinstance(data, dict):
-        text = str(
-            data.get("audio_prompt")
-            or data.get("dialog")
-            or data.get("dialogue")
-            or data.get("prompt")
-            or ""
+        dialog = str(
+            data.get("dialog") or data.get("dialogue") or ""
         ).strip()
+        notes = str(data.get("audio_notes") or "").strip()
+        # Legacy single-field models.
+        if not dialog and not notes:
+            blob = str(
+                data.get("audio_prompt") or data.get("prompt") or ""
+            ).strip()
+            dialog = blob
     elif isinstance(data, str):
-        text = data.strip()
-    else:
-        text = ""
-    if not text:
-        raise ValueError("empty audio_prompt from model")
-    return text
+        dialog = data.strip()
+    if not dialog and not notes:
+        raise ValueError("empty dialog/audio_notes from model")
+    return {"dialog": dialog, "audio_notes": notes}

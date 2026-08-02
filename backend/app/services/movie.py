@@ -22,6 +22,7 @@ def job_dict(job: RenderJob) -> dict[str, Any]:
         "id": job.id,
         "project_id": job.project_id,
         "status": job.status,
+        "kind": getattr(job, "kind", None) or "movie",
         "target_length_sec": job.target_length_sec,
         "format": job.format,
         "aspect": job.aspect,
@@ -155,6 +156,7 @@ async def start_movie(
         job = RenderJob(
             project_id=project_id,
             status="pending",
+            kind="movie",
             target_length_sec=target_length_sec,
             format=format,
             aspect=aspect,
@@ -248,13 +250,15 @@ async def resume_job(job_id: int) -> dict[str, Any]:
         job = db.get(RenderJob, job_id)
         if not job:
             raise KeyError(f"job {job_id} not found")
+        kind = getattr(job, "kind", None) or "movie"
         if job.status in ("paused", "failed"):
             job.status = "pending"
             job.error = None
             job.progress = {**(job.progress or {}), "phase": "resuming"}
             db.commit()
     redis = await create_pool(_redis_settings())
-    await redis.enqueue_job("run_movie_job", job_id)
+    fn = "run_keyframes_job" if kind == "keyframes" else "run_movie_job"
+    await redis.enqueue_job(fn, job_id)
     await redis.aclose()
     return get_job_status(job_id)
 

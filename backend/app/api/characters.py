@@ -84,6 +84,14 @@ async def detect_characters(project_id: int, body: DetectIn | None = None):
         raise HTTPException(500, str(e)) from e
 
 
+@router.get("/outfit-audit")
+def audit_outfits(project_id: int):
+    try:
+        return char_svc.audit_outfits(project_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+
+
 @router.patch("/{character_id}")
 def patch_character(project_id: int, character_id: int, body: CharacterPatch):
     try:

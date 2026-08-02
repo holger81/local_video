@@ -230,9 +230,80 @@ def set_outfit_reference_from_media(
 
 
 @mcp.tool()
-async def propose_storyboard(project_id: int, max_frames: int = 8) -> list:
-    """Propose storyboard frames from the current story."""
-    return await sb_svc.propose_storyboard(project_id, max_frames)
+async def propose_storyboard(
+    project_id: int,
+    max_frames: int = 8,
+    target_duration_sec: float | None = None,
+    avg_beat_sec: float | None = None,
+    rebuild_prompts: bool = True,
+) -> dict:
+    """Propose storyboard frames. Does not wipe the board if the LLM fails.
+
+    Prefer target_duration_sec + avg_beat_sec for episode-length boards.
+    """
+    return await sb_svc.propose_storyboard(
+        project_id,
+        max_frames,
+        target_duration_sec=target_duration_sec,
+        avg_beat_sec=avg_beat_sec,
+        rebuild_prompts=rebuild_prompts,
+    )
+
+
+@mcp.tool()
+async def replace_storyboard(
+    project_id: int,
+    frames: list[dict[str, Any]],
+    rebuild_prompts: bool = False,
+) -> dict:
+    """Replace the board from a curated JSON frame list (no LLM propose)."""
+    return await sb_svc.replace_storyboard_async(
+        project_id, frames, rebuild_prompts=rebuild_prompts
+    )
+
+
+@mcp.tool()
+def list_frames(project_id: int) -> list:
+    """List storyboard frames without dumping the full project."""
+    return sb_svc.list_frames(project_id)
+
+
+@mcp.tool()
+def get_frame(project_id: int, frame_id: int) -> dict:
+    """Get one storyboard frame."""
+    return sb_svc.get_frame(project_id, frame_id)
+
+
+@mcp.tool()
+def create_frame(
+    project_id: int,
+    description: str = "",
+    visual_prompt: str = "",
+    dialog: str = "",
+    audio_notes: str = "",
+    duration_hint_sec: float = 4.0,
+    is_new_shot: bool = True,
+    position: int | None = None,
+    cast: list[dict[str, Any]] | None = None,
+) -> dict:
+    """Append or insert one storyboard frame without calling the LLM."""
+    return sb_svc.create_frame(
+        project_id,
+        description=description,
+        visual_prompt=visual_prompt,
+        dialog=dialog,
+        audio_notes=audio_notes,
+        duration_hint_sec=duration_hint_sec,
+        is_new_shot=is_new_shot,
+        position=position,
+        cast=cast,
+    )
+
+
+@mcp.tool()
+def delete_frame(project_id: int, frame_id: int) -> dict:
+    """Delete one storyboard frame and re-pack positions."""
+    return sb_svc.delete_frame(project_id, frame_id)
 
 
 @mcp.tool()
@@ -242,6 +313,7 @@ def update_frame(
     description: str | None = None,
     visual_prompt: str | None = None,
     dialog: str | None = None,
+    audio_notes: str | None = None,
     duration_hint_sec: float | None = None,
     is_new_shot: bool | None = None,
     position: int | None = None,
@@ -251,7 +323,7 @@ def update_frame(
     keyframes: list[dict[str, Any]] | None = None,
     cast: list[dict[str, Any]] | None = None,
 ) -> dict:
-    """Update a storyboard frame (beat text, dialog, cast, keyframe series).
+    """Update a storyboard frame (beat text, dialog, audio_notes, cast, keyframes).
 
     cast items: {character_id, outfit_id?}.
     keyframes items: {role?, t_sec?, image_prompt|prompt?, path?}.
@@ -260,6 +332,7 @@ def update_frame(
         "description": description,
         "visual_prompt": visual_prompt,
         "dialog": dialog,
+        "audio_notes": audio_notes,
         "duration_hint_sec": duration_hint_sec,
         "is_new_shot": is_new_shot,
         "position": position,
@@ -281,10 +354,27 @@ def approve_storyboard(project_id: int) -> dict:
 
 
 @mcp.tool()
-async def generate_frame_dialog(project_id: int, frame_id: int) -> dict:
-    """LLM-write spoken dialog / audio cues for one beat."""
-    return await sb_svc.generate_frame_dialog(project_id, frame_id)
+async def generate_frame_dialog(
+    project_id: int,
+    frame_id: int,
+    enrich_only: bool | None = None,
+) -> dict:
+    """LLM-write spoken dialog and/or SFX notes. Enrich-only keeps existing speech."""
+    return await sb_svc.generate_frame_dialog(
+        project_id, frame_id, enrich_only=enrich_only
+    )
 
+
+@mcp.tool()
+async def batch_generate_dialogs(
+    project_id: int,
+    enrich_only: bool | None = None,
+    skip_existing: bool = False,
+) -> dict:
+    """Generate dialog/audio_notes for every beat."""
+    return await sb_svc.generate_all_dialogs(
+        project_id, enrich_only=enrich_only, skip_existing=skip_existing
+    )
 
 @mcp.tool()
 def generate_cast_ref_sheet(project_id: int, frame_id: int) -> dict:
@@ -392,8 +482,24 @@ async def generate_frame_keyframes(
 
 @mcp.tool()
 async def create_all_keyframes(project_id: int, skip_existing: bool = True) -> dict:
-    """Create first/mid/last keyframes for every storyboard frame."""
+    """Blocking: create keyframes for every frame (prefer start_keyframes_job for long boards)."""
     return await sb_svc.generate_all_keyframes(project_id, skip_existing=skip_existing)
+
+
+@mcp.tool()
+async def start_keyframes_job(project_id: int, skip_existing: bool = True) -> dict:
+    """Enqueue ARQ keyframe generation; poll get_job_status (kind=keyframes)."""
+    from app.services import keyframes_job as kf_job
+
+    return await kf_job.start_keyframes_job(
+        project_id, skip_existing=skip_existing
+    )
+
+
+@mcp.tool()
+def audit_outfits(project_id: int) -> dict:
+    """Flag helmet/spacesuit tokens on summer/everyday outfits."""
+    return char_svc.audit_outfits(project_id)
 
 
 @mcp.tool()

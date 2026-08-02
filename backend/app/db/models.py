@@ -94,8 +94,10 @@ class StoryboardFrame(Base):
     position: Mapped[int] = mapped_column(Integer, default=0)
     description: Mapped[str] = mapped_column(Text, default="")
     visual_prompt: Mapped[str] = mapped_column(Text, default="")
-    # Spoken lines / SFX notes for this beat (woven into LTX motion prompts).
+    # Spoken lines for this beat (woven into LTX motion prompts).
     dialog: Mapped[str] = mapped_column(Text, default="")
+    # SFX / music cue notes (kept separate from speech; concatenated at render).
+    audio_notes: Mapped[str] = mapped_column(Text, default="")
     still_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # Per-step video keyframes: first → mid → last (before movie / between-stills clips)
     keyframe_first_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -123,6 +125,8 @@ class RenderJob(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
     status: Mapped[str] = mapped_column(String(32), default="pending")
     # pending|running|paused|cancelling|cancelled|failed|completed
+    # movie | keyframes
+    kind: Mapped[str] = mapped_column(String(32), default="movie")
     target_length_sec: Mapped[float] = mapped_column(Float, default=30.0)
     format: Mapped[str] = mapped_column(String(32), default="mp4")
     aspect: Mapped[str] = mapped_column(String(16), default="16:9")
@@ -232,6 +236,7 @@ def _migrate_sqlite(engine) -> None:
             "keyframes": "ALTER TABLE storyboard_frames ADD COLUMN keyframes JSON",
             "cast": "ALTER TABLE storyboard_frames ADD COLUMN cast JSON",
             "dialog": "ALTER TABLE storyboard_frames ADD COLUMN dialog TEXT DEFAULT ''",
+            "audio_notes": "ALTER TABLE storyboard_frames ADD COLUMN audio_notes TEXT DEFAULT ''",
         }
         for name, ddl in additions.items():
             if name not in cols:
@@ -270,6 +275,10 @@ def _migrate_sqlite(engine) -> None:
         if "flf2v_workflow" not in job_cols:
             conn.exec_driver_sql(
                 "ALTER TABLE render_jobs ADD COLUMN flf2v_workflow VARCHAR(64) DEFAULT 'wan22_flf2v'"
+            )
+        if "kind" not in job_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE render_jobs ADD COLUMN kind VARCHAR(32) DEFAULT 'movie'"
             )
 
         shot_cols = {

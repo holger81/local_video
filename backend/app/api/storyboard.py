@@ -8,12 +8,27 @@ router = APIRouter(prefix="/projects/{project_id}/storyboard", tags=["storyboard
 
 class ProposeIn(BaseModel):
     max_frames: int = 8
+    target_duration_sec: float | None = None
+    avg_beat_sec: float | None = None
+    rebuild_prompts: bool = True
+
+
+class FrameCreate(BaseModel):
+    description: str = ""
+    visual_prompt: str = ""
+    dialog: str = ""
+    audio_notes: str = ""
+    duration_hint_sec: float = 4.0
+    is_new_shot: bool = True
+    position: int | None = None
+    cast: list | None = None
 
 
 class FrameUpdate(BaseModel):
     description: str | None = None
     visual_prompt: str | None = None
     dialog: str | None = None
+    audio_notes: str | None = None
     duration_hint_sec: float | None = None
     is_new_shot: bool | None = None
     position: int | None = None
@@ -22,6 +37,20 @@ class FrameUpdate(BaseModel):
     keyframe_last_prompt: str | None = None
     keyframes: list | None = None
     cast: list | None = None
+
+
+class ReplaceBoardIn(BaseModel):
+    frames: list[dict]
+    rebuild_prompts: bool = False
+
+
+class DialogBatchIn(BaseModel):
+    enrich_only: bool | None = None
+    skip_existing: bool = False
+
+
+class DialogIn(BaseModel):
+    enrich_only: bool | None = None
 
 
 class VisualIn(BaseModel):
@@ -68,6 +97,8 @@ class AllBetweenStillsIn(BaseModel):
 
 class KeyframesIn(BaseModel):
     skip_existing: bool = True
+    # When true, enqueue ARQ job instead of blocking HTTP.
+    as_job: bool = False
 
 
 class StepClipsIn(BaseModel):
@@ -91,9 +122,61 @@ class KeyframeFromMediaIn(BaseModel):
 async def propose(project_id: int, body: ProposeIn | None = None):
     body = body or ProposeIn()
     try:
-        return await sb_svc.propose_storyboard(project_id, body.max_frames)
+        return await sb_svc.propose_storyboard(
+            project_id,
+            body.max_frames,
+            target_duration_sec=body.target_duration_sec,
+            avg_beat_sec=body.avg_beat_sec,
+            rebuild_prompts=body.rebuild_prompts,
+        )
     except (KeyError, ValueError) as e:
         raise HTTPException(400, str(e)) from e
+
+
+@router.get("/frames")
+def list_frames(project_id: int):
+    try:
+        return sb_svc.list_frames(project_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+
+
+@router.get("/frames/{frame_id}")
+def get_frame(project_id: int, frame_id: int):
+    try:
+        return sb_svc.get_frame(project_id, frame_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+
+
+@router.post("/frames")
+def create_frame(project_id: int, body: FrameCreate):
+    try:
+        return sb_svc.create_frame(
+            project_id, **body.model_dump(exclude_none=True)
+        )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.post("/replace")
+async def replace_board(project_id: int, body: ReplaceBoardIn):
+    try:
+        return await sb_svc.replace_storyboard_async(
+            project_id,
+            body.frames,
+            rebuild_prompts=body.rebuild_prompts,
+        )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.delete("/frames/{frame_id}")
+def delete_frame(project_id: int, frame_id: int):
+    try:
+        return sb_svc.delete_frame(project_id, frame_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
 
 
 @router.patch("/frames/{frame_id}")
@@ -131,6 +214,12 @@ async def create_all_stills(project_id: int, body: AllStillsIn | None = None):
 async def create_all_keyframes(project_id: int, body: KeyframesIn | None = None):
     body = body or KeyframesIn()
     try:
+        if body.as_job:
+            from app.services import keyframes_job as kf_job
+
+            return await kf_job.start_keyframes_job(
+                project_id, skip_existing=body.skip_existing
+            )
         return await sb_svc.generate_all_keyframes(
             project_id, skip_existing=body.skip_existing
         )
@@ -138,6 +227,19 @@ async def create_all_keyframes(project_id: int, body: KeyframesIn | None = None)
         raise HTTPException(400, str(e)) from e
     except Exception as e:
         raise HTTPException(500, str(e)) from e
+
+
+@router.post("/keyframes/job")
+async def start_keyframes_job(project_id: int, body: KeyframesIn | None = None):
+    body = body or KeyframesIn()
+    try:
+        from app.services import keyframes_job as kf_job
+
+        return await kf_job.start_keyframes_job(
+            project_id, skip_existing=body.skip_existing
+        )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, str(e)) from e
 
 
 @router.post("/step-clips")
@@ -192,13 +294,33 @@ async def generate_visual(project_id: int, frame_id: int, body: VisualIn | None 
 
 
 @router.post("/frames/{frame_id}/dialog")
-async def generate_frame_dialog(project_id: int, frame_id: int):
-    """LLM: fill Dialog/audio for this beat from the project story."""
+async def generate_frame_dialog(
+    project_id: int, frame_id: int, body: DialogIn | None = None
+):
+    """LLM: fill spoken dialog and/or SFX notes for this beat."""
+    body = body or DialogIn()
     try:
-        return await sb_svc.generate_frame_dialog(project_id, frame_id)
+        return await sb_svc.generate_frame_dialog(
+            project_id, frame_id, enrich_only=body.enrich_only
+        )
     except KeyError as e:
         raise HTTPException(404, str(e)) from e
     except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
+@router.post("/dialogs")
+async def generate_all_dialogs(project_id: int, body: DialogBatchIn | None = None):
+    body = body or DialogBatchIn()
+    try:
+        return await sb_svc.generate_all_dialogs(
+            project_id,
+            enrich_only=body.enrich_only,
+            skip_existing=body.skip_existing,
+        )
+    except (KeyError, ValueError) as e:
         raise HTTPException(400, str(e)) from e
     except Exception as e:
         raise HTTPException(500, str(e)) from e
