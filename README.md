@@ -72,12 +72,15 @@ Cursor / MCP client example (`mcp.json`):
 
 The MCP surface mirrors the REST API so an agent can drive the full studio:
 
-- **Projects / story:** `list_projects`, `create_project`, `get_project`, `update_project`, `generate_story`, `extend_story`, `set_story`, `approve_story`
-- **Cast:** `list_characters`, `create_character`, `update_character`, `delete_character`, `detect_characters`, `generate_character_reference`, `delete_character_reference`, `generate_outfit_reference`
-- **Storyboard:** `propose_storyboard`, `update_frame` (incl. cast/keyframes/dialog), `approve_storyboard`, `generate_frame_dialog`, `generate_cast_ref_sheet`, stills/keyframes/step-clips/between-stills (+ edit/delete helpers)
-- **Images:** `generate_image` (freeform `still_hero` / `still_edit`)
+- **Projects / story:** `list_projects`, `create_project`, `get_project`, `update_project` (incl. `visual_style`), `generate_story`, `extend_story`, `set_story`, `approve_story`
+- **Cast:** `list_characters`, `create_character`, `update_character` (incl. `reference_image_path`), `delete_character`, `detect_characters`, `generate_character_reference`, `delete_character_reference`, `generate_outfit_reference`, `set_character_reference_from_media`, `set_outfit_reference_from_media`
+- **Storyboard:** `propose_storyboard`, `update_frame` (incl. cast/keyframes/dialog), `approve_storyboard`, `generate_frame_dialog`, `generate_cast_ref_sheet`, stills/keyframes/step-clips/between-stills (+ edit/delete helpers), `set_frame_still_from_media`, `set_keyframe_from_media`
+- **Library:** `upload_library_image` (base64), `list_library_images`, `get_library_image`, `delete_library_image`, `transform_library_image`, `apply_project_style_to_image` (uses `visual_style` or falls back to `genre`)
+- **Images:** `generate_image` (freeform `still_hero` / `still_edit`; library paths work as `reference_image_path`)
 - **Movies:** `start_movie`, `get_job_status`, `pause_job`, `resume_job`, `cancel_job`, `delete_job`, `list_assets`, `get_movie`, `list_workflows`
 - **Settings:** `get_settings_public`, `update_settings`, `list_video_backends`, `list_llm_models`, `health`
+
+REST also exposes `POST /api/library/upload`, `GET/DELETE /api/library…`, transform/apply-style routes, and `POST /api/images/generate`. The web UI has a **Library** page plus cast attach controls. Project **Visual style** is editable on the project page.
 
 Long renders return a `job_id` immediately — poll `get_job_status`.
 

@@ -77,6 +77,16 @@ class StepClipsIn(BaseModel):
     video_backend: str | None = None
 
 
+class MediaPathIn(BaseModel):
+    media_path: str
+
+
+class KeyframeFromMediaIn(BaseModel):
+    media_path: str
+    index: int | None = None
+    role: str | None = None
+
+
 @router.post("/propose")
 async def propose(project_id: int, body: ProposeIn | None = None):
     body = body or ProposeIn()
@@ -324,6 +334,34 @@ async def edit_still(project_id: int, frame_id: int, body: EditStillIn):
         raise HTTPException(404, str(e)) from e
     except Exception as e:
         raise HTTPException(500, str(e)) from e
+
+
+@router.post("/frames/{frame_id}/still/from-media")
+def set_still_from_media(project_id: int, frame_id: int, body: MediaPathIn):
+    try:
+        return sb_svc.set_frame_still_from_media(
+            project_id, frame_id, body.media_path
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.post("/frames/{frame_id}/keyframes/from-media")
+def set_keyframe_from_media(project_id: int, frame_id: int, body: KeyframeFromMediaIn):
+    try:
+        return sb_svc.set_keyframe_from_media(
+            project_id,
+            frame_id,
+            body.media_path,
+            index=body.index,
+            role=body.role,
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(400, str(e)) from e
 
 
 @router.delete("/frames/{frame_id}/media/{kind}")

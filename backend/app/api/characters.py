@@ -25,6 +25,7 @@ class CharacterPatch(BaseModel):
     position: int | None = None
     approved: bool | None = None
     intro_frame_id: int | None = None
+    reference_image_path: str | None = None
 
 
 class DetectIn(BaseModel):
@@ -33,6 +34,10 @@ class DetectIn(BaseModel):
 
 class ReferenceIn(BaseModel):
     instruction: str | None = None
+
+
+class MediaPathIn(BaseModel):
+    media_path: str
 
 
 @router.get("")
@@ -114,6 +119,20 @@ async def generate_reference(
         raise HTTPException(400, str(e)) from e
 
 
+@router.post("/{character_id}/reference/from-media")
+def set_character_reference_from_media(
+    project_id: int, character_id: int, body: MediaPathIn
+):
+    try:
+        return char_svc.set_character_reference_from_media(
+            project_id, character_id, body.media_path
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(400, str(e)) from e
+
+
 @router.delete("/{character_id}/reference")
 def delete_reference(project_id: int, character_id: int):
     try:
@@ -140,4 +159,21 @@ async def generate_outfit_reference(
     except KeyError as e:
         raise HTTPException(404, str(e)) from e
     except Exception as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.post("/{character_id}/outfits/{outfit_id}/reference/from-media")
+def set_outfit_reference_from_media(
+    project_id: int,
+    character_id: int,
+    outfit_id: str,
+    body: MediaPathIn,
+):
+    try:
+        return char_svc.set_outfit_reference_from_media(
+            project_id, character_id, outfit_id, body.media_path
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except (ValueError, FileNotFoundError) as e:
         raise HTTPException(400, str(e)) from e

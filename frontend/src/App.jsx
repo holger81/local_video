@@ -50,6 +50,24 @@ const api = async (path, opts = {}) => {
   return data;
 };
 
+/** Multipart upload (do not set Content-Type — browser sets boundary). */
+const apiUpload = async (path, formData) => {
+  const res = await fetch(`/api${path}`, { method: "POST", body: formData });
+  const text = await res.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { detail: text };
+  }
+  if (!res.ok) {
+    throw new Error(
+      formatApiError(data?.detail ?? data?.error, res.statusText || "Request failed")
+    );
+  }
+  return data;
+};
+
 /** Map container paths like /media/projects/... to the public media API. */
 function mediaUrl(absPath) {
   if (!absPath) return null;
@@ -141,6 +159,7 @@ function Shell({ children }) {
         </Link>
         <nav>
           <Link to="/">Projects</Link>
+          <Link to="/library">Library</Link>
           <Link to="/settings">Settings</Link>
         </nav>
       </header>
@@ -405,6 +424,267 @@ function SettingsPage() {
   );
 }
 
+function LibraryPage() {
+  const [items, setItems] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState("");
+  const [selectedId, setSelectedId] = useState("");
+  const [transformInstr, setTransformInstr] = useState("");
+  const [styleProjectId, setStyleProjectId] = useState("");
+  const [styleInstr, setStyleInstr] = useState("");
+  const [label, setLabel] = useState("");
+  const [copied, setCopied] = useState("");
+
+  const load = useCallback(async () => {
+    setErr("");
+    const [lib, projs] = await Promise.all([api("/library"), api("/projects")]);
+    setItems(lib || []);
+    setProjects(projs || []);
+    return lib || [];
+  }, []);
+
+  useEffect(() => {
+    load()
+      .then((lib) => {
+        setSelectedId((prev) => prev || (lib[0]?.id ?? ""));
+      })
+      .catch((e) => setErr(String(e.message || e)));
+  }, [load]);
+
+  const selected = items.find((x) => x.id === selectedId) || null;
+
+  const uploadFile = async (file) => {
+    if (!file) return;
+    setBusy("upload");
+    setErr("");
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      if (label.trim()) fd.append("label", label.trim());
+      const asset = await apiUpload("/library/upload", fd);
+      setLabel("");
+      await load();
+      setSelectedId(asset.id);
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const runTransform = async () => {
+    if (!selected || !transformInstr.trim()) return;
+    setBusy("transform");
+    setErr("");
+    try {
+      const asset = await api(`/library/${selected.id}/transform`, {
+        method: "POST",
+        body: JSON.stringify({ instruction: transformInstr.trim() }),
+      });
+      setTransformInstr("");
+      await load();
+      setSelectedId(asset.id);
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const runApplyStyle = async () => {
+    if (!selected || !styleProjectId) return;
+    setBusy("apply-style");
+    setErr("");
+    try {
+      const asset = await api(`/library/${selected.id}/apply-project-style`, {
+        method: "POST",
+        body: JSON.stringify({
+          project_id: Number(styleProjectId),
+          instruction: styleInstr.trim() || null,
+        }),
+      });
+      setStyleInstr("");
+      await load();
+      setSelectedId(asset.id);
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const copyPath = async (path) => {
+    try {
+      await navigator.clipboard.writeText(path);
+      setCopied(path);
+      setTimeout(() => setCopied(""), 1500);
+    } catch {
+      setCopied("");
+    }
+  };
+
+  return (
+    <Shell>
+      <section className="hero-panel">
+        <h1>Image library</h1>
+        <p>Upload stills, transform them, apply a project’s visual style, then attach to cast or frames.</p>
+      </section>
+      {err && <p className="error">{err}</p>}
+      {busy && <p className="muted">Working: {busy}…</p>}
+
+      <section className="card-like">
+        <h2>Upload</h2>
+        <label>
+          Label (optional)
+          <input value={label} onChange={(e) => setLabel(e.target.value)} disabled={!!busy} />
+        </label>
+        <label>
+          Image file
+          <input
+            type="file"
+            accept="image/*"
+            disabled={!!busy}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              uploadFile(f);
+            }}
+          />
+        </label>
+      </section>
+
+      <section className="grid two">
+        <div className="card-like">
+          <h2>Assets</h2>
+          <div className="characters-grid">
+            {items.map((a) => {
+              const src = mediaUrl(a.media_path || a.path);
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  className={`character-card${selectedId === a.id ? " selected" : ""}`}
+                  onClick={() => setSelectedId(a.id)}
+                  disabled={!!busy}
+                >
+                  {src ? (
+                    <img src={`${src}?t=${encodeURIComponent(a.media_path || a.id)}`} alt="" />
+                  ) : (
+                    <div className="muted tiny">No preview</div>
+                  )}
+                  <strong>{a.label || a.id}</strong>
+                  <span className="muted tiny">{a.id}</span>
+                </button>
+              );
+            })}
+            {!items.length && <p className="muted tiny">Library is empty — upload an image.</p>}
+          </div>
+        </div>
+
+        <div className="card-like">
+          <h2>Selected</h2>
+          {!selected ? (
+            <p className="muted">Select an asset.</p>
+          ) : (
+            <>
+              {mediaUrl(selected.media_path || selected.path) && (
+                <div className="media-item">
+                  <img
+                    src={`${mediaUrl(selected.media_path || selected.path)}?t=${encodeURIComponent(selected.media_path)}`}
+                    alt=""
+                  />
+                </div>
+              )}
+              <p className="muted tiny">
+                <code>{selected.media_path}</code>
+              </p>
+              <div className="row">
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={!!busy}
+                  onClick={() => copyPath(selected.media_path)}
+                >
+                  {copied === selected.media_path ? "Copied" : "Copy media_path"}
+                </button>
+                <button
+                  type="button"
+                  className="ghost danger"
+                  disabled={!!busy}
+                  onClick={async () => {
+                    if (!window.confirm(`Delete ${selected.label || selected.id}?`)) return;
+                    setBusy("delete");
+                    try {
+                      await api(`/library/${selected.id}`, { method: "DELETE" });
+                      setSelectedId("");
+                      await load();
+                    } catch (e) {
+                      setErr(String(e.message || e));
+                    } finally {
+                      setBusy("");
+                    }
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+              <label>
+                Transform instruction
+                <textarea
+                  rows={3}
+                  value={transformInstr}
+                  onChange={(e) => setTransformInstr(e.target.value)}
+                  placeholder="e.g. change jacket to red leather…"
+                  disabled={!!busy}
+                />
+              </label>
+              <button
+                type="button"
+                disabled={!!busy || !transformInstr.trim()}
+                onClick={runTransform}
+              >
+                Transform (new asset)
+              </button>
+              <label>
+                Apply project style
+                <select
+                  value={styleProjectId}
+                  onChange={(e) => setStyleProjectId(e.target.value)}
+                  disabled={!!busy}
+                >
+                  <option value="">Select project…</option>
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.title}
+                      {p.visual_style || p.genre ? ` (${p.visual_style || p.genre})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Extra style direction (optional)
+                <input
+                  value={styleInstr}
+                  onChange={(e) => setStyleInstr(e.target.value)}
+                  disabled={!!busy}
+                />
+              </label>
+              <button
+                type="button"
+                disabled={!!busy || !styleProjectId}
+                onClick={runApplyStyle}
+              >
+                Apply project style
+              </button>
+            </>
+          )}
+        </div>
+      </section>
+    </Shell>
+  );
+}
+
 function Home() {
   const [projects, setProjects] = useState([]);
   const [title, setTitle] = useState("");
@@ -501,6 +781,10 @@ function ProjectPage() {
   const [charDraft, setCharDraft] = useState(null);
   const [charEditInstr, setCharEditInstr] = useState("");
   const [outfitEditInstr, setOutfitEditInstr] = useState({});
+  const [visualStyleDraft, setVisualStyleDraft] = useState("");
+  const [libraryAssets, setLibraryAssets] = useState([]);
+  const [libPickChar, setLibPickChar] = useState("");
+  const [libPickOutfit, setLibPickOutfit] = useState({});
   const [err, setErr] = useState("");
   const [job, setJob] = useState(null);
   const [movies, setMovies] = useState([]);
@@ -526,6 +810,7 @@ function ProjectPage() {
     const p = await api(`/projects/${id}`);
     setProject(p);
     setStoryEdit(p.story || "");
+    setVisualStyleDraft(p.visual_style || "");
     setMovieForm((prev) => ({
       ...prev,
       video_backend: p.video_backend || prev.video_backend || "wan",
@@ -540,6 +825,11 @@ function ProjectPage() {
       await loadAssets();
     } catch {
       /* assets optional */
+    }
+    try {
+      setLibraryAssets(await api("/library"));
+    } catch {
+      setLibraryAssets([]);
     }
     return p;
   }, [id, loadAssets]);
@@ -1125,6 +1415,27 @@ function ProjectPage() {
           {project.genre} · story {project.story_approved ? "approved" : "draft"} · board{" "}
           {project.storyboard_approved ? "approved" : "open"}
         </p>
+        <label>
+          Visual style
+          <textarea
+            rows={2}
+            value={visualStyleDraft}
+            disabled={!!busy}
+            placeholder="Art direction for stills / restyle (falls back to genre if empty)"
+            onChange={(e) => setVisualStyleDraft(e.target.value)}
+            onBlur={() => {
+              if (visualStyleDraft === (project.visual_style || "")) return;
+              run("update visual style", async () => {
+                const p = await api(`/projects/${id}`, {
+                  method: "PATCH",
+                  body: JSON.stringify({ visual_style: visualStyleDraft }),
+                });
+                setProject(p);
+                setVisualStyleDraft(p.visual_style || "");
+              });
+            }}
+          />
+        </label>
         <label className="project-backend">
           Project video backend
           <select
@@ -1977,6 +2288,101 @@ function ProjectPage() {
                         >
                           {oRef ? "Regenerate outfit look" : "Generate outfit look"}
                         </button>
+                        <label>
+                          Use library for outfit
+                          <select
+                            value={libPickOutfit[o.id] || ""}
+                            disabled={!!busy}
+                            onChange={(e) =>
+                              setLibPickOutfit((prev) => ({
+                                ...prev,
+                                [o.id]: e.target.value,
+                              }))
+                            }
+                          >
+                            <option value="">Pick from library…</option>
+                            {libraryAssets.map((a) => (
+                              <option key={a.id} value={a.media_path}>
+                                {a.label || a.id}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <div className="row">
+                          <button
+                            type="button"
+                            className="ghost"
+                            disabled={!!busy || !(libPickOutfit[o.id] || "")}
+                            onClick={async () => {
+                              const media_path = libPickOutfit[o.id];
+                              if (!media_path) return;
+                              setBusy("attach outfit");
+                              setErr("");
+                              try {
+                                await saveChar();
+                                await api(
+                                  `/projects/${id}/characters/${c.id}/outfits/${o.id}/reference/from-media`,
+                                  {
+                                    method: "POST",
+                                    body: JSON.stringify({ media_path }),
+                                  }
+                                );
+                                setLibPickOutfit((prev) => {
+                                  const next = { ...prev };
+                                  delete next[o.id];
+                                  return next;
+                                });
+                                await load();
+                              } catch (ex) {
+                                setErr(String(ex.message || ex));
+                              } finally {
+                                setBusy("");
+                              }
+                            }}
+                          >
+                            Set outfit from library
+                          </button>
+                          <label className="ghost" style={{ cursor: "pointer" }}>
+                            Upload…
+                            <input
+                              type="file"
+                              accept="image/*"
+                              hidden
+                              disabled={!!busy}
+                              onChange={async (e) => {
+                                const file = e.target.files?.[0];
+                                e.target.value = "";
+                                if (!file) return;
+                                setBusy("upload outfit");
+                                setErr("");
+                                try {
+                                  await saveChar();
+                                  const fd = new FormData();
+                                  fd.append("file", file);
+                                  fd.append(
+                                    "label",
+                                    `${charDraft.name || "char"} ${o.name || "outfit"}`
+                                  );
+                                  const asset = await apiUpload("/library/upload", fd);
+                                  await api(
+                                    `/projects/${id}/characters/${c.id}/outfits/${o.id}/reference/from-media`,
+                                    {
+                                      method: "POST",
+                                      body: JSON.stringify({
+                                        media_path: asset.media_path,
+                                      }),
+                                    }
+                                  );
+                                  await load();
+                                } catch (ex) {
+                                  setErr(String(ex.message || ex));
+                                } finally {
+                                  setBusy("");
+                                }
+                              }}
+                            />
+                          </label>
+                        </div>
                         {oRef && (
                           <>
                             <label>
@@ -2136,6 +2542,83 @@ function ProjectPage() {
                       Clear reference
                     </button>
                   )}
+                </div>
+                <label>
+                  Use library image
+                  <select
+                    value={libPickChar}
+                    disabled={!!busy}
+                    onChange={(e) => setLibPickChar(e.target.value)}
+                  >
+                    <option value="">Pick from library…</option>
+                    {libraryAssets.map((a) => (
+                      <option key={a.id} value={a.media_path}>
+                        {a.label || a.id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="row">
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={!!busy || !libPickChar}
+                    onClick={async () => {
+                      setBusy("attach library ref");
+                      setErr("");
+                      try {
+                        await api(
+                          `/projects/${id}/characters/${c.id}/reference/from-media`,
+                          {
+                            method: "POST",
+                            body: JSON.stringify({ media_path: libPickChar }),
+                          }
+                        );
+                        setLibPickChar("");
+                        await load();
+                      } catch (ex) {
+                        setErr(String(ex.message || ex));
+                      } finally {
+                        setBusy("");
+                      }
+                    }}
+                  >
+                    Set as reference
+                  </button>
+                  <label className="ghost" style={{ cursor: "pointer" }}>
+                    Upload…
+                    <input
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      disabled={!!busy}
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (!file) return;
+                        setBusy("upload ref");
+                        setErr("");
+                        try {
+                          const fd = new FormData();
+                          fd.append("file", file);
+                          fd.append("label", `${charDraft.name || "character"} ref`);
+                          const asset = await apiUpload("/library/upload", fd);
+                          await api(
+                            `/projects/${id}/characters/${c.id}/reference/from-media`,
+                            {
+                              method: "POST",
+                              body: JSON.stringify({ media_path: asset.media_path }),
+                            }
+                          );
+                          await load();
+                        } catch (ex) {
+                          setErr(String(ex.message || ex));
+                        } finally {
+                          setBusy("");
+                        }
+                      }}
+                    />
+                  </label>
                 </div>
                 <label>
                   Edit instruction
@@ -2903,6 +3386,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<Home />} />
+      <Route path="/library" element={<LibraryPage />} />
       <Route path="/projects/:id" element={<ProjectPage />} />
       <Route path="/settings" element={<SettingsPage />} />
     </Routes>

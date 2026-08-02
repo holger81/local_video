@@ -1246,6 +1246,116 @@ def _resolve_media_file(stored: str) -> Path:
     return candidate
 
 
+def set_frame_still_from_media(
+    project_id: int, frame_id: int, media_path: str
+) -> dict[str, Any]:
+    """Copy a library/media image into the frame folder and set as still."""
+    from app.services.library import copy_media_into
+
+    path = (media_path or "").strip()
+    if not path:
+        raise ValueError("media_path is required")
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+    dest_dir = (
+        get_settings().media_dir
+        / "projects"
+        / str(project_id)
+        / "frames"
+        / str(frame_id)
+    )
+    dest = copy_media_into(path, dest_dir, filename=f"still_{Path(path).name}")
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        assert f
+        old = f.still_path
+        f.still_path = str(dest)
+        db.commit()
+        payload = _frame_dict(f)
+    if old:
+        try:
+            prev = _resolve_media_file(str(old))
+            if prev.resolve() != dest.resolve() and prev.is_file():
+                prev.unlink()
+        except (FileNotFoundError, ValueError, OSError):
+            pass
+    return payload
+
+
+def set_keyframe_from_media(
+    project_id: int,
+    frame_id: int,
+    media_path: str,
+    *,
+    index: int | None = None,
+    role: str | None = None,
+) -> dict[str, Any]:
+    """Copy a library/media image into a keyframe slot (by index or role)."""
+    from app.services.library import copy_media_into
+
+    path = (media_path or "").strip()
+    if not path:
+        raise ValueError("media_path is required")
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        if not f or f.project_id != project_id:
+            raise KeyError(f"frame {frame_id} not found")
+        keyframes = _keyframes_list(f)
+        if not keyframes:
+            raise ValueError("frame has no keyframes — rebuild prompts first")
+        target: int | None = None
+        if index is not None:
+            target = int(index)
+            if target < 0 or target >= len(keyframes):
+                raise ValueError(f"keyframe index {target} out of range")
+        elif role:
+            r = (role or "").strip().lower()
+            if r in ("first", "start"):
+                target = 0
+            elif r in ("last", "end"):
+                target = len(keyframes) - 1
+            elif r in ("middle", "mid"):
+                mids = [
+                    i for i, k in enumerate(keyframes) if k.get("role") == "middle"
+                ]
+                if not mids:
+                    raise ValueError("no middle keyframe on this frame")
+                target = mids[0]
+            else:
+                raise ValueError("role must be first, middle, or last")
+        else:
+            raise ValueError("provide keyframe index or role")
+    dest_dir = (
+        get_settings().media_dir
+        / "projects"
+        / str(project_id)
+        / "frames"
+        / str(frame_id)
+    )
+    dest = copy_media_into(
+        path, dest_dir, filename=f"kf{target}_{Path(path).name}"
+    )
+    with SessionLocal() as db:
+        f = db.get(StoryboardFrame, frame_id)
+        assert f
+        keyframes = _keyframes_list(f)
+        old = keyframes[target].get("path")
+        keyframes[target]["path"] = str(dest)
+        _sync_legacy_keyframe_columns(f, keyframes)
+        db.commit()
+        payload = _frame_dict(f)
+    if old:
+        try:
+            prev = _resolve_media_file(str(old))
+            if prev.resolve() != dest.resolve() and prev.is_file():
+                prev.unlink()
+        except (FileNotFoundError, ValueError, OSError):
+            pass
+    return payload
+
+
 def build_edit_prompt(
     *,
     instruction: str,

@@ -1267,3 +1267,93 @@ async def generate_outfit_reference(
         db.commit()
         db.refresh(ch)
         return _character_dict(ch)
+
+
+def set_character_reference_from_media(
+    project_id: int, character_id: int, media_path: str
+) -> dict[str, Any]:
+    """Copy a library/media image into the character folder and set as portrait."""
+    from app.services.library import copy_media_into
+
+    path = (media_path or "").strip()
+    if not path:
+        raise ValueError("media_path is required")
+    dest_dir = (
+        get_settings().media_dir
+        / "projects"
+        / str(project_id)
+        / "characters"
+        / str(character_id)
+    )
+    dest = copy_media_into(path, dest_dir, filename=f"ref_{Path(path).name}")
+    with SessionLocal() as db:
+        c = db.get(Character, character_id)
+        if not c or c.project_id != project_id:
+            raise KeyError(f"character {character_id} not found")
+        old = c.reference_image_path
+        c.reference_image_path = str(dest)
+        c.auto_detected = False
+        db.commit()
+        db.refresh(c)
+        payload = _character_dict(c)
+    if old:
+        try:
+            prev = _resolve_media_file(str(old))
+            if prev.resolve() != dest.resolve() and prev.is_file():
+                prev.unlink()
+        except (FileNotFoundError, ValueError, OSError):
+            pass
+    return payload
+
+
+def set_outfit_reference_from_media(
+    project_id: int,
+    character_id: int,
+    outfit_id: str,
+    media_path: str,
+) -> dict[str, Any]:
+    """Copy a library/media image into the outfit folder and set as wardrobe still."""
+    from app.services.library import copy_media_into
+
+    path = (media_path or "").strip()
+    if not path:
+        raise ValueError("media_path is required")
+    dest_dir = (
+        get_settings().media_dir
+        / "projects"
+        / str(project_id)
+        / "characters"
+        / str(character_id)
+        / "outfits"
+    )
+    dest = copy_media_into(
+        path, dest_dir, filename=f"outfit_{outfit_id}_{Path(path).name}"
+    )
+    with SessionLocal() as db:
+        c = db.get(Character, character_id)
+        if not c or c.project_id != project_id:
+            raise KeyError(f"character {character_id} not found")
+        outfits = _normalize_outfits(c.outfits or [])
+        old = None
+        found = False
+        for o in outfits:
+            if o.get("id") == outfit_id:
+                old = o.get("reference_image_path")
+                o["reference_image_path"] = str(dest)
+                found = True
+                break
+        if not found:
+            raise KeyError(f"outfit {outfit_id} not found")
+        c.outfits = list(outfits)
+        c.auto_detected = False
+        db.commit()
+        db.refresh(c)
+        payload = _character_dict(c)
+    if old:
+        try:
+            prev = _resolve_media_file(str(old))
+            if prev.resolve() != dest.resolve() and prev.is_file():
+                prev.unlink()
+        except (FileNotFoundError, ValueError, OSError):
+            pass
+    return payload

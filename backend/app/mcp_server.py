@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.db.models import init_db
 from app.services import characters as char_svc
 from app.services import images as images_svc
+from app.services import library as lib_svc
 from app.services import movie as movie_svc
 from app.services import projects as projects_svc
 from app.services import runtime_settings as rs
@@ -53,13 +54,15 @@ def update_project(
     project_id: int,
     title: str | None = None,
     genre: str | None = None,
+    visual_style: str | None = None,
     premise: str | None = None,
     video_backend: str | None = None,
 ) -> dict:
-    """Patch project fields (title, genre, premise, default video_backend)."""
+    """Patch project fields (title, genre, visual_style, premise, video_backend)."""
     fields = {
         "title": title,
         "genre": genre,
+        "visual_style": visual_style,
         "premise": premise,
         "video_backend": video_backend,
     }
@@ -141,8 +144,9 @@ def update_character(
     position: int | None = None,
     approved: bool | None = None,
     intro_frame_id: int | None = None,
+    reference_image_path: str | None = None,
 ) -> dict:
-    """Patch a character (including full outfits list replacement when provided)."""
+    """Patch a character (including outfits list or reference_image_path)."""
     fields = {
         "name": name,
         "description": description,
@@ -152,6 +156,7 @@ def update_character(
         "position": position,
         "approved": approved,
         "intro_frame_id": intro_frame_id,
+        "reference_image_path": reference_image_path,
     }
     return char_svc.update_character(
         project_id, character_id, **{k: v for k, v in fields.items() if v is not None}
@@ -198,6 +203,26 @@ async def generate_outfit_reference(
     """Generate or edit a wardrobe reference still for one outfit id."""
     return await char_svc.generate_outfit_reference(
         project_id, character_id, outfit_id, instruction=instruction
+    )
+
+
+@mcp.tool()
+def set_character_reference_from_media(
+    project_id: int, character_id: int, media_path: str
+) -> dict:
+    """Copy a library/media image onto a character as their portrait reference."""
+    return char_svc.set_character_reference_from_media(
+        project_id, character_id, media_path
+    )
+
+
+@mcp.tool()
+def set_outfit_reference_from_media(
+    project_id: int, character_id: int, outfit_id: str, media_path: str
+) -> dict:
+    """Copy a library/media image onto an outfit wardrobe still."""
+    return char_svc.set_outfit_reference_from_media(
+        project_id, character_id, outfit_id, media_path
     )
 
 
@@ -449,6 +474,88 @@ def delete_frame_media(project_id: int, frame_id: int, kind: str) -> dict:
     return sb_svc.delete_frame_media(project_id, frame_id, kind)
 
 
+@mcp.tool()
+def set_frame_still_from_media(
+    project_id: int, frame_id: int, media_path: str
+) -> dict:
+    """Copy a library/media image onto a frame as its still."""
+    return sb_svc.set_frame_still_from_media(project_id, frame_id, media_path)
+
+
+@mcp.tool()
+def set_keyframe_from_media(
+    project_id: int,
+    frame_id: int,
+    media_path: str,
+    index: int | None = None,
+    role: str | None = None,
+) -> dict:
+    """Copy a library/media image onto a keyframe slot (index or role=first|middle|last)."""
+    return sb_svc.set_keyframe_from_media(
+        project_id, frame_id, media_path, index=index, role=role
+    )
+
+
+# --- Image library ------------------------------------------------------------
+
+
+@mcp.tool()
+def upload_library_image(
+    image_base64: str, filename: str, label: str | None = None
+) -> dict:
+    """Upload an image into the global library (base64; optional data: URL prefix)."""
+    return lib_svc.upload_image_base64(
+        image_base64, filename=filename, label=label
+    )
+
+
+@mcp.tool()
+def list_library_images() -> list:
+    """List assets in the global image library (id, media_path, url, label)."""
+    return lib_svc.list_images()
+
+
+@mcp.tool()
+def get_library_image(asset_id: str) -> dict:
+    """Get metadata for one library asset."""
+    return lib_svc.get_image(asset_id)
+
+
+@mcp.tool()
+def delete_library_image(asset_id: str) -> dict:
+    """Delete a library asset and its files."""
+    return lib_svc.delete_image(asset_id)
+
+
+@mcp.tool()
+async def transform_library_image(
+    asset_id: str,
+    instruction: str,
+    seed: int | None = None,
+    preserve_style: bool = True,
+) -> dict:
+    """Edit a library image via still_edit; stores result as a new library asset."""
+    return await lib_svc.transform_image(
+        asset_id,
+        instruction,
+        seed=seed,
+        preserve_style=preserve_style,
+    )
+
+
+@mcp.tool()
+async def apply_project_style_to_image(
+    asset_id: str,
+    project_id: int,
+    instruction: str | None = None,
+    seed: int | None = None,
+) -> dict:
+    """Restyle a library image using the project's visual_style (or genre fallback)."""
+    return await lib_svc.apply_project_style(
+        asset_id, project_id, instruction=instruction, seed=seed
+    )
+
+
 # --- Generic image ------------------------------------------------------------
 
 
@@ -465,11 +572,13 @@ async def generate_image(
     reference_image_path: str | None = None,
     project_id: int | None = None,
     label: str = "gen",
+    preserve_style: bool = True,
 ) -> dict:
     """Generate a generic still via ComfyUI (not tied to a storyboard frame).
 
-    Text-to-image uses still_hero. Pass reference_image_path (under MEDIA_DIR) for
-    still_edit. Returns path, media_path, and /api/media/... url.
+    Text-to-image uses still_hero. Pass reference_image_path (under MEDIA_DIR, including
+    library/...) for still_edit. Set preserve_style=false to restyle from a reference.
+    Returns path, media_path, and /api/media/... url.
     """
     return await images_svc.generate_image(
         prompt,
@@ -483,6 +592,7 @@ async def generate_image(
         reference_image_path=reference_image_path,
         project_id=project_id,
         label=label,
+        preserve_style=preserve_style,
     )
 
 

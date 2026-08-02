@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import characters, jobs, projects, story, storyboard
+from app.api import characters, images, jobs, library, projects, story, storyboard
 from app.api import settings as settings_api
 from app.config import get_settings
 from app.db.models import init_db
@@ -27,6 +27,8 @@ app.include_router(storyboard.router, prefix="/api")
 app.include_router(characters.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
 app.include_router(settings_api.router, prefix="/api")
+app.include_router(library.router, prefix="/api")
+app.include_router(images.router, prefix="/api")
 
 _STATIC = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 

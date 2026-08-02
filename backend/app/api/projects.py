@@ -15,6 +15,7 @@ class CreateProjectIn(BaseModel):
 class ProjectPatch(BaseModel):
     title: str | None = None
     genre: str | None = None
+    visual_style: str | None = None
     premise: str | None = None
     video_backend: str | None = None
 

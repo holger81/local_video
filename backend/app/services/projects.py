@@ -10,6 +10,7 @@ def _project_dict(p: Project) -> dict[str, Any]:
         "id": p.id,
         "title": p.title,
         "genre": p.genre,
+        "visual_style": getattr(p, "visual_style", None) or "",
         "premise": p.premise,
         "story": p.story,
         "story_approved": p.story_approved,
@@ -45,7 +46,7 @@ def create_project(title: str, genre: str = "", premise: str = "") -> dict[str, 
 
 
 def update_project(project_id: int, **fields: Any) -> dict[str, Any]:
-    allowed = {"title", "genre", "premise", "video_backend"}
+    allowed = {"title", "genre", "premise", "video_backend", "visual_style"}
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         if not p:
@@ -57,6 +58,8 @@ def update_project(project_id: int, **fields: Any) -> dict[str, Any]:
                 from app.services.video_backends import normalize_backend_id
 
                 p.video_backend = normalize_backend_id(str(v))
+            elif k == "visual_style":
+                p.visual_style = str(v)
             else:
                 setattr(p, k, v)
         db.commit()

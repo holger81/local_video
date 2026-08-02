@@ -38,11 +38,15 @@ async def generate_image(
     reference_image_path: str | None = None,
     project_id: int | None = None,
     label: str = "gen",
+    preserve_style: bool = True,
 ) -> dict[str, Any]:
     """Generate a still via ComfyUI.
 
     Text-to-image uses ``still_hero``. When ``reference_image_path`` is set, uses
     ``still_edit`` (Flux ReferenceLatent) with the prompt as the edit instruction.
+
+    When editing with a reference, ``preserve_style=False`` allows restyling
+    (e.g. apply project visual style) instead of locking the reference art style.
     """
     text = (prompt or "").strip()
     if not text:
@@ -88,10 +92,21 @@ async def generate_image(
         ref = _resolve_reference(reference_image_path or "")
         uploaded = await comfy.upload_image(ref)
         # still_edit expects an edit-style instruction; keep the user prompt as-is.
+        if preserve_style:
+            style_bit = (
+                "Preserve identity and art style from the reference unless asked "
+                "to change them."
+            )
+        else:
+            style_bit = (
+                "Preserve subject identity, pose, and composition from the reference. "
+                "Do NOT preserve the reference art style — apply the style described "
+                "in the instruction."
+            )
         params["positive_prompt"] = (
             "Edit this image into one continuous shot. "
             f"Instruction: {text}. "
-            "Preserve identity and art style from the reference unless asked to change them."
+            f"{style_bit}"
         )
 
     graph = apply_params(

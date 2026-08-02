@@ -36,6 +36,8 @@ class Project(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     title: Mapped[str] = mapped_column(String(256))
     genre: Mapped[str] = mapped_column(String(128), default="")
+    # Art direction for stills / restyle (falls back to genre when empty)
+    visual_style: Mapped[str] = mapped_column(Text, default="")
     premise: Mapped[str] = mapped_column(Text, default="")
     story: Mapped[str] = mapped_column(Text, default="")
     story_approved: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -251,6 +253,10 @@ def _migrate_sqlite(engine) -> None:
         if "video_backend" not in project_cols:
             conn.exec_driver_sql(
                 "ALTER TABLE projects ADD COLUMN video_backend VARCHAR(16) DEFAULT 'wan'"
+            )
+        if "visual_style" not in project_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE projects ADD COLUMN visual_style TEXT DEFAULT ''"
             )
 
         job_cols = {

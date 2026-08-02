@@ -859,6 +859,11 @@ button.ghost.danger:hover:not(:disabled) {
   cursor: pointer;
 }
 
+.character-card.selected {
+  outline: 2px solid var(--accent, #6b9f7a);
+  outline-offset: 2px;
+}
+
 .character-card:hover {
   border-color: color-mix(in srgb, var(--accent) 50%, transparent);
 }
