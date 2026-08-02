@@ -662,35 +662,113 @@ def _cast_wardrobe_maps(
     return wardrobe_by_name, wardrobe_prompt_by_name, wardrobe_neg, bare_hands
 
 
-def _looks_like_vertical_split(path: Path) -> bool:
-    """True when a hard mid-frame vertical seam suggests a pair-sheet leak."""
+def _column_dx(path: Path) -> tuple[list[float], int, int]:
+    """Per-column mean abs horizontal gradient for a grayscale still."""
     from PIL import Image
 
     im = Image.open(path).convert("L")
     w, h = im.size
     if w < 64 or h < 64:
-        return False
+        return [], w, h
     pix = im.load()
     assert pix is not None
-    # Mean abs horizontal gradient per column.
     col_dx = [0.0] * (w - 1)
     for x in range(w - 1):
         total = 0.0
         for y in range(h):
             total += abs(pix[x + 1, y] - pix[x, y])
         col_dx[x] = total / h
-    mid = w // 2
-    band = col_dx[max(0, mid - 10) : mid + 10]
-    if not band:
-        return False
+    return col_dx, w, h
+
+
+def _region_std(path: Path, x0: int, x1: int) -> float:
+    """Pixel std-dev in a vertical strip (detect plain studio/portrait backgrounds)."""
+    from PIL import Image
+
+    im = Image.open(path).convert("L")
+    w, h = im.size
+    x0 = max(0, min(w, x0))
+    x1 = max(x0 + 1, min(w, x1))
+    crop = im.crop((x0, 0, x1, h))
+    hist = crop.histogram()
+    n = sum(hist) or 1
+    mean = sum(i * c for i, c in enumerate(hist)) / n
+    var = sum(((i - mean) ** 2) * c for i, c in enumerate(hist)) / n
+    return var**0.5
+
+
+def _detect_pair_sheet_leak(path: Path) -> tuple[bool, int | None]:
+    """Detect identity-pair-sheet leaks (scene | portrait strip).
+
+    Pair sheets put the join near ~2/3 width, not the midpoint — scanning only
+    ``mid`` missed most real failures. Also flag a plain right strip (white/studio
+    portrait bg) next to a detailed left scene.
+    """
+    col_dx, w, h = _column_dx(path)
+    if not col_dx:
+        return False, None
+
+    # Pair-sheet joins live in the right half; ignore outer edges.
+    lo, hi = int(w * 0.40), int(w * 0.88)
+    if hi <= lo + 2:
+        return False, None
+    band = col_dx[lo:hi]
     peak = max(band)
-    # Typical interior gradient (exclude outer 10%).
-    lo, hi = int(w * 0.1), int(w * 0.9)
-    interior = sorted(col_dx[lo:hi])
-    if not interior:
-        return False
-    median = interior[len(interior) // 2]
-    return peak > 18.0 and peak > median * 3.2
+    peak_x = lo + band.index(peak)
+
+    # Baseline: interior excluding a window around the peak.
+    samples = [
+        col_dx[x]
+        for x in range(int(w * 0.08), int(w * 0.92))
+        if abs(x - peak_x) > 14
+    ]
+    if not samples:
+        return False, None
+    samples.sort()
+    median = samples[len(samples) // 2]
+
+    seam_hit = peak > 16.0 and peak > median * 2.8
+
+    # Portrait strip heuristic: right of a candidate join is near-uniform.
+    right_std = _region_std(path, peak_x + 2, w)
+    left_std = _region_std(path, 0, max(8, peak_x - 2))
+    plain_right = right_std < 14.0 and left_std > 22.0 and peak_x > int(w * 0.45)
+
+    if seam_hit or plain_right:
+        return True, peak_x
+    return False, None
+
+
+def _looks_like_vertical_split(path: Path) -> bool:
+    """True when a hard vertical seam / portrait strip suggests a pair-sheet leak."""
+    hit, _seam = _detect_pair_sheet_leak(path)
+    return hit
+
+
+def _salvage_pair_sheet_leak(
+    src: Path,
+    dest: Path,
+    seam_x: int,
+    *,
+    width: int = 1024,
+    height: int = 576,
+) -> Path:
+    """Keep the scene left of the leaked portrait strip; cover-fill to full frame.
+
+    Insert passes often succeed on the LEFT panel and only fail by also copying the
+    RIGHT identity strip — cropping is better than shipping a diptych.
+    """
+    from PIL import Image
+
+    from app.services.characters import _fit_cover
+
+    im = Image.open(src).convert("RGB")
+    cut = max(int(im.width * 0.42), min(seam_x - 3, int(im.width * 0.90)))
+    left = im.crop((0, 0, cut, im.height))
+    out = _fit_cover(left, width, height, prefer_upper=False)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    out.save(dest)
+    return dest
 
 
 async def _iterative_cast_lock_render(
@@ -739,18 +817,20 @@ async def _iterative_cast_lock_render(
         *,
         i: int,
         label: str,
-        path: Path,
         instruction: str,
         ref: Path,
+        pass_cast: str,
         pass_seed: int,
         attempt: int,
     ) -> Path:
         nonlocal prompt_id
         uploaded = await comfy.upload_image(ref)
+        # Instruction already carries the beat; do not re-append the full beat
+        # (it often names cast not yet inserted and undoes the "alone" pass).
         edit_prompt = build_edit_prompt(
             instruction=instruction,
-            frame_prompt=beat_prompt,
-            cast_sheet=cast_sheet,
+            frame_prompt="",
+            cast_sheet=pass_cast,
             genre=genre,
             from_cast_sheet=True,
         )
@@ -782,66 +862,73 @@ async def _iterative_cast_lock_render(
 
     for i, (label, path, _approved) in enumerate(panels):
         name = (label.split("/")[0].strip() or label).strip()
-        ward_bit = wardrobe_by_name.get(name.lower(), "")
-        ward_exact = wardrobe_prompt_by_name.get(name.lower(), "")
+        ward_exact = (wardrobe_prompt_by_name.get(name.lower()) or "").strip()
         uses_pair = i > 0 or continuity_base is not None
         if ward_exact:
             ward_must = (
                 f"{name} MUST wear exactly: {ward_exact}. "
-                "Match that clothing from the identity guide; do not invent garments. "
-                if uses_pair
-                else f"{name} MUST wear exactly: {ward_exact}. "
-                "Match the reference clothing; do not invent garments. "
+                "Copy that clothing from the reference; do not invent garments. "
             )
         else:
             ward_must = (
-                f"Match {name}'s clothing exactly to the identity guide. "
-                if uses_pair
-                else f"Match {name}'s clothing exactly to the reference. "
+                f"Match {name}'s clothing exactly to the reference image. "
             )
         people_so_far = cast_names[: i + 1]
         people_list = ", ".join(people_so_far)
         prior = cast_names[:i]
+        # Per-pass cast text: only people already being locked (avoids inventing
+        # later cast members during early passes).
+        pass_cast = _cast_sheet_for_names(cast_sheet, people_so_far)
         beat_bit = _truncate(beat_prompt, 280)
         if i == 0 and cast_count > 1 and continuity_base is None:
-            # Avoid the beat naming other cast members so Flux doesn't invent them.
+            # Strip other cast names from the beat so Flux doesn't invent them.
+            alone_beat = beat_prompt
+            for other in cast_names[1:]:
+                alone_beat = re.sub(
+                    rf"(?i)\b{re.escape(other)}\b", "the setting", alone_beat
+                )
             beat_bit = (
-                f"{name} alone in this beat setting. "
-                f"Context: {_truncate(beat_prompt, 200)}"
+                f"Show {name} alone in this setting. "
+                f"Action/camera: {_truncate(alone_beat, 200)}"
             )
+        pair_ratio = 0.28
+        no_split = (
+            "Output ONE full-bleed camera frame only — never a side-by-side, "
+            "diptych, portrait strip, white studio backdrop, or copy of the guide."
+        )
         if i == 0 and continuity_base is not None:
             ref = build_identity_pair_sheet(
-                continuity_base, path, media / "cast_lock_0.png"
+                continuity_base,
+                path,
+                media / "cast_lock_0.png",
+                character_ratio=pair_ratio,
             )
             if insert_into_scene:
                 instruction = (
-                    "Guide layout (do not copy as output): LEFT is the current scene; "
-                    f"RIGHT strip is the ground-truth look for {label} who is ENTERING. "
-                    f"INSERT {name} into the LEFT scene in the same continuous space — "
-                    f"same face, hair, body, art style, and wardrobe as the RIGHT strip. "
-                    "Keep every person already on the LEFT unchanged (faces, outfits). "
+                    "Reference guide (do not reproduce as the output layout): left side "
+                    f"is the current scene; right strip is {label}'s look. "
+                    f"INSERT {name} into the scene with the same face, hair, body, art "
+                    f"style, and wardrobe as the right strip. "
+                    "Keep everyone already in the scene unchanged (faces, outfits). "
                     f"{ward_must}"
-                    f"After insert, people added from cast refs this pass: {people_list}. "
-                    "ONE full-frame shot — no split screen, diptych, or vertical seam. "
-                    + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
-                    + f"Scene beat: {beat_bit}"
+                    f"People from cast refs after this pass: {people_list}. "
+                    f"{no_split} "
+                    f"Scene beat: {beat_bit}"
                 )
             else:
                 instruction = (
-                    "Guide layout (do not copy as output): LEFT is the continuity still; "
-                    f"RIGHT strip is the ground-truth look for {label}. "
-                    f"Output ONE continuous shot of the LEFT scene with {name} replaced so "
-                    f"face, hair, eyes, proportions, art style, AND wardrobe match the RIGHT "
-                    f"strip. {ward_must}"
+                    "Reference guide (do not reproduce as the output layout): left side "
+                    f"is the continuity still; right strip is {label}'s look. "
+                    f"Rewrite {name} in the scene so face, hair, proportions, art style, "
+                    f"and wardrobe match the right strip. {ward_must}"
                     f"People in this pass: exactly {len(people_so_far)} — {people_list}. "
-                    "No split screen, no second panel, no vertical seam. "
-                    + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
-                    + f"Scene beat: {beat_bit}"
+                    f"{no_split} "
+                    f"Scene beat: {beat_bit}"
                 )
         elif i == 0:
             ref = prepare_single_ref_canvas(path, media / "cast_lock_0.png")
             only = (
-                f"Show ONLY {name} in this shot — no other cast members yet. "
+                f"Show ONLY {name} — no other cast members yet. "
                 if cast_count > 1
                 else ""
             )
@@ -851,57 +938,89 @@ async def _iterative_cast_lock_render(
                 "Keep face, eye color, hair, proportions, and art style identical "
                 "to the reference. "
                 f"{ward_must}"
-                + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
-                + f"Scene beat: {beat_bit}"
+                f"Scene beat: {beat_bit}"
             )
         else:
             assert current is not None
-            ref = build_identity_pair_sheet(current, path, media / f"cast_lock_{i}.png")
+            ref = build_identity_pair_sheet(
+                current,
+                path,
+                media / f"cast_lock_{i}.png",
+                character_ratio=pair_ratio,
+            )
             prior_bit = (
-                f"Keep {', '.join(prior)} from the LEFT scene unchanged (same faces, "
-                "outfits, poses, camera). "
+                f"Keep {', '.join(prior)} unchanged from the left scene "
+                "(same faces, outfits, poses, camera). "
                 if prior
                 else ""
             )
             instruction = (
-                "Guide layout (do not copy as output): LEFT ~2/3 is the current scene; "
-                f"RIGHT strip is ONLY the identity/wardrobe lock for {label}. "
-                f"INSERT {name} into the LEFT scene in the same continuous attic/space — "
-                f"matching the RIGHT strip's face, hair, body, art style, and wardrobe. "
+                "Reference guide (do not reproduce as the output layout): left side "
+                f"is the current scene; right strip is {label}'s look only. "
+                f"INSERT {name} into the scene matching the right strip's face, hair, "
+                f"body, art style, and wardrobe. "
                 f"{prior_bit}{ward_must}"
                 f"People in this pass: exactly {len(people_so_far)} — {people_list}. "
-                "Output must be ONE camera frame filling the whole image — never a "
-                "side-by-side, diptych, or mirrored duplicate of the guide. "
-                + (f"Wardrobe note: {ward_bit}. " if ward_bit else "")
-                + f"Scene beat: {beat_bit}"
+                f"{no_split} "
+                f"Scene beat: {beat_bit}"
             )
 
         pass_seed = seed + i * 17
         dest = await _run_pass(
             i=i,
             label=label,
-            path=path,
             instruction=instruction,
             ref=ref,
+            pass_cast=pass_cast,
             pass_seed=pass_seed,
             attempt=0,
         )
-        # Pair-sheet passes sometimes leak as a literal split; retry once harder.
-        if uses_pair and _looks_like_vertical_split(dest):
-            retry_instruction = (
-                instruction
-                + " RETRY: the previous result was an illegal split-screen. "
-                "Fill the entire frame with a single merged scene only."
-            )
-            dest = await _run_pass(
-                i=i,
-                label=label,
-                path=path,
-                instruction=retry_instruction,
-                ref=ref,
-                pass_seed=pass_seed + 101,
-                attempt=1,
-            )
+        # Pair-sheet passes sometimes leak as a literal split; retry, then crop-salvage.
+        if uses_pair:
+            leak, seam_x = _detect_pair_sheet_leak(dest)
+            for attempt in (1, 2):
+                if not leak:
+                    break
+                narrow = 0.22 if attempt == 2 else pair_ratio
+                if i == 0 and continuity_base is not None:
+                    ref = build_identity_pair_sheet(
+                        continuity_base,
+                        path,
+                        media / f"cast_lock_0_r{attempt}.png",
+                        character_ratio=narrow,
+                    )
+                else:
+                    assert current is not None
+                    ref = build_identity_pair_sheet(
+                        current,
+                        path,
+                        media / f"cast_lock_{i}_r{attempt}.png",
+                        character_ratio=narrow,
+                    )
+                retry_instruction = (
+                    instruction
+                    + " RETRY: the previous result illegally kept a split-screen or "
+                    "right-side portrait strip from the guide. Output only the merged "
+                    "scene — full bleed, no second panel, no white studio backdrop."
+                )
+                dest = await _run_pass(
+                    i=i,
+                    label=label,
+                    instruction=retry_instruction,
+                    ref=ref,
+                    pass_cast=pass_cast,
+                    pass_seed=pass_seed + 101 * attempt,
+                    attempt=attempt,
+                )
+                leak, seam_x = _detect_pair_sheet_leak(dest)
+            if leak and seam_x is not None:
+                dest = _salvage_pair_sheet_leak(
+                    dest,
+                    media / f"cast_lock_out_{i}_salvage.png",
+                    seam_x,
+                    width=width,
+                    height=height,
+                )
         current = dest
 
     assert current is not None
@@ -1356,6 +1475,28 @@ def set_keyframe_from_media(
     return payload
 
 
+def _cast_sheet_for_names(cast_sheet: str, names: list[str]) -> str:
+    """Keep only cast-lock bullet lines for the given character names."""
+    keep = {n.strip().lower() for n in names if (n or "").strip()}
+    raw = (cast_sheet or "").strip()
+    if not raw or not keep:
+        return ""
+    kept: list[str] = []
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s.startswith("-"):
+            continue
+        body = s[1:].strip()
+        name = body.split(":", 1)[0].strip()
+        if name.lower() in keep:
+            kept.append(s)
+    if not kept:
+        return ""
+    return "Cast lock (use these exact names, looks, and wardrobes):\n" + "\n".join(
+        kept
+    )
+
+
 def build_edit_prompt(
     *,
     instruction: str,
@@ -1375,24 +1516,33 @@ def build_edit_prompt(
         f"Instruction: {instr}.",
     ]
     if from_cast_sheet:
+        # Iterative cast lock uses a single ref or scene|portrait guide — not a
+        # multi-panel contact sheet. Avoid "panel/contact sheet" wording that
+        # encourages diptych leaks.
         parts.append(
             "CRITICAL identity lock: each person must keep the same face, eye shape, "
-            "hair, age, body proportions, and art style as their labeled contact-sheet "
-            "panel. Do not turn stylized/puppet characters into live-action people."
+            "hair, age, body proportions, and art style as the identity reference "
+            "image. Do not turn stylized/puppet characters into live-action people."
+        )
+        parts.append(
+            "Match wardrobe to the identity reference and cast lock text — do not "
+            "keep a different outfit from story titles, premises, or old notes."
+        )
+    else:
+        parts.append(
+            "Preserve character identity. Match wardrobe to the cast lock when "
+            "provided — do not keep a different outfit from story titles, premises, "
+            "or old appearance notes."
         )
     parts.append(
-        "Preserve character identity. Match wardrobe to the cast lock / contact-sheet "
-        "panels when provided — do not keep a different outfit from story titles, "
-        "premises, or old appearance notes."
-    )
-    parts.append(
-        "Output one continuous camera shot only — no collage, panels, or grid."
+        "Output one continuous camera shot only — no collage, split screen, "
+        "diptych, portrait strip, or grid."
     )
     cast = (cast_sheet or "").strip()
     if cast:
-        parts.append(f"{cast}")
+        parts.append(cast)
         parts.append(
-            "Faces follow the cast lock / panels; wardrobe in the cast lock is mandatory."
+            "Faces and wardrobe must match the cast lock and the reference image."
         )
     if beat:
         parts.append(f"Original beat context: {beat}.")
@@ -1403,12 +1553,12 @@ def compose_keyframe_prompt(
     prompt: str, *, cast_sheet: str = "", genre: str = ""
 ) -> str:
     """Inject cast lock into a keyframe image prompt at Comfy render time."""
+    from app.services.llm import style_lock_phrase
+
     body = (prompt or "").strip()
     if not body:
         raise ValueError("keyframe prompt is required")
-    parts: list[str] = []
-    if genre:
-        parts.append(f"{genre} genre.")
+    parts: list[str] = [f"{style_lock_phrase(genre)}."]
     cast = (cast_sheet or "").strip()
     if cast:
         parts.append(cast)
@@ -1941,9 +2091,9 @@ async def _render_keyframe_image(
         )
         edit_prompt = build_edit_prompt(
             instruction=(
-                f"{continuity}{wardrobe_block}{hands_block} Instruction: {prompt}"
+                f"{continuity}{wardrobe_block}{hands_block} Beat: {prompt}"
             ),
-            frame_prompt=prompt,
+            frame_prompt="",
             cast_sheet=cast_sheet,
             genre=genre,
         )

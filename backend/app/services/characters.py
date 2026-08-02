@@ -479,7 +479,7 @@ def build_identity_pair_sheet(
     *,
     width: int = 1024,
     height: int = 576,
-    character_ratio: float = 0.34,
+    character_ratio: float = 0.28,
 ) -> Path:
     """Left = current scene, right = narrow character lock (Flux ReferenceLatent).
 
@@ -488,7 +488,8 @@ def build_identity_pair_sheet(
     """
     from PIL import Image
 
-    right_w = max(width // 5, min(width // 3, int(width * character_ratio)))
+    # Cap the strip well below 1/3 — wider strips were often copied as a second panel.
+    right_w = max(width // 6, min(int(width * 0.30), int(width * character_ratio)))
     left_w = width - right_w
     canvas = Image.new("RGB", (width, height), (20, 20, 24))
     left = _fit_cover(Image.open(scene), left_w, height, prefer_upper=False)
