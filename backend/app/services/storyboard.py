@@ -927,6 +927,123 @@ def empty_scene_negatives() -> str:
     )
 
 
+def _strip_cast_names_from_prompt(prompt: str, names: list[str]) -> str:
+    """Replace character names so environment plates do not invent those people."""
+    text = prompt or ""
+    for name in names:
+        n = (name or "").strip()
+        if not n:
+            continue
+        text = re.sub(rf"(?i)\b{re.escape(n)}\b", "the setting", text)
+    return text
+
+
+def _environment_scene_prompt(prompt: str, names: list[str]) -> str:
+    """Beat text scrubbed into a people-free location description."""
+    text = _strip_cast_names_from_prompt(prompt, names)
+    # Name stripping often leaves "the setting in a summer dress…" — drop wardrobe
+    # clauses but keep location nouns (porch, barn, sunflowers, light).
+    text = re.sub(
+        r"(?i)\b(in|wearing)\s+(a\s+|an\s+|their\s+|his\s+|her\s+)?"
+        r"(?:light\s+|cool\s+|summer\s+)*(dress|shorts|shirt|outfit|clothes|"
+        r"sneakers|sandals|barefoot|jacket|coat|hat|helmet)\b",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(with\s+)?(small\s+)?bags?\b|\blooking toward\b|\bgazing\b|"
+        r"\bstaring\b|\barriv(?:e|ing)\b|\bbeside them\b|\bwide-eyed\b|"
+        r"\bwonder\b|\bthe setting\b",
+        "",
+        text,
+    )
+    text = re.sub(r"(?i)\banimated puppets?\s*style\s*:?", "", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"\s*,\s*,+", ", ", text)
+    text = text.strip()
+    for _ in range(3):
+        nxt = re.sub(r"(?i)^(and|with|on)\s+", "", text).strip()
+        if nxt == text:
+            break
+        text = nxt
+    text = text.strip(" ,.;:-")
+    if len(text) < 24:
+        text = (
+            "sunny wooden farmhouse porch, enormous red barn, tall sunflowers, "
+            "golden morning light"
+        )
+    return text
+
+
+def _cast_bullet_for_name(cast_sheet: str, name: str) -> str:
+    """Return the cast-lock bullet line for ``name``, if present."""
+    want = (name or "").strip().lower()
+    if not want:
+        return ""
+    for line in (cast_sheet or "").splitlines():
+        s = line.strip()
+        if not s.startswith("-"):
+            continue
+        body = s.lstrip("-").strip()
+        head = body.split(":", 1)[0].strip().lower()
+        if head == want or head.startswith(want + " "):
+            return body
+    return ""
+
+
+async def _render_environment_plate(
+    *,
+    comfy: ComfyUIClient,
+    media: Path,
+    prompt: str,
+    cast_names: list[str],
+    genre: str,
+    neg: str,
+    seed: int,
+    filename_prefix: str,
+) -> Path:
+    """People-free still matching the beat's setting — base for cast inserts."""
+    from app.services.llm import style_lock_phrase, style_negatives
+
+    env_body = _environment_scene_prompt(prompt, cast_names)
+    # Avoid compose_keyframe_prompt here — genre "Animated puppets" + leftover
+    # wardrobe cues invent mascots/figures. Keep it a pure establishing plate.
+    composed = (
+        f"{style_lock_phrase(genre)}. Establishing location plate only: {env_body}. "
+        "Empty scene — no people, no children, no characters, no faces, no silhouettes, "
+        "no animals, no teddy bears, no mascots, no anthropomorphic creatures; "
+        "architecture, porch, barn, sunflowers, and landscape only."
+    )
+    env_neg = (
+        f"{neg}, {empty_scene_negatives()}, teddy bear, stuffed animal, mascot, "
+        "anthropomorphic, animal character, creature, toy figure, puppet character "
+        "in frame, costume character"
+    )
+    style_neg = style_negatives(genre)
+    if style_neg:
+        env_neg = f"{env_neg}, {style_neg}"
+    graph = apply_params(
+        "still_hero",
+        {
+            "positive_prompt": composed,
+            "negative_prompt": env_neg,
+            "seed": seed,
+            "filename_prefix": f"{filename_prefix}_env",
+            "width": 1024,
+            "height": 576,
+        },
+    )
+    prompt_id = await comfy.queue_prompt(graph)
+    history = await comfy.wait_for_prompt(prompt_id)
+    outputs = comfy.collect_outputs(history)
+    if not outputs:
+        raise RuntimeError("ComfyUI produced no outputs for environment plate")
+    out = outputs[0]
+    dest = media / f"env_plate_{out['filename']}"
+    await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+    return dest
+
+
 def build_visual_prompt(
     *,
     story: str,
@@ -1133,67 +1250,99 @@ async def _iterative_cast_lock_render(
     wardrobe_prompt_by_name: dict[str, str],
     continuity_base: Path | None = None,
     insert_into_scene: bool = False,
+    identity_refresh: bool = False,
     width: int = 1024,
     height: int = 576,
-    steps: int = 30,
-    cfg: float = 5.5,
+    steps: int = 4,
+    cfg: float = 5.0,
 ) -> tuple[Path, str]:
-    """Lock cast one identity at a time — Flux ReferenceLatent is single-identity.
+    """Lock cast one identity at a time via dual ReferenceLatent (still_edit_dual).
 
-    Pass 0 places the first cast member; later passes INSERT the next person from a
-    scene-dominant LEFT / narrow RIGHT ref pair (not a full contact sheet).
-    When ``insert_into_scene`` is set with ``continuity_base``, pass 0 inserts a
-    newcomer into the previous still (mid-keyframe entrances).
+    Image 1 = scene, image 2 = character outfit/portrait. Flux.2 Klein 9B with short
+    positives that end with ``Do not change anything else in the image.``
+    Pair-sheet / leak-salvage path is no longer used for cast lock.
     """
-    from app.services.characters import (
-        build_identity_pair_sheet,
-        prepare_single_ref_canvas,
-    )
-
+    # Dual-ref scales from the scene image; cast_sheet text is optional (image 2 locks look).
+    _ = width, height, wardrobe_by_name, cast_sheet, insert_into_scene
     cast_names = [(lab.split("/")[0].strip() or lab).strip() for lab, _p, _a in panels]
     cast_count = len(cast_names)
-    current: Path | None = None
+    current: Path | None = continuity_base
     prompt_id = ""
-    neg = (
-        neg + ", extra person, duplicate character, additional character, crowd, "
-        "wrong cast size, split screen, side by side, diptych, two panels, "
-        "mirrored scene, vertical seam, dual image"
-    )
-
-    async def _run_pass(
-        *,
-        i: int,
-        label: str,
-        instruction: str,
-        ref: Path,
-        pass_cast: str,
-        pass_seed: int,
-        attempt: int,
-    ) -> Path:
-        nonlocal prompt_id
-        uploaded = await comfy.upload_image(ref)
-        # Instruction already carries the beat; do not re-append the full beat
-        # (it often names cast not yet inserted and undoes the "alone" pass).
-        edit_prompt = build_edit_prompt(
-            instruction=instruction,
-            frame_prompt="",
-            cast_sheet=pass_cast,
+    if current is None:
+        # Dual-ref needs a scene plate; never restage from a portrait alone.
+        current = await _render_environment_plate(
+            comfy=comfy,
+            media=media,
+            prompt=beat_prompt,
+            cast_names=cast_names,
             genre=genre,
-            from_cast_sheet=True,
+            neg=neg,
+            seed=seed,
+            filename_prefix=f"{filename_prefix}_env",
         )
+
+    dual_neg = (
+        (neg or "").strip()
+        + ", split screen, side by side, diptych, contact sheet, collage, "
+        "studio backdrop, extra person, crowd, comic panel"
+    ).strip(", ")
+
+    def _pose_bit(name: str) -> str:
+        bit = _truncate((beat_prompt or "").strip(), 160)
+        if not bit:
+            return ""
+        # Keep pose/camera cues short; avoid re-listing other cast mid-insert.
+        if cast_count > 1 and not identity_refresh:
+            bit = _strip_cast_names_from_prompt(
+                bit, [n for n in cast_names if n.lower() != name.lower()]
+            )
+        return bit
+
+    def _dual_prompt(*, name: str, mode: str) -> str:
+        """Build dual-ref positive; close line MUST be last."""
+        pose = _pose_bit(name)
+        if mode == "refresh":
+            body = (
+                "Using image 1 as the scene and image 2 as the character reference: "
+                f"REWRITE {name} in image 1 to match image 2 exactly for all features "
+                f"of {name}."
+            )
+        else:
+            body = (
+                "Using image 1 as the scene and image 2 as the character reference: "
+                f"INSERT {name} from image 2 into the scene in image 1. "
+                f"Match image 2 exactly for all features of {name}."
+            )
+        if pose:
+            body = f"{body} {pose}"
+        return f"{body} {_EDIT_CLOSE}"
+
+    for i, (label, path, _approved) in enumerate(panels):
+        name = (label.split("/")[0].strip() or label).strip()
+        assert current is not None
+        mode = "refresh" if identity_refresh else "insert"
+        positive = _dual_prompt(name=name, mode=mode)
+        # Optional wardrobe hint before the close — re-append close after.
+        ward = (wardrobe_prompt_by_name.get(name.lower()) or "").strip()
+        if ward and mode == "insert":
+            # Keep close last: splice before final sentence.
+            stem = positive[: -len(_EDIT_CLOSE)].rstrip()
+            positive = (
+                f"{stem} {name} must wear exactly: {ward}. {_EDIT_CLOSE}"
+            )
+        scene_up = await comfy.upload_image(current)
+        cast_up = await comfy.upload_image(path)
         graph = apply_params(
-            "still_edit",
+            "still_edit_dual",
             {
-                "positive_prompt": edit_prompt,
-                "negative_prompt": neg,
-                "seed": pass_seed,
-                "filename_prefix": f"{filename_prefix}_p{i}",
-                "width": width,
-                "height": height,
+                "positive_prompt": positive,
+                "negative_prompt": dual_neg,
+                "seed": seed + i * 17,
                 "steps": steps,
                 "cfg": cfg,
+                "filename_prefix": f"{filename_prefix}_p{i}",
             },
-            uploaded_image_name=uploaded,
+            uploaded_images={"start_image": scene_up, "ref_image": cast_up},
         )
         prompt_id = await comfy.queue_prompt(graph)
         history = await comfy.wait_for_prompt(prompt_id)
@@ -1203,175 +1352,13 @@ async def _iterative_cast_lock_render(
                 f"ComfyUI produced no outputs for cast lock pass {i} ({label})"
             )
         out = outs[0]
-        dest = media / f"cast_lock_out_{i}_a{attempt}_{out['filename']}"
+        dest = media / f"cast_lock_out_{i}_a0_{out['filename']}"
         await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
-        return dest
-
-    for i, (label, path, _approved) in enumerate(panels):
-        name = (label.split("/")[0].strip() or label).strip()
-        ward_exact = (wardrobe_prompt_by_name.get(name.lower()) or "").strip()
-        uses_pair = i > 0 or continuity_base is not None
-        if ward_exact:
-            ward_must = (
-                f"{name} MUST wear exactly: {ward_exact}. "
-                "Copy that clothing from the reference; do not invent garments. "
-            )
-        else:
-            ward_must = (
-                f"Match {name}'s clothing exactly to the reference image. "
-            )
-        people_so_far = cast_names[: i + 1]
-        people_list = ", ".join(people_so_far)
-        prior = cast_names[:i]
-        # Per-pass cast text: only people already being locked (avoids inventing
-        # later cast members during early passes).
-        pass_cast = _cast_sheet_for_names(cast_sheet, people_so_far)
-        beat_bit = _truncate(beat_prompt, 280)
-        if i == 0 and cast_count > 1 and continuity_base is None:
-            # Strip other cast names from the beat so Flux doesn't invent them.
-            alone_beat = beat_prompt
-            for other in cast_names[1:]:
-                alone_beat = re.sub(
-                    rf"(?i)\b{re.escape(other)}\b", "the setting", alone_beat
-                )
-            beat_bit = (
-                f"Show {name} alone in this setting. "
-                f"Action/camera: {_truncate(alone_beat, 200)}"
-            )
-        pair_ratio = 0.28
-        no_split = (
-            "Output ONE full-bleed camera frame only — never a side-by-side, "
-            "diptych, portrait strip, white studio backdrop, or copy of the guide."
-        )
-        if i == 0 and continuity_base is not None:
-            ref = build_identity_pair_sheet(
-                continuity_base,
-                path,
-                media / "cast_lock_0.png",
-                character_ratio=pair_ratio,
-            )
-            if insert_into_scene:
-                instruction = (
-                    "Reference guide (do not reproduce as the output layout): left side "
-                    f"is the current scene; right strip is {label}'s look. "
-                    f"INSERT {name} into the scene with the same face, hair, body, art "
-                    f"style, and wardrobe as the right strip. "
-                    "Keep everyone already in the scene unchanged (faces, outfits). "
-                    f"{ward_must}"
-                    f"People from cast refs after this pass: {people_list}. "
-                    f"{no_split} "
-                    f"Scene beat: {beat_bit}"
-                )
-            else:
-                instruction = (
-                    "Reference guide (do not reproduce as the output layout): left side "
-                    f"is the continuity still; right strip is {label}'s look. "
-                    f"Rewrite {name} in the scene so face, hair, proportions, art style, "
-                    f"and wardrobe match the right strip. {ward_must}"
-                    f"People in this pass: exactly {len(people_so_far)} — {people_list}. "
-                    f"{no_split} "
-                    f"Scene beat: {beat_bit}"
-                )
-        elif i == 0:
-            ref = prepare_single_ref_canvas(path, media / "cast_lock_0.png")
-            only = (
-                f"Show ONLY {name} — no other cast members yet. "
-                if cast_count > 1
-                else ""
-            )
-            instruction = (
-                f"Restage this exact character ({label}) into the beat. "
-                f"{only}"
-                "Keep face, eye color, hair, proportions, and art style identical "
-                "to the reference. "
-                f"{ward_must}"
-                f"Scene beat: {beat_bit}"
-            )
-        else:
-            assert current is not None
-            ref = build_identity_pair_sheet(
-                current,
-                path,
-                media / f"cast_lock_{i}.png",
-                character_ratio=pair_ratio,
-            )
-            prior_bit = (
-                f"Keep {', '.join(prior)} unchanged from the left scene "
-                "(same faces, outfits, poses, camera). "
-                if prior
-                else ""
-            )
-            instruction = (
-                "Reference guide (do not reproduce as the output layout): left side "
-                f"is the current scene; right strip is {label}'s look only. "
-                f"INSERT {name} into the scene matching the right strip's face, hair, "
-                f"body, art style, and wardrobe. "
-                f"{prior_bit}{ward_must}"
-                f"People in this pass: exactly {len(people_so_far)} — {people_list}. "
-                f"{no_split} "
-                f"Scene beat: {beat_bit}"
-            )
-
-        pass_seed = seed + i * 17
-        dest = await _run_pass(
-            i=i,
-            label=label,
-            instruction=instruction,
-            ref=ref,
-            pass_cast=pass_cast,
-            pass_seed=pass_seed,
-            attempt=0,
-        )
-        # Pair-sheet passes sometimes leak as a literal split; retry, then crop-salvage.
-        if uses_pair:
-            leak, seam_x = _detect_pair_sheet_leak(dest)
-            for attempt in (1, 2):
-                if not leak:
-                    break
-                narrow = 0.22 if attempt == 2 else pair_ratio
-                if i == 0 and continuity_base is not None:
-                    ref = build_identity_pair_sheet(
-                        continuity_base,
-                        path,
-                        media / f"cast_lock_0_r{attempt}.png",
-                        character_ratio=narrow,
-                    )
-                else:
-                    assert current is not None
-                    ref = build_identity_pair_sheet(
-                        current,
-                        path,
-                        media / f"cast_lock_{i}_r{attempt}.png",
-                        character_ratio=narrow,
-                    )
-                retry_instruction = (
-                    instruction
-                    + " RETRY: the previous result illegally kept a split-screen or "
-                    "right-side portrait strip from the guide. Output only the merged "
-                    "scene — full bleed, no second panel, no white studio backdrop."
-                )
-                dest = await _run_pass(
-                    i=i,
-                    label=label,
-                    instruction=retry_instruction,
-                    ref=ref,
-                    pass_cast=pass_cast,
-                    pass_seed=pass_seed + 101 * attempt,
-                    attempt=attempt,
-                )
-                leak, seam_x = _detect_pair_sheet_leak(dest)
-            if leak and seam_x is not None:
-                dest = _salvage_pair_sheet_leak(
-                    dest,
-                    media / f"cast_lock_out_{i}_salvage.png",
-                    seam_x,
-                    width=width,
-                    height=height,
-                )
         current = dest
 
     assert current is not None
     return current, prompt_id
+
 
 
 async def generate_frame_visual(
@@ -1540,6 +1527,22 @@ async def generate_frame_visual(
                 if on_screen and omitted_cast
                 else ""
             )
+            insert_base = continuity_base
+            insert_mode = False
+            if continuity_base is None:
+                # Fresh casted still: environment plate + insert each ref (stronger
+                # identity than restaging from a portrait alone).
+                insert_base = await _render_environment_plate(
+                    comfy=comfy,
+                    media=media,
+                    prompt=frame_prompt,
+                    cast_names=on_screen,
+                    genre=genre,
+                    neg=neg,
+                    seed=seed,
+                    filename_prefix=prefix,
+                )
+                insert_mode = True
             current, prompt_id = await _iterative_cast_lock_render(
                 comfy=comfy,
                 media=media,
@@ -1548,11 +1551,12 @@ async def generate_frame_visual(
                 cast_sheet=cast_sheet,
                 genre=genre,
                 neg=neg,
-                seed=seed,
+                seed=seed + (1 if insert_mode else 0),
                 filename_prefix=prefix,
                 wardrobe_by_name=wardrobe_by_name,
                 wardrobe_prompt_by_name=wardrobe_prompt_by_name,
-                continuity_base=continuity_base,
+                continuity_base=insert_base,
+                insert_into_scene=insert_mode,
             )
             with SessionLocal() as db:
                 fr = db.get(StoryboardFrame, frame_id)
@@ -1852,6 +1856,9 @@ def _cast_sheet_for_names(cast_sheet: str, names: list[str]) -> str:
     )
 
 
+_EDIT_CLOSE = "Do not change anything else in the image."
+
+
 def build_edit_prompt(
     *,
     instruction: str,
@@ -1860,11 +1867,23 @@ def build_edit_prompt(
     genre: str = "",
     from_cast_sheet: bool = False,
 ) -> str:
+    """Compose a still_edit positive prompt.
+
+    Flux dual-ref / cast-insert responds best when the final sentence is exactly
+    ``Do not change anything else in the image.`` — never bury that under cast
+    text, beat context, or anti-collage notes.
+    """
     from app.services.llm import style_lock_phrase
 
     instr = _truncate((instruction or "").strip(), 900)
     if not instr:
         raise ValueError("edit instruction is required")
+    # Avoid duplicating the close if the caller already ended with it.
+    instr = re.sub(
+        rf"(?i)[\s.]*{re.escape(_EDIT_CLOSE)}\s*$",
+        "",
+        instr,
+    ).strip(" .")
     beat = _truncate(frame_prompt or "", 220)
     parts = [
         f"Edit this image into {style_lock_phrase(genre)}.",
@@ -1875,13 +1894,15 @@ def build_edit_prompt(
         # multi-panel contact sheet. Avoid "panel/contact sheet" wording that
         # encourages diptych leaks.
         parts.append(
-            "CRITICAL identity lock: each person must keep the same face, eye shape, "
-            "hair, age, body proportions, and art style as the identity reference "
-            "image. Do not turn stylized/puppet characters into live-action people."
+            "CRITICAL identity lock: each person must keep the same face, eye color, "
+            "eye shape, skin tone, hair color/style, age, body proportions, and art "
+            "style as the identity reference image. Do not invent a similar-looking "
+            "child. Do not turn stylized/puppet characters into live-action people."
         )
         parts.append(
-            "Match wardrobe to the identity reference and cast lock text — do not "
-            "keep a different outfit from story titles, premises, or old notes."
+            "Match wardrobe and footwear to the identity reference and cast lock "
+            "text — do not keep a different outfit from story titles, premises, or "
+            "old notes."
         )
     else:
         parts.append(
@@ -1901,6 +1922,8 @@ def build_edit_prompt(
         )
     if beat:
         parts.append(f"Original beat context: {beat}.")
+    # MUST be last — dual-ref 9b ignores earlier “keep scene” cues otherwise.
+    parts.append(_EDIT_CLOSE)
     return " ".join(parts)
 
 
@@ -2389,10 +2412,12 @@ async def _render_keyframe_image(
                 if n
             )
         )
-    if empty_cast or not panels:
+    # Only explicit empty cast → empty scene. Missing panels (no refs / no name
+    # match) must not strip people from a casted beat's continuity edits.
+    if empty_cast:
         neg = f"{neg}, {empty_scene_negatives()}"
     composed = compose_keyframe_prompt(prompt, cast_sheet=cast_sheet, genre=genre)
-    if empty_cast or not panels:
+    if empty_cast:
         composed = (
             f"{composed} Empty scene — no people, no characters, no faces; "
             "environment and landscape only."
@@ -2467,16 +2492,25 @@ async def _render_keyframe_image(
             if bare_hands
             else ""
         )
+        keep_cast = ""
+        if on_screen:
+            keep_cast = (
+                f" Keep every named cast member visible unless the beat removes them: "
+                f"{', '.join(on_screen)}. Do not drop people who are already in the "
+                f"previous keyframe and still named in this beat."
+            )
         continuity = (
             "Edit only pose, expression, and camera as needed for this beat. "
             "Do NOT change clothing, shoes, accessories, hair length/style, or body type — "
             "copy wardrobe pixel-identically from the previous keyframe (same dress/shirt/"
             "shorts/footwear/colors). No new sneakers, jackets, gloves, or outfit swaps. "
             "Do NOT invent new characters who are not already in the previous image."
+            f"{keep_cast}"
             if role in ("middle", "last")
             else (
                 "Edit only pose/camera/expression as needed for this beat; "
                 "preserve faces, art style, and clothing from the previous keyframe."
+                f"{keep_cast}"
             )
         )
         edit_prompt = build_edit_prompt(
@@ -2509,6 +2543,34 @@ async def _render_keyframe_image(
         out = outputs[0]
         dest = media / f"keyframe_{label}_{out['filename']}"
         await comfy.download_view(out["filename"], dest, out["subfolder"], out["type"])
+        # Re-lock faces/wardrobe from cast refs — plain still_edit drifts off sheet.
+        if panels:
+            refresh_neg = (
+                neg
+                + ", collage, contact sheet, multi-panel, split screen, grid layout, "
+                "side by side panels, extra child, crowd, duplicate character"
+            )
+            current, _pid = await _iterative_cast_lock_render(
+                comfy=comfy,
+                media=media,
+                panels=panels,
+                beat_prompt=prompt,
+                cast_sheet=cast_sheet,
+                genre=genre,
+                neg=refresh_neg,
+                seed=seed + 3,
+                filename_prefix=(
+                    f"local_video/p{project_id}_f{frame_id}_kf_{label}_id"
+                ),
+                wardrobe_by_name=wardrobe_by_name,
+                wardrobe_prompt_by_name=wardrobe_prompt_by_name,
+                continuity_base=dest,
+                identity_refresh=True,
+            )
+            final = media / f"keyframe_{label}_{current.name}"
+            if current.resolve() != final.resolve():
+                current.replace(final)
+            return final
         return dest
 
     if force_edit:
@@ -2532,6 +2594,18 @@ async def _render_keyframe_image(
             neg + ", collage, contact sheet, multi-panel, split screen, grid layout, "
             "side by side panels, extra child, extra kids, crowd"
         )
+        # Fresh multi/single cast: build an empty environment plate, then INSERT
+        # each cast ref. Restaging from a portrait alone loses eye color / wardrobe.
+        env = await _render_environment_plate(
+            comfy=comfy,
+            media=media,
+            prompt=prompt,
+            cast_names=on_screen,
+            genre=genre,
+            neg=neg,
+            seed=seed,
+            filename_prefix=f"local_video/p{project_id}_f{frame_id}_kf_{label}",
+        )
         current, _pid = await _iterative_cast_lock_render(
             comfy=comfy,
             media=media,
@@ -2540,11 +2614,12 @@ async def _render_keyframe_image(
             cast_sheet=cast_sheet,
             genre=genre,
             neg=neg,
-            seed=seed,
+            seed=seed + 1,
             filename_prefix=f"local_video/p{project_id}_f{frame_id}_kf_{label}",
             wardrobe_by_name=wardrobe_by_name,
             wardrobe_prompt_by_name=wardrobe_prompt_by_name,
-            continuity_base=None,
+            continuity_base=env,
+            insert_into_scene=True,
         )
         dest = media / f"keyframe_{label}_{current.name}"
         if current.resolve() != dest.resolve():

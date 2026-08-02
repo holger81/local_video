@@ -117,6 +117,7 @@ UNET loaders use `weight_dtype: default` (explicit `fp8_e4m3fn` was less stable 
 | `ltx2_flf2v` / `ltx23_flf2v` | **Keyframe / beat bridges** |
 | `ltx23_ic_lora` | Reference-sheet Ingredients clips (not auto-routed yet) |
 | `still_hero` | Storyboard stills (text → image) |
-| `still_edit` | Prompt-edit an existing still (ReferenceLatent) |
+| `still_edit` | Prompt-edit an existing still (single ReferenceLatent) |
+| `still_edit_dual` | **Cast lock** — dual ReferenceLatent (image 1 = scene, image 2 = cast); Flux.2 Klein 9B; positives end with “Do not change anything else in the image.” |
 
 No Wan Video Extender / chunk helper nodes required.

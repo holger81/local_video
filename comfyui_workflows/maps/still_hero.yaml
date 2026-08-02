@@ -1,8 +1,8 @@
 workflow: still_hero.json
-description: Storyboard still via Flux.2 Klein 4B (sd_xl_base produced black outputs on this host).
+description: Storyboard still via Flux.2 Klein 9B fp8 (matched to still_edit cast-lock path).
 model_files:
-  - models/diffusion_models/flux-2-klein-base-4b.safetensors
-  - models/text_encoders/qwen_3_4b.safetensors
+  - models/diffusion_models/flux-2-klein-base-9b-fp8.safetensors
+  - models/text_encoders/qwen_3_8b_fp8mixed.safetensors
   - models/vae/flux2-vae.safetensors
 fields:
   positive_prompt: {node: "74", input: text}

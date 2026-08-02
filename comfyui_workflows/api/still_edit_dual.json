@@ -1,0 +1,344 @@
+{
+  "76": {
+    "inputs": {
+      "image": "scene.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "81": {
+    "inputs": {
+      "image": "cast.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "94": {
+    "inputs": {
+      "filename_prefix": "local_video/still_edit_dual",
+      "images": [
+        "92:104",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  },
+  "92:102": {
+    "inputs": {
+      "sampler_name": "euler"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "KSamplerSelect"
+    }
+  },
+  "92:103": {
+    "inputs": {
+      "noise": [
+        "92:105",
+        0
+      ],
+      "guider": [
+        "92:114",
+        0
+      ],
+      "sampler": [
+        "92:102",
+        0
+      ],
+      "sigmas": [
+        "92:115",
+        0
+      ],
+      "latent_image": [
+        "92:109",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "92:104": {
+    "inputs": {
+      "samples": [
+        "92:103",
+        0
+      ],
+      "vae": [
+        "92:107",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "92:105": {
+    "inputs": {
+      "noise_seed": 42
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "RandomNoise"
+    }
+  },
+  "92:106": {
+    "inputs": {
+      "unet_name": "flux-2-klein-base-9b-fp8.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "92:107": {
+    "inputs": {
+      "vae_name": "full_encoder_small_decoder.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "92:108": {
+    "inputs": {
+      "image": [
+        "92:110",
+        0
+      ]
+    },
+    "class_type": "GetImageSize",
+    "_meta": {
+      "title": "Get Image Size"
+    }
+  },
+  "92:109": {
+    "inputs": {
+      "width": [
+        "92:108",
+        0
+      ],
+      "height": [
+        "92:108",
+        1
+      ],
+      "batch_size": 1
+    },
+    "class_type": "EmptyFlux2LatentImage",
+    "_meta": {
+      "title": "Empty Flux 2 Latent"
+    }
+  },
+  "92:110": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "megapixels": 1,
+      "resolution_steps": 1,
+      "image": [
+        "76",
+        0
+      ]
+    },
+    "class_type": "ImageScaleToTotalPixels",
+    "_meta": {
+      "title": "Scale Image to Total Pixels"
+    }
+  },
+  "92:85": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "megapixels": 1,
+      "resolution_steps": 1,
+      "image": [
+        "81",
+        0
+      ]
+    },
+    "class_type": "ImageScaleToTotalPixels",
+    "_meta": {
+      "title": "Scale Image to Total Pixels"
+    }
+  },
+  "92:111": {
+    "inputs": {
+      "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+      "type": "flux2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "92:113": {
+    "inputs": {
+      "text": "Using image 1 as the scene and image 2 as the character reference: INSERT the character from image 2 into image 1. Match image 2 exactly for all features. Do not change anything else in the image.",
+      "clip": [
+        "92:111",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    }
+  },
+  "92:87": {
+    "inputs": {
+      "text": "split screen, side by side, diptych, contact sheet, collage, studio backdrop, extra person, crowd, comic panel",
+      "clip": [
+        "92:111",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode ( Negative Prompt)"
+    }
+  },
+  "92:114": {
+    "inputs": {
+      "cfg": 5,
+      "model": [
+        "92:106",
+        0
+      ],
+      "positive": [
+        "92:130",
+        0
+      ],
+      "negative": [
+        "92:128",
+        0
+      ]
+    },
+    "class_type": "CFGGuider",
+    "_meta": {
+      "title": "CFG Guider"
+    }
+  },
+  "92:115": {
+    "inputs": {
+      "steps": 4,
+      "width": [
+        "92:108",
+        0
+      ],
+      "height": [
+        "92:108",
+        1
+      ]
+    },
+    "class_type": "Flux2Scheduler",
+    "_meta": {
+      "title": "Flux2Scheduler"
+    }
+  },
+  "92:125": {
+    "inputs": {
+      "conditioning": [
+        "92:87",
+        0
+      ],
+      "latent": [
+        "92:126",
+        0
+      ]
+    },
+    "class_type": "ReferenceLatent",
+    "_meta": {
+      "title": "Set Reference Latent"
+    }
+  },
+  "92:126": {
+    "inputs": {
+      "pixels": [
+        "92:110",
+        0
+      ],
+      "vae": [
+        "92:107",
+        0
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "92:127": {
+    "inputs": {
+      "conditioning": [
+        "92:113",
+        0
+      ],
+      "latent": [
+        "92:126",
+        0
+      ]
+    },
+    "class_type": "ReferenceLatent",
+    "_meta": {
+      "title": "Set Reference Latent"
+    }
+  },
+  "92:128": {
+    "inputs": {
+      "conditioning": [
+        "92:125",
+        0
+      ],
+      "latent": [
+        "92:129",
+        0
+      ]
+    },
+    "class_type": "ReferenceLatent",
+    "_meta": {
+      "title": "Set Reference Latent"
+    }
+  },
+  "92:129": {
+    "inputs": {
+      "pixels": [
+        "92:85",
+        0
+      ],
+      "vae": [
+        "92:107",
+        0
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "92:130": {
+    "inputs": {
+      "conditioning": [
+        "92:127",
+        0
+      ],
+      "latent": [
+        "92:129",
+        0
+      ]
+    },
+    "class_type": "ReferenceLatent",
+    "_meta": {
+      "title": "Set Reference Latent"
+    }
+  }
+}
