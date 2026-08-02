@@ -213,9 +213,12 @@ async def rebuild_frame_keyframe_prompts(
             i: (kf.get("path") or None) for i, kf in enumerate(_keyframes_list(f))
         }
 
-    from app.services.characters import cast_sheet_for_frame
+    from app.services.characters import cast_sheet_for_frame, frame_cast_selection
 
     cast_sheet = cast_sheet_for_frame(project_id, frame_id)
+    with SessionLocal() as db:
+        fr_cast = db.get(StoryboardFrame, frame_id)
+        empty_cast = not frame_cast_selection(fr_cast) if fr_cast else True
     share_first = bool(not is_new and prev_last_prompt)
     planned = await llm.plan_keyframe_series(
         description=description,
@@ -225,6 +228,7 @@ async def rebuild_frame_keyframe_prompts(
         prev_last_prompt=prev_last_prompt,
         cast_sheet=cast_sheet,
         share_first_from_prev=share_first,
+        empty_cast=empty_cast,
     )
     keyframes = planned["keyframes"]
     for kf in keyframes:
@@ -915,6 +919,14 @@ def still_negative_prompt(frame_prompt: str = "") -> str:
     return base + ", text overlay, on-screen text, title card, end card, neon sign text"
 
 
+def empty_scene_negatives() -> str:
+    """Negatives when the beat cast is explicitly empty (establishing / no people)."""
+    return (
+        "person, people, human, child, children, man, woman, boy, girl, crowd, "
+        "character, face, portrait, cast, figure standing, silhouette of a person"
+    )
+
+
 def build_visual_prompt(
     *,
     story: str,
@@ -963,12 +975,13 @@ def _cast_wardrobe_maps(
     wardrobe_neg = ""
     bare_hands = False
     try:
+        from app.services.characters import frame_cast_selection
+
         with SessionLocal() as db:
             fr = db.get(StoryboardFrame, frame_id)
-            selection = list(getattr(fr, "cast", None) or []) if fr else []
-        for e in cast_entries_for_sheet(
-            project_id, cast_selection=selection if selection else None
-        ):
+            selection = frame_cast_selection(fr) if fr else []
+        # Empty beat cast → no wardrobe locks (do not fall back to full project).
+        for e in cast_entries_for_sheet(project_id, cast_selection=selection):
             name = (e.get("name") or "").strip() or "Character"
             oname = (e.get("outfit_name") or "").strip()
             ward = (e.get("wardrobe_prompt") or "").strip()
@@ -1375,14 +1388,14 @@ async def generate_frame_visual(
     from app.services.characters import (
         cast_reference_for_frame,
         cast_sheet_for_frame,
-        cast_sheet_for_project,
+        frame_cast_selection,
     )
     from app.services.video_backends import get_video_backend, normalize_backend_id
 
     try:
         cast_sheet = cast_sheet_for_frame(project_id, frame_id)
     except KeyError:
-        cast_sheet = cast_sheet_for_project(project_id)
+        cast_sheet = ""
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
@@ -1391,6 +1404,7 @@ async def generate_frame_visual(
         assert p is not None
         frame_prompt = f.visual_prompt or f.description or ""
         genre = p.genre or ""
+        empty_cast = not frame_cast_selection(f)
         prompt = build_visual_prompt(
             story=p.story or "",
             premise=p.premise or "",
@@ -1399,6 +1413,11 @@ async def generate_frame_visual(
             frame_prompt=frame_prompt,
             cast_sheet=cast_sheet,
         )
+        if empty_cast:
+            prompt = (
+                f"{prompt} Empty scene — no people, no characters, no faces; "
+                "environment and landscape only."
+            )
         project_backend = getattr(p, "video_backend", None)
 
     if kind == "still":
@@ -1406,6 +1425,8 @@ async def generate_frame_visual(
         seed = frame_id * 17
         prefix = f"local_video/p{project_id}_f{frame_id}_still"
         neg = still_negative_prompt(frame_prompt)
+        if empty_cast:
+            neg = f"{neg}, {empty_scene_negatives()}"
         media = (
             settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
         )
@@ -1935,12 +1956,12 @@ async def edit_frame_still(
 ) -> dict[str, Any]:
     """Prompt-edit an existing still (Flux ReferenceLatent), replacing the still file."""
     settings = get_settings()
-    from app.services.characters import cast_sheet_for_frame, cast_sheet_for_project
+    from app.services.characters import cast_sheet_for_frame, frame_cast_selection
 
     try:
         cast_sheet = cast_sheet_for_frame(project_id, frame_id)
     except KeyError:
-        cast_sheet = cast_sheet_for_project(project_id)
+        cast_sheet = ""
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
@@ -1949,19 +1970,43 @@ async def edit_frame_still(
             raise ValueError("frame has no still to edit — generate one first")
         still_stored = f.still_path
         frame_prompt = f.visual_prompt or f.description or ""
+        empty_cast = not frame_cast_selection(f)
+
+    remove_people = bool(
+        re.search(
+            r"(?i)\b(remove|no|without|empty)\b.+\b(people|person|character|cast|human)",
+            instruction or "",
+        )
+        or re.search(
+            r"(?i)\b(people|person|character|cast)\b.+\b(remove|out|away)\b",
+            instruction or "",
+        )
+    )
+    # Empty-cast / de-crowd edits must not re-inject a project cast sheet.
+    if empty_cast or remove_people:
+        cast_sheet = ""
+        instr = (
+            f"{instruction}. Output an empty scene with NO people, NO faces, "
+            "NO characters — landscape/environment only."
+        )
+    else:
+        instr = instruction
 
     source = _resolve_media_file(still_stored)
     prompt = build_edit_prompt(
-        instruction=instruction,
+        instruction=instr,
         frame_prompt=frame_prompt,
         cast_sheet=cast_sheet,
     )
     workflow_id = workflow_id or "still_edit"
     comfy = ComfyUIClient()
     uploaded = await comfy.upload_image(source)
+    neg = still_negative_prompt(frame_prompt)
+    if empty_cast or remove_people:
+        neg = f"{neg}, {empty_scene_negatives()}"
     params = {
         "positive_prompt": prompt,
-        "negative_prompt": still_negative_prompt(frame_prompt),
+        "negative_prompt": neg,
         "seed": seed if seed is not None else (frame_id * 17 + 91),
         "filename_prefix": f"local_video/p{project_id}_f{frame_id}_edit",
         "width": 1024,
@@ -2294,14 +2339,16 @@ async def _render_keyframe_image(
     media.mkdir(parents=True, exist_ok=True)
     comfy = ComfyUIClient()
     try:
-        full_cast_sheet = cast_sheet_for_frame(project_id, frame_id)
+        beat_cast_sheet = cast_sheet_for_frame(project_id, frame_id)
     except KeyError:
-        from app.services.characters import cast_sheet_for_project
-
-        full_cast_sheet = cast_sheet_for_project(project_id)
+        beat_cast_sheet = ""
     with SessionLocal() as db:
         p = db.get(Project, project_id)
         genre = (p.genre or "") if p else ""
+        from app.services.characters import frame_cast_selection
+
+        fr_row = db.get(StoryboardFrame, frame_id)
+        empty_cast = not frame_cast_selection(fr_row) if fr_row else True
 
     prompt = strip_positive_anti_prompts(prompt)
     neg = still_negative_prompt(prompt)
@@ -2311,6 +2358,7 @@ async def _render_keyframe_image(
         _cast_wardrobe_maps(project_id, frame_id)
     )
     # Spotlight keyframes: only lock characters named in this keyframe prompt.
+    # Empty beat cast → no panels (never fall back to full project cast).
     panels_all: list[tuple[str, Path, bool]] = []
     try:
         panels_all = list_cast_reference_panels(project_id, frame_id=frame_id)
@@ -2328,7 +2376,8 @@ async def _render_keyframe_image(
             k: v for k, v in wardrobe_prompt_by_name.items() if k in keep
         }
     else:
-        cast_sheet = full_cast_sheet
+        # Do NOT inject the full project cast when nobody is on-screen.
+        cast_sheet = beat_cast_sheet if beat_cast_sheet and not empty_cast else ""
     wardrobe_lines = list(wardrobe_by_name.values())
     if omitted_cast:
         neg = (
@@ -2340,7 +2389,14 @@ async def _render_keyframe_image(
                 if n
             )
         )
+    if empty_cast or not panels:
+        neg = f"{neg}, {empty_scene_negatives()}"
     composed = compose_keyframe_prompt(prompt, cast_sheet=cast_sheet, genre=genre)
+    if empty_cast or not panels:
+        composed = (
+            f"{composed} Empty scene — no people, no characters, no faces; "
+            "environment and landscape only."
+        )
     style_neg = style_negatives(genre)
     extra_neg = ", ".join(x for x in (wardrobe_neg, style_neg) if x)
     if extra_neg:

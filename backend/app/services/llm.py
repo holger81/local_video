@@ -689,6 +689,7 @@ async def plan_keyframe_image_prompt(
     first_prompt: str | None = None,
     last_goal: str | None = None,
     cast_sheet: str = "",
+    empty_cast: bool = False,
 ) -> str:
     """One self-contained image prompt for a keyframe slot (Comfy sees only this)."""
     system = (
@@ -702,7 +703,10 @@ async def plan_keyframe_image_prompt(
         "If a cast lock is provided, name those characters exactly when they appear, then describe "
         "only what they are doing and how the camera sees the moment. "
         "Never invent people, props-on-characters, or outfit changes. "
-        "If CONTINUATION: do not say new shot; keep the same named people and setting. "
+        "If the beat cast is EMPTY: describe environment/landscape only — "
+        "NO people, NO characters, NO faces, NO named cast (not even briefly). "
+        "If CONTINUATION: do not say new shot; keep the same named people and setting "
+        "(unless empty-cast → keep empty). "
         "If NEW SHOT and role is first: establish a fresh camera/composition. "
         "Never imply an outfit, shoe, or accessory change between frames — wardrobe is fixed. "
         "If previous prompts include look/wardrobe text, IGNORE that look text — do not copy it."
@@ -719,11 +723,18 @@ async def plan_keyframe_image_prompt(
         f"This frame role={role} at t={t_sec}s.\n"
         "Write image_prompt for action, pose, camera, light, and environment only.\n"
     )
-    if cast_sheet:
+    if empty_cast or not (cast_sheet or "").strip():
+        user += (
+            "CAST: EMPTY — this beat has no characters. "
+            "Write a people-free establishing/environment prompt only. "
+            "Do not invent Aunt/Uncle/neighbor/child characters.\n"
+        )
+    elif cast_sheet:
         user += (
             f"{cast_sheet}\n"
             "Use only the cast names above. Do NOT paste Face/body or Wardrobe lines "
-            "into image_prompt — looks are applied separately.\n"
+            "into image_prompt — looks are applied separately. "
+            "Do not invent anyone not listed.\n"
         )
     if prev_prompt:
         user += (
@@ -765,6 +776,7 @@ async def plan_keyframe_series(
     prev_last_prompt: str | None = None,
     cast_sheet: str = "",
     share_first_from_prev: bool = False,
+    empty_cast: bool = False,
 ) -> dict[str, Any]:
     """Plan first + optional ≤2s middles + last via per-slot LLM calls.
 
@@ -781,6 +793,7 @@ async def plan_keyframe_series(
         else:
             roles.append("middle")
 
+    no_cast = bool(empty_cast or not (cast_sheet or "").strip())
     shared = bool(share_first_from_prev and (prev_last_prompt or "").strip())
     if shared:
         first_prompt = (prev_last_prompt or "").strip()
@@ -794,6 +807,7 @@ async def plan_keyframe_series(
             is_new_shot=is_new_shot,
             prev_prompt=prev_last_prompt if not is_new_shot else None,
             cast_sheet=cast_sheet,
+            empty_cast=no_cast,
         )
         first_prompt = await plan_keyframe_image_prompt(
             description=description,
@@ -804,6 +818,7 @@ async def plan_keyframe_series(
             prev_prompt=prev_last_prompt if not is_new_shot else None,
             last_goal=last_goal,
             cast_sheet=cast_sheet,
+            empty_cast=no_cast,
         )
 
     if shared:
@@ -816,6 +831,7 @@ async def plan_keyframe_series(
             prev_prompt=first_prompt,
             first_prompt=first_prompt,
             cast_sheet=cast_sheet,
+            empty_cast=no_cast,
         )
 
     keyframes: list[dict[str, Any]] = [
@@ -839,6 +855,7 @@ async def plan_keyframe_series(
             first_prompt=first_prompt,
             last_goal=last_goal,
             cast_sheet=cast_sheet,
+            empty_cast=no_cast,
         )
         keyframes.append(
             {

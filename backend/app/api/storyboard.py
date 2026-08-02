@@ -351,6 +351,23 @@ async def rebuild_keyframe_prompts(project_id: int, frame_id: int):
         raise HTTPException(500, str(e)) from e
 
 
+# Static path segments before /keyframes/{phase} so "from-media" is not parsed as a phase.
+@router.post("/frames/{frame_id}/keyframes/from-media")
+def set_keyframe_from_media(project_id: int, frame_id: int, body: KeyframeFromMediaIn):
+    try:
+        return sb_svc.set_keyframe_from_media(
+            project_id,
+            frame_id,
+            body.media_path,
+            index=body.index,
+            role=body.role,
+        )
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(400, str(e)) from e
+
+
 @router.post("/frames/{frame_id}/keyframes/{phase}")
 async def frame_one_keyframe(
     project_id: int, frame_id: int, phase: str, body: KeyframePhaseIn | None = None
@@ -463,22 +480,6 @@ def set_still_from_media(project_id: int, frame_id: int, body: MediaPathIn):
     try:
         return sb_svc.set_frame_still_from_media(
             project_id, frame_id, body.media_path
-        )
-    except KeyError as e:
-        raise HTTPException(404, str(e)) from e
-    except (ValueError, FileNotFoundError) as e:
-        raise HTTPException(400, str(e)) from e
-
-
-@router.post("/frames/{frame_id}/keyframes/from-media")
-def set_keyframe_from_media(project_id: int, frame_id: int, body: KeyframeFromMediaIn):
-    try:
-        return sb_svc.set_keyframe_from_media(
-            project_id,
-            frame_id,
-            body.media_path,
-            index=body.index,
-            role=body.role,
         )
     except KeyError as e:
         raise HTTPException(404, str(e)) from e

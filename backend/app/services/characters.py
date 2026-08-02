@@ -148,6 +148,14 @@ def new_cast_panels_vs_prompt(
     ]
 
 
+def frame_cast_selection(frame: StoryboardFrame) -> list[dict[str, Any]]:
+    """Beat cast list. Empty list means no people — never treat as 'use full project'."""
+    raw = getattr(frame, "cast", None)
+    if not isinstance(raw, list):
+        return []
+    return [x for x in raw if isinstance(x, dict)]
+
+
 def cast_sheet_for_named_characters(
     project_id: int,
     frame_id: int,
@@ -161,7 +169,9 @@ def cast_sheet_for_named_characters(
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
             raise KeyError(f"frame {frame_id} not found")
-        selection = list(getattr(f, "cast", None) or [])
+        selection = frame_cast_selection(f)
+    # Prefer beat cast; if beat cast is empty, resolve names from full project
+    # (only when caller already decided those names are on-screen).
     entries = cast_entries_for_sheet(
         project_id, cast_selection=selection if selection else None
     )
@@ -258,8 +268,10 @@ def cast_entries_for_sheet(
 ) -> list[dict[str, Any]]:
     """Resolve characters (+ optional outfit) for cast-sheet formatting.
 
-    cast_selection: [{character_id, outfit_id|null}]. Empty/None → full project cast
-    with each character's default outfit (if any).
+    cast_selection semantics:
+    - ``None`` → full project cast (project-wide / legacy callers)
+    - ``[]`` → nobody (explicit empty beat cast)
+    - ``[{character_id, outfit_id|null}, ...]`` → those characters only
     """
     with SessionLocal() as db:
         p = db.get(Project, project_id)
@@ -269,7 +281,9 @@ def cast_entries_for_sheet(
         by_id = {c.id: c for c in chars}
 
         selected: list[tuple[Character, str | None]] = []
-        if cast_selection:
+        if cast_selection is None:
+            selected = [(c, None) for c in chars]
+        else:
             for item in cast_selection:
                 if not isinstance(item, dict):
                     continue
@@ -282,8 +296,6 @@ def cast_entries_for_sheet(
                     continue
                 oid = item.get("outfit_id")
                 selected.append((c, str(oid) if oid else None))
-        else:
-            selected = [(c, None) for c in chars]
 
         entries: list[dict[str, Any]] = []
         for c, outfit_id in selected:
@@ -314,14 +326,15 @@ def cast_sheet_for_project(
 
 
 def cast_sheet_for_frame(project_id: int, frame_id: int) -> str:
+    """Cast lock text for a beat. Explicit ``cast=[]`` → empty (no people)."""
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
         if not f or f.project_id != project_id:
             raise KeyError(f"frame {frame_id} not found")
-        selection = list(getattr(f, "cast", None) or [])
-    return cast_sheet_for_project(
-        project_id, cast_selection=selection if selection else None
-    )
+        selection = frame_cast_selection(f)
+    if not selection:
+        return ""
+    return cast_sheet_for_project(project_id, cast_selection=selection)
 
 
 def _resolve_ref_file(stored: str | None) -> Path | None:
@@ -345,6 +358,8 @@ def list_cast_reference_panels(
     """Ordered (label, image_path, approved) panels for the beat cast.
 
     Prefers each character's selected outfit reference, else their portrait.
+    When ``frame_id`` is set and beat ``cast`` is empty, returns no panels
+    (do not fall back to the full project cast).
     """
     with SessionLocal() as db:
         p = db.get(Project, project_id)
@@ -352,18 +367,15 @@ def list_cast_reference_panels(
             raise KeyError(f"project {project_id} not found")
         chars = sorted(p.characters, key=lambda x: x.position)
         by_id = {c.id: c for c in chars}
-        selection: list[dict[str, Any]] | None = None
+        selected: list[tuple[Character, str | None]] = []
         if frame_id is not None:
             f = db.get(StoryboardFrame, frame_id)
             if not f or f.project_id != project_id:
                 raise KeyError(f"frame {frame_id} not found")
-            selection = list(getattr(f, "cast", None) or []) or None
-
-        selected: list[tuple[Character, str | None]] = []
-        if selection:
+            selection = frame_cast_selection(f)
+            if not selection:
+                return []
             for item in selection:
-                if not isinstance(item, dict):
-                    continue
                 try:
                     cid = int(item.get("character_id"))
                 except (TypeError, ValueError):
