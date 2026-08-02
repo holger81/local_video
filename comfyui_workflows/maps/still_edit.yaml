@@ -1,8 +1,8 @@
 workflow: still_edit.json
-description: Edit an existing storyboard still via Flux.2 Klein ReferenceLatent (prompt-guided, keeps source as reference).
+description: Edit an existing storyboard still via Flux.2 Klein 9B ReferenceLatent (prompt-guided, keeps source as reference).
 model_files:
-  - models/diffusion_models/flux-2-klein-base-4b.safetensors
-  - models/text_encoders/qwen_3_4b.safetensors
+  - models/diffusion_models/flux-2-klein-base-9b-fp8.safetensors
+  - models/text_encoders/qwen_3_8b_fp8mixed.safetensors
   - models/vae/flux2-vae.safetensors
 fields:
   start_image: {node: "80", input: image}
