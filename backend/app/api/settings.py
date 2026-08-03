@@ -18,6 +18,7 @@ class SettingsUpdate(BaseModel):
     llama_max_tokens: int | None = Field(default=None, ge=64, le=128000)
     comfyui_base_url: str | None = None
     default_video_backend: str | None = None
+    use_ltx23_timeline: bool | None = None
 
 
 @router.get("/settings")
@@ -27,7 +28,7 @@ def get_app_settings():
 
 @router.put("/settings")
 async def update_app_settings(body: SettingsUpdate):
-    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    updates = body.model_dump(exclude_unset=True)
     if not updates:
         return rs.settings_public(get_settings())
 
@@ -61,10 +62,13 @@ async def update_app_settings(body: SettingsUpdate):
 @router.get("/video-backends")
 def list_video_backends():
     from app.services.video_backends import list_video_backends as list_backends
+    from app.services.video_backends import ltx23_timeline_enabled
 
     settings = get_settings()
     return {
         "default": settings.default_video_backend or "wan",
+        "use_ltx23_timeline": bool(getattr(settings, "use_ltx23_timeline", False)),
+        "ltx23_timeline_enabled": ltx23_timeline_enabled(),
         "backends": list_backends(),
     }
 

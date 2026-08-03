@@ -130,8 +130,46 @@ async def _run_chunk(
         scheduler=handoff.get("scheduler") or settings.default_scheduler,
     )
 
+    # LTX-2.3 Skill Destiny timeline (up to 4 keyframe guides + dialog/SFX).
+    if mode == "timeline" or handoff.get("segment_paths"):
+        seg_refs = handoff.get("segment_paths") or []
+        if len(seg_refs) < 2:
+            raise ComfyUIError("timeline mode requires segment_paths (≥2)")
+        render_tl = getattr(backend, "render_timeline", None)
+        if render_tl is None:
+            raise ComfyUIError(
+                f"backend {backend_id!r} does not support timeline rendering"
+            )
+        seg_paths = [_resolve_media_file(str(p)) for p in seg_refs]
+        size = handoff.get("size") or [job.width, job.height]
+        _set_chunk(chunk.id, status="running")
+        video_path = await render_tl(
+            project_id=job.project_id,
+            frame_id=frame_id,
+            segment_paths=seg_paths,
+            local_prompts=str(handoff.get("local_prompts") or prompt),
+            segment_lengths=str(handoff.get("segment_lengths") or ""),
+            num_frames=frame_count,
+            frames_seg=list(handoff.get("frames_seg") or []),
+            idx_seg2=int(handoff.get("idx_seg2") or 0),
+            idx_seg3=int(handoff.get("idx_seg3") or 0),
+            idx_seg4=int(handoff.get("idx_seg4") or 0),
+            label=label,
+            seed=seed,
+            width=int(size[0]) if size else job.width,
+            height=int(size[1]) if size else job.height,
+            latent_width=handoff.get("latent_width"),
+            latent_height=handoff.get("latent_height"),
+            fps=job.fps,
+            global_prompt=str(handoff.get("global_prompt") or ""),
+            timeline_data=str(handoff.get("timeline_data") or ""),
+            negative_prompt=neg,
+            dest_dir=chunk_dir,
+            filename_prefix=filename_prefix,
+        )
+        frames = extract_frames_from_video(video_path, raw_dir)
     # Keyframe-locked FLF2V: start + end images, no rolling I2V freewheel.
-    if mode == "flf2v" or handoff.get("end_image_path"):
+    elif mode == "flf2v" or handoff.get("end_image_path"):
         start_ref = handoff.get("start_image_path")
         end_ref = handoff.get("end_image_path")
         if not start_ref or not end_ref:
@@ -193,7 +231,7 @@ async def _run_chunk(
     # Save overlap tail from full raw frames (new_shot/flf2v: keep a small tail for QA only)
     if mode == "continue":
         tail_n = overlap
-    elif mode == "flf2v":
+    elif mode in ("flf2v", "timeline"):
         tail_n = min(max(overlap, 0), len(frames))
     else:
         # Do not treat falsy 0 as "use job overlap" via `or` — new_shot overlap in handoff is 0.

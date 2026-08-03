@@ -219,6 +219,105 @@ def _flf_handoff(
     }
 
 
+def _plan_timeline_chunks_for_group(
+    group: list[dict[str, Any]],
+    *,
+    si: int,
+    prompt_for_shot: str,
+    prompt_base: str,
+    negative_prompt: str,
+    seed: int,
+    width: int,
+    height: int,
+    fps: int,
+    steps: int,
+    cfg: float,
+    sampler: str,
+    scheduler: str,
+    video_backend: str = "ltx23",
+) -> list[dict[str, Any]] | None:
+    """One LTX-2.3 timeline chunk per beat (up to 4 keyframe guides)."""
+    from app.services.video_backends import (
+        get_video_backend,
+        ltx23_timeline_enabled,
+        pack_ltx23_timeline_segments,
+        timeline_safe_size,
+    )
+
+    try:
+        backend = get_video_backend(video_backend)
+    except ValueError:
+        return None
+    if not ltx23_timeline_enabled():
+        return None
+    if not getattr(backend, "timeline_ready", lambda: False)():
+        return None
+
+    shot_id = f"shot_{si:02d}"
+    chunks: list[dict[str, Any]] = []
+    ci = 0
+    tw, th = timeline_safe_size(preview=width <= 832)
+    out_w = width if width and width >= 512 else tw
+    out_h = height if height and height >= 288 else th
+
+    for fr in group:
+        kfs = _normalize_keyframes(fr)
+        if len(kfs) < 2 or not _keyframes_ready(kfs):
+            continue
+        packed = pack_ltx23_timeline_segments(
+            kfs,
+            dialog=str(fr.get("dialog") or ""),
+            audio_notes=str(fr.get("audio_notes") or ""),
+            beat_prompt=str(
+                fr.get("visual_prompt") or fr.get("description") or prompt_for_shot
+            ),
+            fps=fps,
+            preview=out_w <= 832,
+        )
+        if not packed:
+            continue
+        overlap = 1 if ci > 0 else 0
+        handoff = {
+            "shot_id": shot_id,
+            "mode": "timeline",
+            "model": _model_tag(video_backend),
+            "video_backend": video_backend,
+            "chunk_index": ci,
+            "frame_count": packed["num_frames"],
+            "overlap_frames": overlap,
+            "prompt_base": packed["local_prompts"],
+            "prompt_delta": "",
+            "negative_prompt": negative_prompt,
+            "seed_policy": "new_shot",
+            "seed": seed + ci,
+            "size": [packed["width"] or out_w, packed["height"] or out_h],
+            "fps": fps,
+            "steps": steps,
+            "cfg": cfg,
+            "sampler": sampler,
+            "scheduler": scheduler,
+            "continuity_notes": "ltx23_timeline",
+            "frame_id": fr.get("id"),
+            "segment_paths": packed["paths"],
+            "segment_lengths": packed["segment_lengths"],
+            "local_prompts": packed["local_prompts"],
+            "timeline_data": packed["timeline_data"],
+            "frames_seg": packed["frames"],
+            "idx_seg2": packed["idx_seg2"],
+            "idx_seg3": packed["idx_seg3"],
+            "idx_seg4": packed["idx_seg4"],
+            "latent_width": packed["latent_width"],
+            "latent_height": packed["latent_height"],
+            "global_prompt": (prompt_base or prompt_for_shot or "")[:400],
+            "start_image_path": packed["paths"][0],
+            "end_image_path": packed["paths"][packed["active_segments"] - 1],
+        }
+        chunks.append({"chunk_index": ci, "mode": "timeline", "handoff": handoff})
+        ci += 1
+
+    return chunks or None
+
+
 def _plan_flf_chunks_for_group(
     group: list[dict[str, Any]],
     *,
@@ -436,6 +535,37 @@ def plan_shots_from_frames(
     for si, group in enumerate(groups):
         prompt_for_shot = _shot_prompt(group, prompt_base)
         shot_backend = _backend_for_group(si, group)
+        timeline_chunks = None
+        if shot_backend == "ltx23":
+            timeline_chunks = _plan_timeline_chunks_for_group(
+                group,
+                si=si,
+                prompt_for_shot=prompt_for_shot,
+                prompt_base=prompt_base,
+                negative_prompt=negative_prompt,
+                seed=seed,
+                width=width,
+                height=height,
+                fps=fps,
+                steps=steps,
+                cfg=cfg,
+                sampler=sampler,
+                scheduler=scheduler,
+                video_backend=shot_backend,
+            )
+        if timeline_chunks is not None:
+            shots.append(
+                {
+                    "position": si,
+                    "title": f"Shot {si + 1}",
+                    "prompt_base": prompt_for_shot,
+                    "frame_id": group[0].get("id"),
+                    "video_backend": shot_backend,
+                    "chunks": timeline_chunks,
+                }
+            )
+            continue
+
         flf_chunks = _plan_flf_chunks_for_group(
             group,
             si=si,

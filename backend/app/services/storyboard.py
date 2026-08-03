@@ -3666,12 +3666,19 @@ async def generate_step_clips(
     workflow_id: str | None = None,
     video_backend: str | None = None,
 ) -> dict[str, Any]:
-    """FLF2V between consecutive keyframes in the series; concat into preview_path.
+    """Animate a beat: prefer LTX-2.3 timeline when ready, else FLF2V pair concat.
 
-    Uses a moderated FLF resolution (not full DEFAULT_WIDTH×HEIGHT). Same-backend
+    Uses a moderated resolution (not full DEFAULT_WIDTH×HEIGHT). Same-backend
     clips reuse loaded models; unload after the beat finishes.
     """
-    from app.services.video_backends import is_ltx_backend, unload_comfy_models
+    from app.services.video_backends import (
+        get_video_backend,
+        is_ltx_backend,
+        ltx23_timeline_enabled,
+        normalize_backend_id,
+        pack_ltx23_timeline_segments,
+        unload_comfy_models,
+    )
 
     with SessionLocal() as db:
         f = db.get(StoryboardFrame, frame_id)
@@ -3682,6 +3689,7 @@ async def generate_step_clips(
         keyframes = _keyframes_list(f)
         beat = f.visual_prompt or f.description or ""
         dialog = (getattr(f, "dialog", None) or "").strip()
+        audio_notes = (getattr(f, "audio_notes", None) or "").strip()
         premise = p.premise or ""
         if video_backend is None:
             video_backend = (
@@ -3698,6 +3706,71 @@ async def generate_step_clips(
     media = settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
     media.mkdir(parents=True, exist_ok=True)
     preview = media / f"step_preview_f{frame_id}.mp4"
+
+    # Prefer Skill Destiny LTX-2.3 timeline (one AV clip for up to 4 keyframes).
+    try:
+        bid = normalize_backend_id(video_backend)
+        backend = get_video_backend(bid)
+        if (
+            bid == "ltx23"
+            and ltx23_timeline_enabled()
+            and getattr(backend, "timeline_ready", lambda: False)()
+        ):
+            packed = pack_ltx23_timeline_segments(
+                keyframes,
+                dialog=dialog,
+                audio_notes=audio_notes,
+                beat_prompt=beat,
+                fps=settings.default_fps or 24,
+                preview=True,
+            )
+            if packed:
+                paths = [_resolve_media_file(p) for p in packed["paths"]]
+                try:
+                    clip = await backend.render_timeline(
+                        project_id=project_id,
+                        frame_id=frame_id,
+                        segment_paths=paths,
+                        local_prompts=packed["local_prompts"],
+                        segment_lengths=packed["segment_lengths"],
+                        num_frames=packed["num_frames"],
+                        frames_seg=packed["frames"],
+                        idx_seg2=packed["idx_seg2"],
+                        idx_seg3=packed["idx_seg3"],
+                        idx_seg4=packed["idx_seg4"],
+                        label="timeline",
+                        seed=frame_id * 17 + 11,
+                        width=packed["width"],
+                        height=packed["height"],
+                        latent_width=packed["latent_width"],
+                        latent_height=packed["latent_height"],
+                        fps=packed["fps"],
+                        global_prompt=(premise or "")[:400],
+                        timeline_data=packed["timeline_data"],
+                        dest_dir=media,
+                        filename_prefix=f"local_video/p{project_id}_f{frame_id}_timeline",
+                    )
+                    preview.write_bytes(Path(clip).read_bytes())
+                    with SessionLocal() as db:
+                        fr = db.get(StoryboardFrame, frame_id)
+                        assert fr
+                        fr.preview_path = str(preview)
+                        db.commit()
+                    return {
+                        "frame_id": frame_id,
+                        "kind": "timeline",
+                        "preview_path": str(preview),
+                        "clips": [str(clip)],
+                        "keyframes": keyframes,
+                        "keyframe_last_path": keyframes[-1].get("path"),
+                        "video_backend": bid,
+                        "num_frames": packed["num_frames"],
+                    }
+                finally:
+                    await unload_comfy_models()
+    except Exception:
+        # Fall through to FLF pair concat.
+        pass
 
     def _write_partial_preview(paths: list[Path], dirs: list[Path]) -> Path:
         """Encode whatever clips we have so far and publish preview_path."""

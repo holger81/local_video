@@ -1,0 +1,49 @@
+workflow: ltx23_timeline.json
+description: >
+  LTX-2.3 Skill Destiny timeline: up to 4 keyframe guides + PromptRelayEncodeTimeline
+  segments, Dual Character IC-LoRA, 2-pass (draft → latent upscale → refine) with
+  baked-in audio. Prefer for beat/movie clips when ready; falls back to FLF/Wan.
+  Custom nodes: ComfyUI-LTXVideo (AddGuideMulti, ChunkFeedForward, AV latent, …),
+  PromptRelay (PromptRelayEncodeTimeline), ComfyMathExpression, ResizeImageMaskNode,
+  VHS_VideoCombine. Frame sum must be 8n+1; W/H divisible by 32.
+model_files:
+  - models/diffusion_models/ltx-2.3-22b-distilled-1.1_transformer_only_fp8_scaled.safetensors
+  - models/text_encoders/gemma_3_12B_it_fp8_e4m3fn.safetensors
+  - models/text_encoders/ltx-2.3_text_projection_bf16.safetensors
+  - models/vae/LTX23_video_vae_bf16.safetensors
+  - models/vae/LTX23_audio_vae_bf16.safetensors
+  - models/vae/taeltx2_3.safetensors
+  - models/latent_upscale_models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors
+  - models/loras/LTX2.3-IC-LORA-Dual-Character.safetensors
+fields:
+  image_seg1: {node: "50", input: image, upload: true}
+  image_seg2: {node: "51", input: image, upload: true}
+  image_seg3: {node: "52", input: image, upload: true}
+  image_seg4: {node: "53", input: image, upload: true}
+  frames_seg1: {node: "14", input: value}
+  frames_seg2: {node: "15", input: value}
+  frames_seg3: {node: "16", input: value}
+  frames_seg4: {node: "17", input: value}
+  num_frames: {node: "18", input: value}
+  width: {node: "10", input: value}
+  height: {node: "11", input: value}
+  latent_width: {node: "19", input: value}
+  latent_height: {node: "20", input: value}
+  idx_seg2: {node: "21", input: value}
+  idx_seg3: {node: "22", input: value}
+  idx_seg4: {node: "23", input: value}
+  fps:
+    node: "12"
+    input: value
+    also:
+      - {node: "90", input: fps}
+  image_strength: {node: "13", input: value}
+  global_prompt: {node: "90", input: global_prompt}
+  local_prompts: {node: "90", input: local_prompts}
+  segment_lengths: {node: "90", input: segment_lengths}
+  timeline_data: {node: "90", input: timeline_data}
+  negative_prompt: {node: "92", input: text}
+  seed: {node: "110", input: noise_seed}
+  seed2: {node: "130", input: noise_seed}
+  lora_strength: {node: "36", input: strength_model}
+  filename_prefix: {node: "142", input: filename_prefix}

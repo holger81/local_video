@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -21,6 +22,14 @@ DEFAULT_NEG = (
     "blurry, watermark, text, static, jump cut, morphing face, flickering, "
     "collage, comic, storyboard, panels, grid, split screen, montage"
 )
+
+TIMELINE_NEG = (
+    "blurry, oversaturated, pixelated, low resolution, grainy, distorted, noise, "
+    "compression artifacts, jpeg artifacts, glitches, watermark, text, logo, "
+    "signature, copyright, subtitles, distorted sound, saturated sound, loud"
+)
+
+_TIMELINE_COLORS = ("#4f8edc", "#e07b3a", "#5cb85c", "#d9534f")
 
 
 def normalize_backend_id(name: str | None, *, default: str = BACKEND_WAN) -> str:
@@ -55,6 +64,161 @@ def flf_safe_size(video_backend: str | None = None) -> tuple[int, int]:
     w -= w % 16
     h -= h % 16
     return max(w, 640), max(h, 384)
+
+
+def timeline_safe_size(*, preview: bool = True) -> tuple[int, int]:
+    """Skill Destiny timeline canvas (W/H divisible by 32)."""
+    if preview:
+        return 768, 512
+    return 960, 544
+
+
+def preferred_default_video_backend() -> str:
+    """Settings default remains wan unless the operator overrides it."""
+    return BACKEND_WAN
+
+
+def ltx23_timeline_enabled() -> bool:
+    """True when Settings opt-in is on and the timeline API graph is packaged."""
+    settings = get_settings()
+    if not bool(getattr(settings, "use_ltx23_timeline", False)):
+        return False
+    return _workflow_exists("ltx23_timeline")
+
+
+def _div32(n: int, minimum: int = 256) -> int:
+    n = max(minimum, int(n))
+    return max(minimum, n - (n % 32))
+
+
+def _dialog_lines(dialog: str) -> list[str]:
+    lines: list[str] = []
+    for raw in (dialog or "").splitlines():
+        t = raw.strip()
+        if not t:
+            continue
+        lines.append(t)
+    if not lines and (dialog or "").strip():
+        lines = [dialog.strip()]
+    return lines
+
+
+def pack_ltx23_timeline_segments(
+    keyframes: list[dict[str, Any]],
+    *,
+    dialog: str = "",
+    audio_notes: str = "",
+    beat_prompt: str = "",
+    fps: int = 24,
+    max_segments: int = 4,
+    preview: bool = True,
+    max_total_frames: int = 121,
+) -> dict[str, Any] | None:
+    """Pack a keyframe series into up to 4 Skill Destiny timeline segments.
+
+    Returns None when fewer than 2 ready keyframe paths exist.
+    """
+    from app.services.continuity import snap_frame_count
+
+    ready = [
+        kf
+        for kf in keyframes
+        if isinstance(kf, dict) and (kf.get("path") or "").strip()
+    ]
+    if len(ready) < 2:
+        return None
+
+    use = ready[: max(2, min(max_segments, len(ready)))]
+    n = len(use)
+    fps_v = max(1, int(fps or 24))
+
+    # Per-segment durations from t_sec deltas; last uses a short hold.
+    raw_lens: list[int] = []
+    for i in range(n):
+        t0 = float(use[i].get("t_sec") or 0.0)
+        if i + 1 < n:
+            t1 = float(use[i + 1].get("t_sec") or (t0 + 2.0))
+            sec = max(0.75, t1 - t0)
+        else:
+            sec = 1.5
+        raw_lens.append(max(8, int(round(sec * fps_v))))
+
+    # Pad to 4 guide slots (repeat last image; tiny trailing lengths).
+    while len(use) < max_segments:
+        use.append(dict(use[-1]))
+        raw_lens.append(8)
+
+    total_raw = sum(raw_lens)
+    target = snap_frame_count(
+        min(total_raw, max_total_frames),
+        minimum=17,
+        maximum=max_total_frames,
+        step=8,
+    )
+    # Scale lengths so sum == target (keep each ≥ 8).
+    scale = target / max(1, total_raw)
+    lengths = [max(8, int(round(x * scale))) for x in raw_lens]
+    drift = target - sum(lengths)
+    lengths[-1] = max(8, lengths[-1] + drift)
+    # Re-snap if last adjust broke 8n+1 total.
+    while (sum(lengths) - 1) % 8 != 0:
+        lengths[-1] += 1
+
+    speech = _dialog_lines(dialog)
+    notes = (audio_notes or "").strip()
+    beat = (beat_prompt or "").strip()
+    prompts: list[str] = []
+    for i in range(max_segments):
+        visual = (
+            (use[i].get("image_prompt") or "").strip()
+            or beat
+            or f"Cinematic beat segment {i + 1}."
+        )
+        bits = [visual]
+        if i < n and i < len(speech):
+            bits.append(speech[i])
+        elif i == 0 and speech:
+            bits.append(" ".join(speech))
+        if i == 0 and notes:
+            bits.append(f"Audio: {notes}")
+        prompts.append(" ".join(bits))
+
+    width, height = timeline_safe_size(preview=preview)
+    width, height = _div32(width), _div32(height)
+    latent_w, latent_h = _div32(width // 2), _div32(height // 2)
+    idx2 = lengths[0]
+    idx3 = lengths[0] + lengths[1]
+    idx4 = lengths[0] + lengths[1] + lengths[2]
+    total = sum(lengths)
+
+    segments_meta = [
+        {
+            "prompt": prompts[i],
+            "length": lengths[i],
+            "color": _TIMELINE_COLORS[i % len(_TIMELINE_COLORS)],
+            "path": (use[i].get("path") or "").strip(),
+        }
+        for i in range(max_segments)
+    ]
+
+    return {
+        "paths": [s["path"] for s in segments_meta],
+        "frames": lengths,
+        "prompts": prompts,
+        "local_prompts": " | ".join(prompts),
+        "segment_lengths": ", ".join(str(x) for x in lengths),
+        "timeline_data": json.dumps({"segments": segments_meta}),
+        "num_frames": total,
+        "idx_seg2": idx2,
+        "idx_seg3": idx3,
+        "idx_seg4": idx4,
+        "width": width,
+        "height": height,
+        "latent_width": latent_w,
+        "latent_height": latent_h,
+        "fps": fps_v,
+        "active_segments": n,
+    }
 
 
 async def release_comfy_vram(
@@ -415,6 +579,8 @@ class LtxFamilyBackend:
         }
         if self._with_ic_lora:
             wfs["ic_lora"] = f"{self._prefix}_ic_lora"
+        if self.id == BACKEND_LTX23:
+            wfs["timeline"] = "ltx23_timeline"
         return wfs
 
     def validate_num_frames(self, n: int) -> int:
@@ -430,6 +596,101 @@ class LtxFamilyBackend:
         if "ic_lora" not in wfs:
             return False
         return _workflow_exists(wfs["ic_lora"])
+
+    def timeline_ready(self) -> bool:
+        wfs = self.workflows()
+        tid = wfs.get("timeline")
+        return bool(tid and _workflow_exists(tid))
+
+    async def render_timeline(
+        self,
+        *,
+        project_id: int,
+        frame_id: int,
+        segment_paths: list[Path],
+        local_prompts: str,
+        segment_lengths: str,
+        num_frames: int,
+        frames_seg: list[int],
+        idx_seg2: int,
+        idx_seg3: int,
+        idx_seg4: int,
+        label: str = "timeline",
+        seed: int = 42,
+        width: int | None = None,
+        height: int | None = None,
+        latent_width: int | None = None,
+        latent_height: int | None = None,
+        fps: int | None = None,
+        image_strength: float = 0.7,
+        global_prompt: str = "",
+        timeline_data: str = "",
+        negative_prompt: str | None = None,
+        dest_dir: Path | None = None,
+        filename_prefix: str | None = None,
+        lora_strength: float = 0.6,
+    ) -> Path:
+        """Skill Destiny 4-guide timeline render (Dual Character + AV 2-pass)."""
+        settings = get_settings()
+        if not self.timeline_ready():
+            raise WorkflowError(
+                f"{self._label} timeline workflow is not installed. Add "
+                "api/ltx23_timeline.json (see docs/video-backends.md)."
+            )
+        if len(segment_paths) < 2:
+            raise ValueError("timeline render needs at least 2 segment images")
+        self.validate_num_frames(num_frames)
+        fps_v = int(fps if fps is not None else settings.default_fps or 24)
+        width_v = int(width if width is not None else 768)
+        height_v = int(height if height is not None else 512)
+        lat_w = int(latent_width if latent_width is not None else _div32(width_v // 2))
+        lat_h = int(latent_height if latent_height is not None else _div32(height_v // 2))
+        segs = list(frames_seg) + [8, 8, 8, 8]
+        segs = segs[:4]
+        paths = list(segment_paths)
+        while len(paths) < 4:
+            paths.append(paths[-1])
+
+        comfy = ComfyUIClient()
+        uploads: dict[str, str] = {}
+        for i, path in enumerate(paths[:4], start=1):
+            uploads[f"image_seg{i}"] = await comfy.upload_image(Path(path))
+
+        params = {
+            "local_prompts": local_prompts,
+            "segment_lengths": segment_lengths,
+            "timeline_data": timeline_data or "",
+            "global_prompt": global_prompt or "",
+            "negative_prompt": negative_prompt or TIMELINE_NEG,
+            "seed": seed,
+            "seed2": seed + 3,
+            "num_frames": num_frames,
+            "frames_seg1": segs[0],
+            "frames_seg2": segs[1],
+            "frames_seg3": segs[2],
+            "frames_seg4": segs[3],
+            "idx_seg2": idx_seg2,
+            "idx_seg3": idx_seg3,
+            "idx_seg4": idx_seg4,
+            "width": width_v,
+            "height": height_v,
+            "latent_width": lat_w,
+            "latent_height": lat_h,
+            "fps": fps_v,
+            "image_strength": float(image_strength),
+            "lora_strength": float(lora_strength),
+            "filename_prefix": filename_prefix
+            or f"local_video/p{project_id}_f{frame_id}_{label}",
+        }
+        media = dest_dir or (
+            settings.media_dir / "projects" / str(project_id) / "frames" / str(frame_id)
+        )
+        return await _run_single_graph(
+            workflow_id=self.workflows()["timeline"],
+            params=params,
+            uploaded_images=uploads,
+            dest_dir=media,
+        )
 
     async def render_ic_lora(
         self,
@@ -696,5 +957,9 @@ def list_video_backends() -> list[dict[str, Any]]:
         }
         if "ic_lora" in wfs:
             entry["ic_lora_ready"] = _workflow_exists(wfs["ic_lora"])
+        if "timeline" in wfs:
+            entry["timeline_ready"] = bool(
+                getattr(backend, "timeline_ready", lambda: False)()
+            )
         out.append(entry)
     return out

@@ -15,6 +15,7 @@ OVERLAY_KEYS = (
     "llama_max_tokens",
     "comfyui_base_url",
     "default_video_backend",
+    "use_ltx23_timeline",
 )
 
 
@@ -45,6 +46,13 @@ def load_overlay(data_dir: Path | None = None) -> dict[str, Any]:
                 out[key] = int(val)
             except (TypeError, ValueError):
                 continue
+        elif key == "use_ltx23_timeline":
+            if isinstance(val, bool):
+                out[key] = val
+            elif isinstance(val, (int, float)):
+                out[key] = bool(val)
+            elif isinstance(val, str):
+                out[key] = val.strip().lower() in ("1", "true", "yes", "on")
         elif isinstance(val, str):
             stripped = val.strip()
             if stripped:
@@ -69,6 +77,13 @@ def save_overlay(
             continue
         if key in ("llama_n_ctx", "llama_max_tokens"):
             current[key] = int(val)
+        elif key == "use_ltx23_timeline":
+            if isinstance(val, bool):
+                current[key] = val
+            elif isinstance(val, str):
+                current[key] = val.strip().lower() in ("1", "true", "yes", "on")
+            else:
+                current[key] = bool(val)
         else:
             current[key] = str(val).strip()
     path.write_text(
@@ -86,6 +101,7 @@ def settings_public(s: Settings) -> dict[str, Any]:
         "llama_max_tokens": s.llama_max_tokens,
         "comfyui_base_url": s.comfyui_base_url,
         "default_video_backend": s.default_video_backend or "wan",
+        "use_ltx23_timeline": bool(getattr(s, "use_ltx23_timeline", False)),
         "overlay_path": str(overlay_path(s.data_dir)),
     }
 

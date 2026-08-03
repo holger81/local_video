@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     llama_n_ctx: int = 0
     llama_max_tokens: int = 2048
     default_video_backend: str = "wan"
+    # Opt-in: Skill Destiny LTX-2.3 timeline (4-guide + Dual Character + AV).
+    # When false, ltx23 still uses FLF/I2V/T2V like before.
+    use_ltx23_timeline: bool = False
 
     chunk_frames: int = 33
     overlap_frames: int = 12

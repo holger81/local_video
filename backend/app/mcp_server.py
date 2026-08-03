@@ -959,6 +959,7 @@ async def update_settings(
     llama_max_tokens: int | None = None,
     comfyui_base_url: str | None = None,
     default_video_backend: str | None = None,
+    use_ltx23_timeline: bool | None = None,
 ) -> dict:
     """Update runtime settings overlay (persisted under data_dir/app_settings.json)."""
     updates = {
@@ -971,6 +972,7 @@ async def update_settings(
             "llama_max_tokens": llama_max_tokens,
             "comfyui_base_url": comfyui_base_url,
             "default_video_backend": default_video_backend,
+            "use_ltx23_timeline": use_ltx23_timeline,
         }.items()
         if v is not None
     }
@@ -1004,10 +1006,13 @@ async def update_settings(
 def list_video_backends() -> dict:
     """List selectable video backends (wan, ltx2, ltx23) and the current default."""
     from app.services.video_backends import list_video_backends as list_backends
+    from app.services.video_backends import ltx23_timeline_enabled
 
     settings = get_settings()
     return {
         "default": settings.default_video_backend or "wan",
+        "use_ltx23_timeline": bool(getattr(settings, "use_ltx23_timeline", False)),
+        "ltx23_timeline_enabled": ltx23_timeline_enabled(),
         "backends": list_backends(),
     }
 

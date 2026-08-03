@@ -183,6 +183,7 @@ function SettingsPage() {
   const [nCtx, setNCtx] = useState("");
   const [maxTokens, setMaxTokens] = useState("2048");
   const [videoBackend, setVideoBackend] = useState("wan");
+  const [useLtx23Timeline, setUseLtx23Timeline] = useState(false);
   const [videoBackends, setVideoBackends] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -198,6 +199,7 @@ function SettingsPage() {
     setNCtx(s.llama_n_ctx ? String(s.llama_n_ctx) : "");
     setMaxTokens(String(s.llama_max_tokens || 2048));
     setVideoBackend(s.default_video_backend || "wan");
+    setUseLtx23Timeline(!!s.use_ltx23_timeline);
     try {
       const vb = await api("/video-backends");
       setVideoBackends(vb.backends || []);
@@ -234,6 +236,7 @@ function SettingsPage() {
         llama_model: model.trim(),
         llama_max_tokens: Number(maxTokens) || 2048,
         default_video_backend: videoBackend,
+        use_ltx23_timeline: useLtx23Timeline,
       };
       if (apiKey.trim()) body.llama_api_key = apiKey.trim();
       if (nCtx.trim()) body.llama_n_ctx = Number(nCtx);
@@ -379,6 +382,27 @@ function SettingsPage() {
               <option value="ltx23">LTX-2.3</option>
             </select>
           </label>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={useLtx23Timeline}
+              onChange={(e) => setUseLtx23Timeline(e.target.checked)}
+            />
+            Use LTX-2.3 Skill Destiny timeline (optional)
+          </label>
+          <p className="muted tiny">
+            When enabled and the project/job backend is LTX-2.3, beat animation and
+            movie chunks use the 4-keyframe Dual Character timeline (Prompt Relay +
+            baked audio) instead of FLF pair bridges. Requires ComfyUI PromptRelay,
+            Dual Character IC-LoRA, and the timeline models.
+          </p>
+          {useLtx23Timeline &&
+            !videoBackends.some((b) => b.id === "ltx23" && b.timeline_ready) && (
+              <p className="error">
+                Timeline graph is not packaged yet — add api/ltx23_timeline.json
+                (see docs/video-backends.md).
+              </p>
+            )}
           {["ltx2", "ltx23", "ltx"].includes(videoBackend) &&
             videoBackends.some(
               (b) =>

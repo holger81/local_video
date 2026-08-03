@@ -20,12 +20,17 @@ series. Overlap default **12**. Chunk 0 may I2V-lock the first keyframe/still.
 
 ## Keyframe-driven movie (default when keyframes exist)
 
-When a shot’s storyboard beat has a complete keyframe series (paths set, ≥2 frames),
-the movie agent plans **one FLF2V chunk per consecutive keyframe pair** (same method as
-storyboard step clips). Continuous beats (`is_new_shot=false`) **share** the previous
-beat’s last keyframe as this beat’s first (exact same path/prompt) — no re-render, and
-**no** inter-beat FLF bridge when the boundary is shared. Motion continues through the
-next beat’s internal keyframe pairs.
+When Settings **`use_ltx23_timeline`** is on, the project/job backend is **`ltx23`**, and
+**`ltx23_timeline`** is packaged, each beat with a keyframe series becomes **one
+`mode=timeline` chunk** (up to 4 guide images, Prompt Relay segment prompts including
+dialog, Dual Character IC-LoRA, AV 2-pass). See [video-backends.md](video-backends.md).
+
+Otherwise, when a shot’s storyboard beat has a complete keyframe series (paths set, ≥2
+frames), the movie agent plans **one FLF2V chunk per consecutive keyframe pair** (same
+method as storyboard step clips). Continuous beats (`is_new_shot=false`) **share** the
+previous beat’s last keyframe as this beat’s first (exact same path/prompt) — no
+re-render, and **no** inter-beat FLF bridge when the boundary is shared. Motion continues
+through the next beat’s internal keyframe pairs.
 
 - `mode=flf2v` with `start_image_path` + `end_image_path`
 - Frame count from keyframe `t_sec` Δ (snapped to `4n+1`)
@@ -50,3 +55,5 @@ See agent `Chunk.handoff` JSON: `shot_id`, `mode` (`new_shot` | `continue` | `fl
 `chunk_index`, `frame_count`, `overlap_frames`, `last_frame`, `prompt_base`,
 `prompt_delta`, `seed_policy`, sampler settings, `continuity_notes`.
 For `flf2v`: also `start_image_path`, `end_image_path`, and optional `frame_id`.
+For `timeline`: `segment_paths`, `segment_lengths`, `local_prompts`, `frames_seg`,
+`idx_seg2..4`, `timeline_data`, plus start/end paths for stitch QA.

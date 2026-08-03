@@ -18,7 +18,7 @@ See also [docs/video-backends.md](../docs/video-backends.md) for Wan vs LTX sele
 |---------|------|-------------------------|
 | **wan** (default) | Proven Wan 2.2 path; FLF is two-pass high→low | `wan22_t2v`, `wan22_i2v`, `wan22_flf2v` |
 | **ltx2** | LTX-2 19B FP8 | `ltx2_t2v`, `ltx2_i2v`, `ltx2_flf2v` |
-| **ltx23** | LTX-2.3 22B distilled FP8 | `ltx23_t2v`, `ltx23_i2v`, `ltx23_flf2v` (+ `ltx23_ic_lora`) |
+| **ltx23** | LTX-2.3 22B distilled | `ltx23_t2v`, `ltx23_i2v`, `ltx23_flf2v`, `ltx23_timeline` (opt-in), `ltx23_ic_lora` |
 
 Legacy `"ltx"` / maps `ltx_*` alias to **ltx2** motion graphs (IC-LoRA legacy → ltx23).
 
@@ -31,19 +31,35 @@ Confirm `GET /api/video-backends` → `flf2v_ready` for `ltx2` and `ltx23`.
 | `ltx2_flf2v` / `ltx23_flf2v` | First + last frame (keyframe bridges) |
 | `ltx2_i2v` / `ltx23_i2v` | Start image only (start fed as both guides) |
 | `ltx2_t2v` / `ltx23_t2v` | Text only |
-| `ltx23_ic_lora` | **IC-LoRA Ingredients** — reference sheet + two-part prompt |
+| `ltx23_timeline` | **Opt-in (Settings)** — Skill Destiny 4-guide timeline + Dual Character + AV 2-pass |
+| `ltx23_ic_lora` | IC-LoRA Ingredients — reference sheet + two-part prompt |
 
 Models (map `model_files`):
 
 ```
 ComfyUI/models/
   checkpoints/ltx-2-19b-dev-fp8.safetensors            # ltx2
-  checkpoints/ltx-2.3-22b-distilled-fp8.safetensors    # ltx23 (+ IC-LoRA)
+  checkpoints/ltx-2.3-22b-distilled-fp8.safetensors    # ltx23 FLF/I2V/T2V (+ Ingredients)
+  diffusion_models/ltx-2.3-22b-distilled-1.1_transformer_only_fp8_scaled.safetensors  # timeline
   text_encoders/gemma_3_12B_it_fp4_mixed.safetensors
-  loras/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors   # ltx23 IC-LoRA only
+  text_encoders/gemma_3_12B_it_fp8_e4m3fn.safetensors
+  text_encoders/ltx-2.3_text_projection_bf16.safetensors
+  vae/LTX23_video_vae_bf16.safetensors
+  vae/LTX23_audio_vae_bf16.safetensors
+  vae/taeltx2_3.safetensors
+  latent_upscale_models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors
+  loras/LTX2.3-IC-LORA-Dual-Character.safetensors      # timeline
+  loras/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors   # Ingredients only
 ```
 
-Frame counts for LTX T2V/I2V/FLF must be **`8n+1`** (default **33**). On ROCm, avoid `--fp16-vae` with FP8 LTX (can yield black frames).
+Frame counts for LTX T2V/I2V/FLF/timeline must be **`8n+1`** (default **33** / timeline sum of segments). On ROCm, avoid `--fp16-vae` with FP8 LTX (can yield black frames).
+
+### LTX-2.3 Skill Destiny timeline (`ltx23_timeline`)
+
+- UI import: `import/ltx23_timeline_dual_character.json`
+- API/map: `api/ltx23_timeline.json` + `maps/ltx23_timeline.yaml`
+- Custom nodes: **ComfyUI-PromptRelay**, ComfyUI-LTXVideo (`LTXVAddGuideMulti`, chunk FF, AV), VHS, ResizeImageMaskNode
+- Studio packs ≤4 keyframes + dialog into `local_prompts` / `segment_lengths` when Settings **`use_ltx23_timeline`** is enabled and backend is `ltx23`
 
 ### LTX IC-LoRA Ingredients (`ltx23_ic_lora`)
 
@@ -54,7 +70,7 @@ Packaged as `import/ltx23_ic_lora.json` + `api/ltx23_ic_lora.json`. Not a drop-i
 3. Parameterized **`width` / `height` / `fps` / `num_frames`** (or `duration_sec` via `render_ic_lora`, snapped to `8n+1`)
 4. LoRA `ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors`
 
-Trained bucket: **768×448**, **121** frames, **24** fps. Studio movie/agent does not auto-route here yet.
+Trained bucket: **768×448**, **121** frames, **24** fps.
 
 ## Import into ComfyUI
 
@@ -66,6 +82,7 @@ Trained bucket: **768×448**, **121** frames, **24** fps. Studio movie/agent doe
    - `import/wan22_flf2v.json` — official **14B FLF2V** template (first + last frame)
    - `import/ltx2_*.json` — LTX-2 (19B) UI blueprints
    - `import/ltx23_*.json` — LTX-2.3 UI blueprints (+ `ltx23_ic_lora`)
+   - `import/ltx23_timeline_dual_character.json` — Skill Destiny timeline (Dual Character + Prompt Relay)
    - `import/still_hero.json` — simple SD1.5-style still (change checkpoint to yours)
    - `import/flux2_dev_edit_fp8_dual.json` — Flux.2 Dev dual-ref product-mockup style (enable UNET FP8)
    - `import/flux2_dev_edit_gguf.json` — Flux.2 Dev edit with UnetLoaderGGUF
